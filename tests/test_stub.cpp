@@ -11,8 +11,13 @@ int main() {
         std::cout << "[TEST LOG] " << m << std::endl;
     });
 
-    // Launch a short-lived debug target (cmd.exe) rather than trying to attach to an arbitrary PID
-    auto s = dbg.launch("C:\\Windows\\System32\\cmd.exe", {"/C", "ping -n 2 127.0.0.1 > nul"});
+    // Launch a short-lived, instrumented debug target that the tests control.
+    // We build `test_target` in-tree and run it here so tests are deterministic.
+#if defined(_WIN32)
+    auto s = dbg.launch("test_target.exe", {"wait"});
+#else
+    auto s = dbg.launch("./test_target", {"wait"});
+#endif
     if (s != smalldbg::Status::Ok) return 2;
     // allow the debug loop to start for a short while
     std::this_thread::sleep_for(std::chrono::milliseconds(200));

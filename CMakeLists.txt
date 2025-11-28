@@ -21,5 +21,18 @@ target_link_libraries(example PRIVATE smalldbg)
 add_executable(test_backend tests/test_stub.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
 
+# A small instrumented program used by tests so we can exercise breakpoints, stepping and
+# predictable behavior without relying on external system tools.
+add_executable(test_target tests/test_target.cpp)
+
+# ensure test_target can see our internal src/platform headers
+target_include_directories(test_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+if(WIN32)
+    target_sources(test_target PRIVATE src/platform/windows/Platform.cpp)
+else()
+    target_sources(test_target PRIVATE src/platform/posix/Platform.cpp)
+endif()
+
 enable_testing()
 add_test(NAME backend-test COMMAND test_backend)
