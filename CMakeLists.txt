@@ -18,7 +18,7 @@ target_include_directories(smalldbg PUBLIC
 add_executable(example src/main_example.cpp)
 target_link_libraries(example PRIVATE smalldbg)
 
-add_executable(test_backend tests/test_stub.cpp)
+add_executable(test_backend tests/test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
 
 # A small instrumented program used by tests so we can exercise breakpoints, stepping and
