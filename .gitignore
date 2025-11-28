@@ -1,0 +1,12 @@
+# Build files
+/build/
+/.vs/
+*.vcxproj*
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# OS
+Thumbs.db
+desktop.ini
