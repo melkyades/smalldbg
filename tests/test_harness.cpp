@@ -22,8 +22,10 @@ int test_launch_and_attach(smalldbg::Debugger &dbg) {
     TEST_ASSERT(s == smalldbg::Status::Ok, "Failed to launch test_target", 2);
     TEST_PASS("Process launched successfully");
     
-    // allow the debug loop to start for a short while
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    // Wait for ProcessCreated event
+    auto reason = dbg.waitForEvent(smalldbg::StopReason::ProcessCreated);
+    TEST_ASSERT(reason == smalldbg::StopReason::ProcessCreated, "Expected ProcessCreated event", 18);
+    TEST_PASS("ProcessCreated event received");
     
     std::cout << "\n=== Test 2: Verify Attached State ===" << std::endl;
     TEST_ASSERT(dbg.isAttached(), "Debugger should be attached", 3);
@@ -33,6 +35,12 @@ int test_launch_and_attach(smalldbg::Debugger &dbg) {
     TEST_ASSERT(pid.has_value(), "Should have attached PID", 4);
     std::cout << "[INFO] Attached to PID: " << pid.value() << std::endl;
     TEST_PASS("PID retrieval successful");
+    
+    // Resume and wait for initial breakpoint
+    dbg.resume();
+    reason = dbg.waitForEvent(smalldbg::StopReason::InitialBreakpoint);
+    TEST_ASSERT(reason == smalldbg::StopReason::InitialBreakpoint, "Expected InitialBreakpoint event", 19);
+    TEST_PASS("InitialBreakpoint event received");
     
     return 0;
 }

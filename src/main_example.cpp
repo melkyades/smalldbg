@@ -10,6 +10,14 @@ int main() {
         return 2;
     }
 
+    // Wait for ProcessCreated event
+    auto reason = dbg.waitForEvent(smalldbg::StopReason::ProcessCreated);
+    if (reason != smalldbg::StopReason::ProcessCreated) {
+        std::cerr << "Error: Expected ProcessCreated event\n";
+        return 3;
+    }
+    std::cout << "Process created successfully" << std::endl;
+
     auto pid = dbg.attachedPid();
     std::cout << "attached pid: " << (pid ? std::to_string(*pid) : std::string("-")) << std::endl;
 
@@ -18,6 +26,13 @@ int main() {
 
     auto bps = dbg.listBreakpoints();
     std::cout << "breakpoints: " << bps.size() << std::endl;
+
+    // Resume from process creation and wait for initial breakpoint
+    dbg.resume();
+    reason = dbg.waitForEvent(smalldbg::StopReason::InitialBreakpoint);
+    if (reason == smalldbg::StopReason::InitialBreakpoint) {
+        std::cout << "Hit initial breakpoint" << std::endl;
+    }
 
     dbg.step();
     // simple memory test

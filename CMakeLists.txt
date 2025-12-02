@@ -21,6 +21,9 @@ target_link_libraries(example PRIVATE smalldbg)
 add_executable(test_backend tests/test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
 
+add_executable(test_attach tests/test_attach.cpp)
+target_link_libraries(test_attach PRIVATE smalldbg)
+
 # A small instrumented program used by tests so we can exercise breakpoints, stepping and
 # predictable behavior without relying on external system tools.
 add_executable(test_target tests/test_target.cpp)
