@@ -21,6 +21,16 @@ enum class Status {
     NotFound
 };
 
+enum class StopReason {
+    None,              // Not stopped / running
+    ProcessCreated,    // Process created successfully (launch only)
+    InitialBreakpoint, // Initial process loader breakpoint
+    Breakpoint,        // Hit a user breakpoint
+    SingleStep,        // Single-step completed
+    Exception,         // Exception/signal
+    ProcessExit        // Process terminated
+};
+
 using Address = uint64_t;
 
 struct Breakpoint {

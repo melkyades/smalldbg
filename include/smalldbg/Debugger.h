@@ -23,6 +23,17 @@ public:
     // run control
     Status resume();
     Status step();
+    Status suspend(); // Interrupt/break into running process
+    
+    // state queries
+    StopReason getStopReason() const;
+    bool isStopped() const;
+    Address getStopAddress() const;
+    
+    // Wait for debugger to stop with a specific reason (or any reason if None)
+    // Returns the actual stop reason, or None if timeout/error
+    // timeout_ms: 0 = no wait, -1 = infinite, >0 = timeout in milliseconds
+    StopReason waitForEvent(StopReason reason = StopReason::None, int timeout_ms = -1);
 
     // breakpoints
     Status setBreakpoint(Address addr, const std::string &name = {});
@@ -40,6 +51,10 @@ public:
 
     // Logging callback (simple) — optional
     void setLogCallback(std::function<void(const std::string &)> cb);
+    
+    // Event callback — called when debugger stops
+    // Callback receives (reason, address) - address is relevant for breakpoints/exceptions
+    void setEventCallback(std::function<void(StopReason, Address)> cb);
 
 private:
     Backend *backend; // pointer to backend implementation

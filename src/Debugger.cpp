@@ -45,6 +45,11 @@ Status Debugger::step() {
     return backend->step();
 }
 
+Status Debugger::suspend() {
+    if (!backend) return Status::NotAttached;
+    return backend->suspend();
+}
+
 Status Debugger::setBreakpoint(Address addr, const std::string &name) {
     if (!backend) return Status::NotAttached;
     return backend->setBreakpoint(addr, name);
@@ -79,6 +84,19 @@ bool Debugger::isAttached() const { return backend && backend->isAttached(); }
 
 std::optional<int> Debugger::attachedPid() const { return backend ? backend->attachedPid() : std::nullopt; }
 
+StopReason Debugger::getStopReason() const { return backend ? backend->getStopReason() : StopReason::None; }
+
+bool Debugger::isStopped() const { return backend && backend->isStopped(); }
+
+Address Debugger::getStopAddress() const { return backend ? backend->getStopAddress() : 0; }
+
 void Debugger::setLogCallback(std::function<void(const std::string &)> cb) { if (backend) backend->setLogCallback(std::move(cb)); }
+
+void Debugger::setEventCallback(std::function<void(StopReason, Address)> cb) { if (backend) backend->setEventCallback(std::move(cb)); }
+
+StopReason Debugger::waitForEvent(StopReason reason, int timeout_ms) {
+    if (!backend) return StopReason::None;
+    return backend->waitForEvent(reason, timeout_ms);
+}
 
 } // namespace smalldbg
