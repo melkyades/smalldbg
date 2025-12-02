@@ -22,6 +22,7 @@ public:
 
     Status resume() override;
     Status step() override;
+    Status suspend() override;
 
     Status setBreakpoint(Address addr, const std::string &name) override;
     Status clearBreakpoint(Address addr) override;
@@ -30,6 +31,11 @@ public:
     Status readMemory(Address address, void *outBuf, size_t size) const override;
     Status writeMemory(Address address, const void *data, size_t size) override;
     Status getRegisters(Registers &out) const override;
+    
+    StopReason getStopReason() const override { return stopReason; }
+    bool isStopped() const override { return stopped; }
+    Address getStopAddress() const override { return stopAddress; }
+    StopReason waitForEvent(StopReason reason = StopReason::None, int timeout_ms = -1) override;
 
 private:
     // process/thread handles and debug loop
@@ -39,9 +45,19 @@ private:
     std::atomic<bool> running{false};
     bool attached{false};
     int pid{-1};
+    std::string launchPath; // Used to pass launch command to debug thread
     std::vector<uint8_t> memory;
     Registers regs{};
     std::vector<Breakpoint> bps;
+    
+    // stop state - all protected by stopMutex
+    std::mutex stopMutex;
+    std::condition_variable stopCV;
+    bool stopped{false};
+    StopReason stopReason{StopReason::None};
+    Address stopAddress{0};
+    DWORD stopThreadId{0};
+    bool continueRequested{false};
 
     std::mutex bpMutex;
     std::unordered_map<Address, uint8_t> bpOriginal;
@@ -50,12 +66,19 @@ private:
 
     // debug loop
     void debugLoop();
-    void handleExceptionEvent(const DEBUG_EVENT &ev);
-    void handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr);
-    void handleSingleStepEvent(const DEBUG_EVENT &ev);
-    void handleCreateProcessEvent(const DEBUG_EVENT &ev);
+    bool handleExceptionEvent(const DEBUG_EVENT &ev);
+    bool handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr);
+    bool handleSingleStepEvent(const DEBUG_EVENT &ev);
+    bool handleCreateProcessEvent(const DEBUG_EVENT &ev);
     void handleExitProcessEvent(const DEBUG_EVENT &ev);
     void handleOtherDebugEvent(const DEBUG_EVENT &ev);
+    
+    // Helper to execute code under stopMutex protection
+    template<typename Func>
+    void withStopLock(Func&& func) {
+        std::lock_guard<std::mutex> lock(stopMutex);
+        func();
+    }
 
     bool isAttached() const override { return attached; }
     std::optional<int> attachedPid() const override { if (attached) return pid; return std::nullopt; }

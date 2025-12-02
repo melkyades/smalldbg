@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <unordered_map>
 
 namespace smalldbg {
@@ -57,20 +58,21 @@ Status WindowsBackend::launch(const std::string &path, const std::vector<std::st
     si.cb = sizeof(si);
     PROCESS_INFORMATION localPi = {};
 
-    // Create process in debug mode so this process becomes the debugger
-    if (!CreateProcessA(nullptr, const_cast<char*>(cmd.c_str()), nullptr, nullptr, FALSE, DEBUG_PROCESS, nullptr, nullptr, &si, &localPi)) {
-        return Status::Error;
-    }
-
-    pi = localPi;
-    processHandle = pi.hProcess;
-    pid = static_cast<int>(pi.dwProcessId);
-    attached = true;
-    memory.assign(64*1024, 0);
-    regs = Registers{};
-
+    // Start the debug thread first, then create the process from within it
+    // This is required because debug events are delivered to the thread that creates the debugged process
+    launchPath = cmd;
     running = true;
     debugThread = std::thread(&WindowsBackend::debugLoop, this);
+    
+    // Wait a moment for the debug thread to create the process
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    
+    if (!attached) {
+        running = false;
+        if (debugThread.joinable()) debugThread.join();
+        return Status::Error;
+    }
+    
     if (log) log("(windows) launched " + path + " (pid=" + std::to_string(pid) + ")");
     return Status::Ok;
 }
@@ -101,10 +103,56 @@ Status WindowsBackend::detach() {
     return Status::Ok;
 }
 
+StopReason WindowsBackend::waitForEvent(StopReason reason, int timeout_ms) {
+    if (!attached) return StopReason::None;
+    
+    std::unique_lock<std::mutex> lock(stopMutex);
+    
+    if (timeout_ms == 0) {
+        // No wait - just check current state
+        if (stopped && (reason == StopReason::None || stopReason == reason)) {
+            return stopReason;
+        }
+        return StopReason::None;
+    } else if (timeout_ms < 0) {
+        // Infinite wait
+        stopCV.wait(lock, [this, reason]() {
+            return stopped && (reason == StopReason::None || stopReason == reason);
+        });
+        return stopReason;
+    } else {
+        // Timed wait
+        bool result = stopCV.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this, reason]() {
+            return stopped && (reason == StopReason::None || stopReason == reason);
+        });
+        return result ? stopReason : StopReason::None;
+    }
+}
+
 Status WindowsBackend::resume() {
     if (!attached) return Status::NotAttached;
-    // resume is a no-op from the API point - debug loop continues to process events
+    
+    // Signal the debug loop to continue
+    withStopLock([this]() {
+        continueRequested = true;
+        stopReason = StopReason::None;
+    });
+    stopCV.notify_all();
+    
     if (log) log("(windows) resume");
+    return Status::Ok;
+}
+
+Status WindowsBackend::suspend() {
+    if (!attached) return Status::NotAttached;
+    
+    // Use DebugBreakProcess to interrupt the running process
+    if (!DebugBreakProcess(processHandle)) {
+        if (log) log("(windows) suspend failed");
+        return Status::Error;
+    }
+    
+    if (log) log("(windows) suspend requested");
     return Status::Ok;
 }
 
@@ -112,18 +160,25 @@ Status WindowsBackend::step() {
     if (!attached) return Status::NotAttached;
 
     // Select a thread from the debuggee and set the trap flag so we get a single-step
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (hSnap == INVALID_HANDLE_VALUE) return Status::Error;
-
-    THREADENTRY32 te = {};
-    te.dwSize = sizeof(te);
     DWORD targetTid = 0;
-    if (Thread32First(hSnap, &te)) {
-        do {
-            if (te.th32OwnerProcessID == static_cast<DWORD>(pid)) { targetTid = te.th32ThreadID; break; }
-        } while (Thread32Next(hSnap, &te));
+    withStopLock([this, &targetTid]() {
+        targetTid = stopThreadId;
+    });
+    
+    if (targetTid == 0) {
+        // Find any thread if we don't have a stopped thread
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (hSnap == INVALID_HANDLE_VALUE) return Status::Error;
+
+        THREADENTRY32 te = {};
+        te.dwSize = sizeof(te);
+        if (Thread32First(hSnap, &te)) {
+            do {
+                if (te.th32OwnerProcessID == static_cast<DWORD>(pid)) { targetTid = te.th32ThreadID; break; }
+            } while (Thread32Next(hSnap, &te));
+        }
+        CloseHandle(hSnap);
     }
-    CloseHandle(hSnap);
 
     if (!targetTid) return Status::Error;
 
@@ -137,9 +192,14 @@ Status WindowsBackend::step() {
     // Set trap flag in EFlags/RFlags
     ctx.EFlags |= 0x100;
     if (!SetThreadContext(hThread, &ctx)) { CloseHandle(hThread); return Status::Error; }
-    // resume execution
-    ResumeThread(hThread);
+    
     CloseHandle(hThread);
+    
+    // Signal continue
+    withStopLock([this]() {
+        continueRequested = true;
+    });
+    stopCV.notify_all();
 
     if (log) log("(windows) step requested");
     return Status::Ok;
@@ -316,6 +376,37 @@ Status WindowsBackend::getRegisters(Registers &out) const {
 }
 
 void WindowsBackend::debugLoop() {
+    // If launchPath is set, create the process from this thread
+    if (!launchPath.empty()) {
+        STARTUPINFOA si = {};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION localPi = {};
+
+        // Extract working directory from the exe path
+        std::string workDir;
+        size_t lastSlash = launchPath.find_last_of("\\/");
+        if (lastSlash != std::string::npos) {
+            workDir = launchPath.substr(0, lastSlash);
+        }
+        const char* workDirPtr = workDir.empty() ? nullptr : workDir.c_str();
+
+        BOOL result = CreateProcessA(nullptr, const_cast<char*>(launchPath.c_str()), nullptr, nullptr, FALSE, DEBUG_ONLY_THIS_PROCESS, nullptr, workDirPtr, &si, &localPi);
+        if (!result) {
+            DWORD err = GetLastError();
+            if (log) log("(windows) CreateProcess failed, error=" + std::to_string(err));
+            running = false;
+            return;
+        }
+
+        pi = localPi;
+        processHandle = pi.hProcess;
+        pid = static_cast<int>(pi.dwProcessId);
+        attached = true;
+        memory.assign(64*1024, 0);
+        regs = Registers{};
+        launchPath.clear(); // Clear so we don't try to launch again
+    }
+    
     DEBUG_EVENT ev;
     while (running) {
         if (!WaitForDebugEvent(&ev, 500)) {
@@ -324,75 +415,118 @@ void WindowsBackend::debugLoop() {
             break;
         }
 
+        bool shouldContinue = false;
+        DWORD continueStatus = DBG_CONTINUE;
+
         switch (ev.dwDebugEventCode) {
         case EXCEPTION_DEBUG_EVENT:
-            handleExceptionEvent(ev);
+            shouldContinue = handleExceptionEvent(ev);
             break;
         case CREATE_PROCESS_DEBUG_EVENT:
-            handleCreateProcessEvent(ev);
+            shouldContinue = handleCreateProcessEvent(ev);
             break;
         case EXIT_PROCESS_DEBUG_EVENT:
             handleExitProcessEvent(ev);
+            shouldContinue = true;
             break;
         default:
             handleOtherDebugEvent(ev);
+            shouldContinue = true;
             break;
         }
 
-        ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, DBG_CONTINUE);
+        if (!shouldContinue) {
+            // Store the thread ID and stop - don't call ContinueDebugEvent yet
+            // stopReason and stopAddress are already set by the handler
+            withStopLock([this, &ev]() {
+                stopThreadId = ev.dwThreadId;
+                stopped = true;
+                // stopReason and stopAddress are already set by handlers
+            });
+            
+            // Notify anyone waiting for events
+            stopCV.notify_all();
+            
+            // Notify via callback if set
+            if (eventCallback) {
+                eventCallback(stopReason, stopAddress);
+            }
+            
+            // Wait until resume/step is called
+            std::unique_lock<std::mutex> lock(stopMutex);
+            stopCV.wait(lock, [this]() { return continueRequested || !running.load(); });
+            if (!running) break;
+            continueRequested = false;
+            stopped = false;
+        }
+        
+        ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, continueStatus);
     }
 }
 
-void WindowsBackend::handleExceptionEvent(const DEBUG_EVENT &ev) {
+bool WindowsBackend::handleExceptionEvent(const DEBUG_EVENT &ev) {
     const auto &ex = ev.u.Exception.ExceptionRecord;
     DWORD code = ex.ExceptionCode;
     uintptr_t addr = reinterpret_cast<uintptr_t>(ex.ExceptionAddress);
 
     if (code == EXCEPTION_BREAKPOINT) {
-        handleBreakpointEvent(ev, addr);
+        return handleBreakpointEvent(ev, addr);
     } else if (code == EXCEPTION_SINGLE_STEP) {
-        handleSingleStepEvent(ev);
+        return handleSingleStepEvent(ev);
     } else {
-        if (log) log(std::string("(windows) EXCEPTION event code=") + std::to_string(code));
+        // Other exceptions - stop for user to handle
+        stopReason = StopReason::Exception;
+        stopAddress = (Address)addr;
+        if (log) log(std::string("(windows) EXCEPTION event code=") + std::to_string(code) + " at 0x" + std::to_string(addr));
+        return false; // stop
     }
 }
 
-void WindowsBackend::handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr) {
+bool WindowsBackend::handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr) {
     std::lock_guard<std::mutex> g(bpMutex);
     auto it = bpOriginal.find((Address)addr);
-    if (it != bpOriginal.end()) {
-        // Restore original byte so the instruction can execute normally
-        uint8_t orig = it->second;
-        SIZE_T written = 0;
-        WriteProcessMemory(processHandle, (LPVOID)addr, &orig, 1, &written);
-        FlushInstructionCache(processHandle, (LPCVOID)addr, 1);
-
-        // record that this thread must re-insert the INT3 after single-step
-        pendingReinsert[ev.dwThreadId] = (Address)addr;
-
-        // set trap flag on the thread so we get a SINGLE_STEP after the next instruction
-        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, ev.dwThreadId);
-        if (hThread) {
-            CONTEXT ctx = {};
-            ctx.ContextFlags = CONTEXT_CONTROL;
-            if (GetThreadContext(hThread, &ctx)) {
-                ctx.EFlags |= 0x100; // set trap flag
-                SetThreadContext(hThread, &ctx);
-            }
-            CloseHandle(hThread);
-        }
-
-        if (log) log(std::string("(windows) BREAKPOINT handled at ") + std::to_string(addr) + " tid=" + std::to_string(ev.dwThreadId));
-    } else {
-        // Not our breakpoint (could be initial breakpoint from CreateProcess in debug mode) - ignore
-        if (log) log(std::string("(windows) BREAKPOINT (non-managed) at ") + std::to_string(addr));
+    if (it == bpOriginal.end()) {
+        // Not our breakpoint - this is likely the initial loader breakpoint
+        stopReason = StopReason::InitialBreakpoint;
+        stopAddress = (Address)addr;
+        if (log) log(std::string("(windows) BREAKPOINT (initial/system) at 0x") + std::to_string(addr));
+        return false; // stop on initial breakpoint
     }
+    
+    // Hit a user breakpoint - this is interesting, stop!
+    stopReason = StopReason::Breakpoint;
+    stopAddress = (Address)addr;
+    
+    // Restore original byte so the instruction can execute normally when resumed
+    uint8_t orig = it->second;
+    SIZE_T written = 0;
+    WriteProcessMemory(processHandle, (LPVOID)addr, &orig, 1, &written);
+    FlushInstructionCache(processHandle, (LPCVOID)addr, 1);
+
+    // record that this thread must re-insert the INT3 after single-step
+    pendingReinsert[ev.dwThreadId] = (Address)addr;
+
+    // set trap flag on the thread so we get a SINGLE_STEP after the next instruction
+    HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, ev.dwThreadId);
+    if (hThread) {
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (GetThreadContext(hThread, &ctx)) {
+            ctx.EFlags |= 0x100; // set trap flag
+            SetThreadContext(hThread, &ctx);
+        }
+        CloseHandle(hThread);
+    }
+
+    if (log) log(std::string("(windows) BREAKPOINT handled at ") + std::to_string(addr) + " tid=" + std::to_string(ev.dwThreadId));
+    return false; // stop on user breakpoint
 }
 
-void WindowsBackend::handleSingleStepEvent(const DEBUG_EVENT &ev) {
+bool WindowsBackend::handleSingleStepEvent(const DEBUG_EVENT &ev) {
     std::lock_guard<std::mutex> g(bpMutex);
     auto it = pendingReinsert.find(ev.dwThreadId);
     if (it != pendingReinsert.end()) {
+        // This is a single-step after a breakpoint - re-insert the INT3
         Address baddr = it->second;
         uint8_t int3 = 0xCC;
         SIZE_T written = 0;
@@ -400,14 +534,29 @@ void WindowsBackend::handleSingleStepEvent(const DEBUG_EVENT &ev) {
         FlushInstructionCache(processHandle, (LPCVOID)baddr, 1);
         pendingReinsert.erase(it);
         if (log) log(std::string("(windows) re-inserted INT3 at ") + std::to_string(baddr) + " for tid=" + std::to_string(ev.dwThreadId));
+        return true; // continue after re-inserting breakpoint
     } else {
-        // general single-step event
+        // User-requested single-step - stop here
+        stopReason = StopReason::SingleStep;
+        stopAddress = 0; // We'd need to get thread context to get exact address
         if (log) log(std::string("(windows) SINGLE_STEP event pid=") + std::to_string(ev.dwProcessId) + " tid=" + std::to_string(ev.dwThreadId));
+        return false; // stop on user single-step
     }
 }
 
-void WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
+bool WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
+    // Close the file handle provided by the system
+    if (ev.u.CreateProcessInfo.hFile) {
+        CloseHandle(ev.u.CreateProcessInfo.hFile);
+    }
+    // Don't close hProcess/hThread - we may need them or they may be the same as pi handles
+    
+    stopReason = StopReason::ProcessCreated;
+    stopAddress = 0;
     if (log) log(std::string("(windows) CREATE_PROCESS pid=") + std::to_string(ev.dwProcessId));
+    // Note: stopReason/stopAddress are set here but stopped flag is set in debugLoop
+    // This is OK because waitForEvent checks both stopped && stopReason
+    return false; // stop so client can perform setup
 }
 
 void WindowsBackend::handleExitProcessEvent(const DEBUG_EVENT &ev) {
