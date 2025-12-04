@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <windows.h>
 #include <thread>
-#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
@@ -13,7 +12,7 @@ namespace smalldbg {
 
 class WindowsBackend : public Backend {
 public:
-    WindowsBackend(Mode m, Arch a);
+    WindowsBackend(Debugger* dbg, Mode m, Arch a);
     ~WindowsBackend() override;
 
     Status attach(int pid) override;
@@ -21,7 +20,7 @@ public:
     Status detach() override;
 
     Status resume() override;
-    Status step() override;
+    Status step(Thread* thread) override;
     Status suspend() override;
 
     Status setBreakpoint(Address addr, const std::string &name) override;
@@ -30,7 +29,7 @@ public:
 
     Status readMemory(Address address, void *outBuf, size_t size) const override;
     Status writeMemory(Address address, const void *data, size_t size) override;
-    Status getRegisters(Registers &out) const override;
+    Status getRegisters(Thread* thread, Registers &out) const override;
     
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
@@ -39,13 +38,11 @@ public:
 
 private:
     // process/thread handles and debug loop
-    HANDLE processHandle{NULL};
     PROCESS_INFORMATION pi{};
     std::thread debugThread;
-    std::atomic<bool> running{false};
     bool attached{false};
-    int pid{-1};
     std::string launchPath; // Used to pass launch command to debug thread
+    bool running{false}; // Protected by stopMutex
     std::vector<uint8_t> memory;
     Registers regs{};
     std::vector<Breakpoint> bps;
@@ -58,6 +55,9 @@ private:
     Address stopAddress{0};
     DWORD stopThreadId{0};
     bool continueRequested{false};
+    
+    // Process attach/launch synchronization
+    HANDLE processAttachSem{NULL};
 
     std::mutex bpMutex;
     std::unordered_map<Address, uint8_t> bpOriginal;
@@ -66,12 +66,17 @@ private:
 
     // debug loop
     void debugLoop();
+    bool createProcessForDebug();
+    Status waitForProcessAttach();
     bool handleExceptionEvent(const DEBUG_EVENT &ev);
     bool handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr);
     bool handleSingleStepEvent(const DEBUG_EVENT &ev);
     bool handleCreateProcessEvent(const DEBUG_EVENT &ev);
+    void handleThreadCreatedEvent(const DEBUG_EVENT &ev);
     void handleExitProcessEvent(const DEBUG_EVENT &ev);
     void handleOtherDebugEvent(const DEBUG_EVENT &ev);
+    bool captureThreadContext(DWORD tid, CONTEXT &ctx) const;
+    Status contextToRegisters(const CONTEXT &ctx, Registers &out) const;
     
     // Helper to execute code under stopMutex protection
     template<typename Func>
@@ -81,7 +86,11 @@ private:
     }
 
     bool isAttached() const override { return attached; }
-    std::optional<int> attachedPid() const override { if (attached) return pid; return std::nullopt; }
+    std::optional<int> attachedPid() const override { if (attached) return static_cast<int>(pi.dwProcessId); return std::nullopt; }
+    std::shared_ptr<Process> getProcess() const override { return process; }
+
+private:
+    std::shared_ptr<Process> process;
 };
 
 } // namespace smalldbg
