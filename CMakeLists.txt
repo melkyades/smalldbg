@@ -6,7 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(smalldbg STATIC
     src/Debugger.cpp
+    src/Process.cpp
+    src/Thread.cpp
     src/backends/WindowsBackend.cpp
+    src/backends/PtraceBackend.cpp
     src/bindings/CAPI.cpp
 )
 
@@ -15,8 +18,11 @@ target_include_directories(smalldbg PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-add_executable(example src/main_example.cpp)
+add_executable(example examples/debugger_api.cpp)
 target_link_libraries(example PRIVATE smalldbg)
+
+add_executable(process_api examples/process_api.cpp)
+target_link_libraries(process_api PRIVATE smalldbg)
 
 add_executable(test_backend tests/test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
