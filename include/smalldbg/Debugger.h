@@ -5,10 +5,13 @@
 #include <functional>
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace smalldbg {
 
-struct Backend;
+class Backend;
+class Process;
+class Thread;
 
 class Debugger {
 public:
@@ -44,6 +47,11 @@ public:
     bool isAttached() const;
     std::optional<int> attachedPid() const;
 
+    // Process/Thread abstraction
+    std::shared_ptr<Process> getProcess();
+    std::shared_ptr<Thread> getCurrentThread();
+    void setCurrentThread(std::shared_ptr<Thread> thread);
+    
     // accessors provided by the backend implementation
     Status readMemory(Address address, void *outBuf, size_t size) const;
     Status writeMemory(Address address, const void *data, size_t size);
@@ -58,6 +66,7 @@ public:
 
 private:
     Backend *backend; // pointer to backend implementation
+    std::shared_ptr<Thread> selectedThread; // current thread
 };
 
 } // namespace smalldbg

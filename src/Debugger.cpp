@@ -1,101 +1,111 @@
 #include "smalldbg/Debugger.h"
+#include "smalldbg/Process.h"
+#include "smalldbg/Thread.h"
 #include <algorithm>
 #include <iostream>
+#include <sstream>
 
 #include "backends/Backend.h"
 #include "backends/WindowsBackend.h"
+#include "backends/PtraceBackend.h"
 
 namespace smalldbg {
 
 Debugger::Debugger(Mode m, Arch arch) : backend(nullptr) {
-    // Platform selection for backend - currently we only implement Windows
+    // Platform selection for backend
 #ifdef _WIN32
-    (void)arch; // arch may be used later
-    backend = new WindowsBackend(m, arch);
+    backend = new WindowsBackend(this, m, arch);
 #else
-    (void)m; (void)arch;
-    backend = nullptr; // unimplemented platform
+    backend = new PtraceBackend(this, m, arch);
 #endif
 }
 
 Debugger::~Debugger(){ delete backend; }
 
 Status Debugger::attach(int pid) {
-    if (!backend) return Status::Error;
     return backend->attach(pid);
 }
 
 Status Debugger::launch(const std::string &path, const std::vector<std::string> &args) {
-    if (!backend) return Status::Error;
     return backend->launch(path, args);
 }
 
 Status Debugger::detach() {
-    if (!backend) return Status::NotAttached;
-    return backend->detach();
+    auto status = backend->detach();
+    if (status == Status::Ok) {
+        selectedThread.reset();
+    }
+    return status;
 }
 
 Status Debugger::resume() {
-    if (!backend) return Status::NotAttached;
     return backend->resume();
 }
 
 Status Debugger::step() {
-    if (!backend) return Status::NotAttached;
-    return backend->step();
+    auto proc = backend->getProcess();
+    auto thread = selectedThread ? selectedThread : (proc ? proc->primaryThread() : nullptr);
+    return backend->step(thread.get());
 }
 
 Status Debugger::suspend() {
-    if (!backend) return Status::NotAttached;
     return backend->suspend();
 }
 
 Status Debugger::setBreakpoint(Address addr, const std::string &name) {
-    if (!backend) return Status::NotAttached;
     return backend->setBreakpoint(addr, name);
 }
 
 Status Debugger::clearBreakpoint(Address addr) {
-    if (!backend) return Status::NotAttached;
     return backend->clearBreakpoint(addr);
 }
 
 std::vector<Breakpoint> Debugger::listBreakpoints() const {
-    if (!backend) return {};
     return backend->listBreakpoints();
 }
 
 Status Debugger::readMemory(Address address, void *outBuf, size_t size) const {
-    if (!backend) return Status::NotAttached;
     return backend->readMemory(address, outBuf, size);
 }
 
 Status Debugger::writeMemory(Address address, const void *data, size_t size) {
-    if (!backend) return Status::NotAttached;
     return backend->writeMemory(address, data, size);
 }
 
 Status Debugger::getRegisters(Registers &out) const {
-    if (!backend) return Status::NotAttached;
-    return backend->getRegisters(out);
+    if (!backend->isStopped()) {
+        return Status::Error;
+    }
+    return backend->getRegisters(selectedThread.get(), out);
 }
 
-bool Debugger::isAttached() const { return backend && backend->isAttached(); }
+bool Debugger::isAttached() const { return backend->isAttached(); }
 
-std::optional<int> Debugger::attachedPid() const { return backend ? backend->attachedPid() : std::nullopt; }
+std::optional<int> Debugger::attachedPid() const { return backend->attachedPid(); }
 
-StopReason Debugger::getStopReason() const { return backend ? backend->getStopReason() : StopReason::None; }
+std::shared_ptr<Process> Debugger::getProcess() {
+    return backend->getProcess();
+}
 
-bool Debugger::isStopped() const { return backend && backend->isStopped(); }
+std::shared_ptr<Thread> Debugger::getCurrentThread() {
+    return selectedThread;
+}
 
-Address Debugger::getStopAddress() const { return backend ? backend->getStopAddress() : 0; }
+void Debugger::setCurrentThread(std::shared_ptr<Thread> thread) {
+    selectedThread = thread;
+}
 
-void Debugger::setLogCallback(std::function<void(const std::string &)> cb) { if (backend) backend->setLogCallback(std::move(cb)); }
+StopReason Debugger::getStopReason() const { return backend->getStopReason(); }
 
-void Debugger::setEventCallback(std::function<void(StopReason, Address)> cb) { if (backend) backend->setEventCallback(std::move(cb)); }
+bool Debugger::isStopped() const { return backend->isStopped(); }
+
+Address Debugger::getStopAddress() const { return backend->getStopAddress(); }
+
+void Debugger::setLogCallback(std::function<void(const std::string &)> cb) { backend->setLogCallback(std::move(cb)); }
+
+void Debugger::setEventCallback(std::function<void(StopReason, Address)> cb) { backend->setEventCallback(std::move(cb)); }
 
 StopReason Debugger::waitForEvent(StopReason reason, int timeout_ms) {
-    if (!backend) return StopReason::None;
     return backend->waitForEvent(reason, timeout_ms);
 }
 
