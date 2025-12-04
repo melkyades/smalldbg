@@ -47,11 +47,27 @@ int test_launch_and_attach(smalldbg::Debugger &dbg) {
 
 int test_register_access(smalldbg::Debugger &dbg) {
     std::cout << "\n=== Test 3: Register Access ===" << std::endl;
+    
+    // Get the current stop address (should be at InitialBreakpoint)
+    auto stopAddr = dbg.getStopAddress();
+    
     smalldbg::Registers r;
     auto s = dbg.getRegisters(r);
     TEST_ASSERT(s == smalldbg::Status::Ok, "Failed to get registers", 5);
     TEST_ASSERT(r.arch == smalldbg::Arch::X64, "Architecture mismatch", 6);
-    std::cout << "[INFO] RIP/PC: 0x" << std::hex << r.x64.rip << std::dec << std::endl;
+    
+    std::cout << "[INFO] RIP: 0x" << std::hex << r.x64.rip << std::dec << std::endl;
+    std::cout << "[INFO] Stop Address: 0x" << std::hex << stopAddr << std::dec << std::endl;
+    
+    // On Windows, RIP at initial breakpoint may be slightly past the exception address
+    // Check that they're close (within a few bytes)
+    int64_t diff = static_cast<int64_t>(r.x64.rip) - static_cast<int64_t>(stopAddr);
+    TEST_ASSERT(diff >= -8 && diff <= 8, "RIP should be close to stop address", 20);
+    
+    // Basic sanity checks: stack pointer should be non-zero and aligned
+    TEST_ASSERT(r.x64.rsp != 0, "RSP should be non-zero", 21);
+    TEST_ASSERT((r.x64.rsp & 0xF) == 0 || (r.x64.rsp & 0xF) == 8, "RSP should be 16-byte aligned (or 8-byte offset)", 22);
+    
     TEST_PASS("Register access successful");
     
     return 0;
