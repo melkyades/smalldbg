@@ -4,15 +4,19 @@
 #include <functional>
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace smalldbg {
 
 struct Breakpoint;
 struct Registers;
+class Process;
+class Thread;
+class Debugger;
 
 class Backend {
 public:
-    Backend(Mode m, Arch a) : mode(m), arch(a) {}
+    Backend(Debugger* dbg, Mode m, Arch a) : debugger(dbg), mode(m), arch(a) {}
     virtual ~Backend() = default;
 
     virtual Status attach(int pid) = 0;
@@ -20,7 +24,7 @@ public:
     virtual Status detach() = 0;
 
     virtual Status resume() = 0;
-    virtual Status step() = 0;
+    virtual Status step(Thread* thread) = 0;
     virtual Status suspend() = 0; // Interrupt running process
 
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
@@ -29,7 +33,7 @@ public:
 
     virtual Status readMemory(Address address, void *outBuf, size_t size) const = 0;
     virtual Status writeMemory(Address address, const void *data, size_t size) = 0;
-    virtual Status getRegisters(Registers &out) const = 0;
+    virtual Status getRegisters(Thread* thread, Registers &out) const = 0;
 
     virtual bool isAttached() const { return false; }
     virtual std::optional<int> attachedPid() const { return std::nullopt; }
@@ -45,12 +49,15 @@ public:
 
     void setLogCallback(std::function<void(const std::string &)> cb) { log = std::move(cb); }
     void setEventCallback(std::function<void(StopReason, Address)> cb) { eventCallback = std::move(cb); }
+    
+    virtual std::shared_ptr<Process> getProcess() const = 0;
 
 protected:
     Mode mode{Mode::External};
     Arch arch{Arch::X64};
     std::function<void(const std::string &)> log;
     std::function<void(StopReason, Address)> eventCallback;
+    Debugger* debugger{nullptr};
 };
 
 } // namespace smalldbg
