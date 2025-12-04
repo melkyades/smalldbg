@@ -18,7 +18,8 @@ enum class Status {
     Error,
     NotAttached,
     AlreadyAttached,
-    NotFound
+    NotFound,
+    NotSupported
 };
 
 enum class StopReason {
@@ -32,6 +33,7 @@ enum class StopReason {
 };
 
 using Address = uint64_t;
+using ThreadId = uint64_t;
 
 struct Breakpoint {
     Address addr{0};
