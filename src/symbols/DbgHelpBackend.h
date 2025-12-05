@@ -31,7 +31,7 @@ public:
     bool isInitialized() const override { return initialized; }
     
     // Called by backend when a module is loaded
-    void onModuleLoaded(HANDLE fileHandle, void* baseAddress, const std::string& imageName, DWORD imageSize);
+    void registerModule(HANDLE fileHandle, void* baseAddress, const std::string& imageName, DWORD imageSize);
 
 private:
     // CodeView debug info structure for PDB 7.0

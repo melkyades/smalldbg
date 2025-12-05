@@ -4,14 +4,35 @@ project(smalldbg VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Enable debug symbols for all build types
+if(MSVC)
+    add_compile_options(/Zi)
+    add_link_options(/DEBUG)
+endif()
+
 add_library(smalldbg STATIC
     src/Debugger.cpp
     src/Process.cpp
     src/Thread.cpp
+    src/SymbolProvider.cpp
+    src/StackTrace.cpp
     src/backends/WindowsBackend.cpp
     src/backends/PtraceBackend.cpp
     src/bindings/CAPI.cpp
 )
+
+# Platform-specific symbol provider sources
+if(WIN32)
+    target_sources(smalldbg PRIVATE
+        src/symbols/DbgHelpBackend.cpp
+        src/platform/windows/HttpDownload.cpp
+    )
+    target_link_libraries(smalldbg PRIVATE dbghelp)
+else()
+    target_sources(smalldbg PRIVATE
+        src/symbols/DwarfBackend.cpp
+    )
+endif()
 
 target_include_directories(smalldbg PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -23,6 +44,12 @@ target_link_libraries(example PRIVATE smalldbg)
 
 add_executable(process_api examples/process_api.cpp)
 target_link_libraries(process_api PRIVATE smalldbg)
+
+add_executable(symbols_example examples/symbols_example.cpp)
+target_link_libraries(symbols_example PRIVATE smalldbg)
+
+add_executable(stacktrace_example examples/stacktrace_example.cpp)
+target_link_libraries(stacktrace_example PRIVATE smalldbg)
 
 add_executable(test_backend tests/test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)

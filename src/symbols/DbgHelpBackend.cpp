@@ -287,7 +287,7 @@ void DbgHelpBackend::tryFetchPdbForModule(void* baseAddress, const std::string& 
     tryDownloadWithHTTP(pdbName, signature);
 }
 
-void DbgHelpBackend::onModuleLoaded(HANDLE fileHandle, void* baseAddress, const std::string& imageName, DWORD imageSize) {
+void DbgHelpBackend::registerModule(HANDLE fileHandle, void* baseAddress, const std::string& imageName, DWORD imageSize) {
     if (!initialized) {
         return;
     }

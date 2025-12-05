@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Types.h"
+#include "SymbolProvider.h"  // Need full definition for SymbolOptions default parameter
 #include <functional>
 #include <vector>
 #include <optional>
@@ -56,6 +57,7 @@ public:
     Status readMemory(Address address, void *outBuf, size_t size) const;
     Status writeMemory(Address address, const void *data, size_t size);
     Status getRegisters(Registers &out) const;
+    Status getRegisters(const Thread* thread, Registers &out) const;
 
     // Logging callback (simple) — optional
     void setLogCallback(std::function<void(const std::string &)> cb);
@@ -64,9 +66,16 @@ public:
     // Callback receives (reason, address) - address is relevant for breakpoints/exceptions
     void setEventCallback(std::function<void(StopReason, Address)> cb);
 
+    // Symbol support
+    SymbolProvider* getSymbolProvider();
+    Status setSymbolOptions(const SymbolOptions& options);  // Set options before process creation
+    
+    Backend* getBackend() const { return backend; }
+
 private:
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
+    std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
 };
 
 } // namespace smalldbg

@@ -1,6 +1,7 @@
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
+#include "smalldbg/SymbolProvider.h"
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -11,13 +12,16 @@
 
 namespace smalldbg {
 
-Debugger::Debugger(Mode m, Arch arch) : backend(nullptr) {
+Debugger::Debugger(Mode m, Arch arch) : backend(nullptr), symbolProvider(nullptr) {
     // Platform selection for backend
 #ifdef _WIN32
     backend = new WindowsBackend(this, m, arch);
 #else
     backend = new PtraceBackend(this, m, arch);
 #endif
+    
+    // Create symbol provider (backends will register their symbol backends)
+    symbolProvider = std::make_unique<SymbolProvider>(backend);
 }
 
 Debugger::~Debugger(){ delete backend; }
@@ -79,6 +83,10 @@ Status Debugger::getRegisters(Registers &out) const {
     return backend->getRegisters(selectedThread.get(), out);
 }
 
+Status Debugger::getRegisters(const Thread* thread, Registers &out) const {
+    return backend->getRegisters(const_cast<Thread*>(thread), out);
+}
+
 bool Debugger::isAttached() const { return backend->isAttached(); }
 
 std::optional<int> Debugger::attachedPid() const { return backend->attachedPid(); }
@@ -107,6 +115,15 @@ void Debugger::setEventCallback(std::function<void(StopReason, Address)> cb) { b
 
 StopReason Debugger::waitForEvent(StopReason reason, int timeout_ms) {
     return backend->waitForEvent(reason, timeout_ms);
+}
+
+SymbolProvider* Debugger::getSymbolProvider() {
+    return symbolProvider.get();
+}
+
+Status Debugger::setSymbolOptions(const SymbolOptions& options) {
+    symbolProvider->setOptions(options);
+    return Status::Ok;
 }
 
 } // namespace smalldbg

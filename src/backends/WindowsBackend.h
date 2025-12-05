@@ -7,8 +7,11 @@
 #include <thread>
 #include <mutex>
 #include <unordered_map>
+#include <memory>
 
 namespace smalldbg {
+
+class DbgHelpBackend;
 
 class WindowsBackend : public Backend {
 public:
@@ -35,6 +38,12 @@ public:
     bool isStopped() const override { return stopped; }
     Address getStopAddress() const override { return stopAddress; }
     StopReason waitForEvent(StopReason reason = StopReason::None, int timeout_ms = -1) override;
+    
+    // Platform-specific: Get process handle for DbgHelp
+    HANDLE getProcessHandle() const { return pi.hProcess; }
+    
+    // Get the DbgHelp backend (for module loading notifications)
+    DbgHelpBackend* getDbgHelpBackend() const { return dbgHelpBackend; }
 
 private:
     // process/thread handles and debug loop
@@ -42,9 +51,13 @@ private:
     std::thread debugThread;
     bool attached{false};
     std::string launchPath; // Used to pass launch command to debug thread
+    std::string exePath;    // Full path to the main executable
     bool running{false}; // Protected by stopMutex
     std::vector<uint8_t> memory;
     Registers regs{};
+    
+    // Symbol backend (owned by SymbolProvider, we just keep a pointer)
+    DbgHelpBackend* dbgHelpBackend{nullptr};
     std::vector<Breakpoint> bps;
     
     // stop state - all protected by stopMutex
@@ -74,6 +87,8 @@ private:
     bool handleCreateProcessEvent(const DEBUG_EVENT &ev);
     void handleThreadCreatedEvent(const DEBUG_EVENT &ev);
     void handleExitProcessEvent(const DEBUG_EVENT &ev);
+    void handleLoadDllEvent(const DEBUG_EVENT &ev);
+    void handleUnloadDllEvent(const DEBUG_EVENT &ev);
     void handleOtherDebugEvent(const DEBUG_EVENT &ev);
     bool captureThreadContext(DWORD tid, CONTEXT &ctx) const;
     Status contextToRegisters(const CONTEXT &ctx, Registers &out) const;

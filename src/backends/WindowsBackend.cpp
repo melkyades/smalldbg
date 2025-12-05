@@ -2,6 +2,7 @@
 #include "../../include/smalldbg/Process.h"
 #include "../../include/smalldbg/Thread.h"
 #include "../../include/smalldbg/Debugger.h"
+#include "../symbols/DbgHelpBackend.h"
 #include <algorithm>
 #include <cstring>
 #include <windows.h>
@@ -397,6 +398,7 @@ bool WindowsBackend::createProcessForDebug() {
     attached = true;
     memory.assign(64*1024, 0);
     regs = Registers{};
+    exePath = launchPath;  // Save the exe path before clearing
     launchPath.clear(); // Clear so we don't try to launch again
     return true;
 }
@@ -441,6 +443,14 @@ void WindowsBackend::debugLoop() {
             handleExitProcessEvent(ev);
             shouldContinue = true;
             break;
+        case LOAD_DLL_DEBUG_EVENT:
+            handleLoadDllEvent(ev);
+            shouldContinue = true;
+            break;
+        case UNLOAD_DLL_DEBUG_EVENT:
+            handleUnloadDllEvent(ev);
+            shouldContinue = true;
+            break;
         default:
             handleOtherDebugEvent(ev);
             shouldContinue = true;
@@ -457,7 +467,7 @@ void WindowsBackend::debugLoop() {
             });
             
             // Set selected thread on debugger
-            if (debugger && process) {
+            if (process) {
                 auto threadOpt = process->getThread(static_cast<ThreadId>(ev.dwThreadId));
                 if (threadOpt) {
                     debugger->setCurrentThread(*threadOpt);
@@ -567,18 +577,57 @@ bool WindowsBackend::handleSingleStepEvent(const DEBUG_EVENT &ev) {
 }
 
 bool WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
+    ThreadId mainThreadId = static_cast<ThreadId>(ev.dwThreadId);
+    if (log) log(std::string("(windows) CREATE_PROCESS pid=") + std::to_string(ev.dwProcessId) + " main_tid=" + std::to_string(mainThreadId));
+    
+    // Create Process object
+    process = std::make_shared<Process>(debugger, static_cast<int>(ev.dwProcessId));
+    process->registerThread(mainThreadId);
+    
+    // Create and initialize DbgHelp backend now that we have a process handle
+    auto dbgHelp = std::make_unique<DbgHelpBackend>();
+    dbgHelpBackend = dbgHelp.get();  // Keep raw pointer
+    
+    auto* symProvider = debugger->getSymbolProvider();
+    symProvider->addBackend(std::move(dbgHelp));  // Transfer ownership
+    
+    // Initialize the backend with current options
+    dbgHelpBackend->initialize(pi.hProcess, symProvider->getOptions());
+    
+    // Notify DbgHelp backend about the main executable
+    // Try to get exe name from the event, or use the launch path
+    std::string imageName;
+    char exeName[MAX_PATH] = {0};
+    if (ev.u.CreateProcessInfo.lpImageName) {
+        DWORD64 namePtr = 0;
+        ReadProcessMemory(pi.hProcess, ev.u.CreateProcessInfo.lpImageName, &namePtr, sizeof(namePtr), NULL);
+        
+        if (namePtr) {
+            if (ev.u.CreateProcessInfo.fUnicode) {
+                wchar_t wideName[MAX_PATH];
+                ReadProcessMemory(pi.hProcess, (LPCVOID)namePtr, wideName, sizeof(wideName), NULL);
+                WideCharToMultiByte(CP_UTF8, 0, wideName, -1, exeName, sizeof(exeName), NULL, NULL);
+            } else {
+                ReadProcessMemory(pi.hProcess, (LPCVOID)namePtr, exeName, sizeof(exeName), NULL);
+            }
+        }
+    }
+    
+    // If we didn't get a name from the event, use the saved exe path
+    imageName = (exeName[0] != '\0') ? std::string(exeName) : exePath;
+    
+    dbgHelpBackend->registerModule(
+        ev.u.CreateProcessInfo.hFile,
+        ev.u.CreateProcessInfo.lpBaseOfImage,
+        imageName,
+        0  // Size not provided - DbgHelp will figure it out
+    );
+    
     // Close the file handle provided by the system
     if (ev.u.CreateProcessInfo.hFile) {
         CloseHandle(ev.u.CreateProcessInfo.hFile);
     }
     // Don't close hProcess/hThread - we may need them or they may be the same as pi handles
-    
-    ThreadId mainThreadId = static_cast<ThreadId>(ev.dwThreadId);
-    if (log) log(std::string("(windows) CREATE_PROCESS pid=") + std::to_string(ev.dwProcessId) + " main_tid=" + std::to_string(mainThreadId));
-    
-    // Create Process object
-    process = std::make_shared<Process>(this, static_cast<int>(ev.dwProcessId));
-    process->registerThread(mainThreadId);
     
     // Signal that process has been created/attached
     ReleaseSemaphore(processAttachSem, 1, NULL);
@@ -609,9 +658,60 @@ void WindowsBackend::handleExitProcessEvent(const DEBUG_EVENT &ev) {
     attached = false;
 }
 
+void WindowsBackend::handleLoadDllEvent(const DEBUG_EVENT &ev) {
+    // Get DLL name if available
+    char dllName[MAX_PATH] = {0};
+    if (ev.u.LoadDll.lpImageName) {
+        // Read the pointer to the name string
+        DWORD64 namePtr = 0;
+        ReadProcessMemory(pi.hProcess, ev.u.LoadDll.lpImageName, &namePtr, sizeof(namePtr), NULL);
+        
+        if (namePtr) {
+            if (ev.u.LoadDll.fUnicode) {
+                wchar_t wideName[MAX_PATH];
+                ReadProcessMemory(pi.hProcess, (LPCVOID)namePtr, wideName, sizeof(wideName), NULL);
+                WideCharToMultiByte(CP_UTF8, 0, wideName, -1, dllName, sizeof(dllName), NULL, NULL);
+            } else {
+                ReadProcessMemory(pi.hProcess, (LPCVOID)namePtr, dllName, sizeof(dllName), NULL);
+            }
+        }
+    }
+    
+    if (log) {
+        std::string msg = "(windows) LOAD_DLL base=0x" + 
+                         std::to_string((uint64_t)ev.u.LoadDll.lpBaseOfDll);
+        if (dllName[0]) {
+            msg += " " + std::string(dllName);
+        }
+        log(msg);
+    }
+    
+    // Notify DbgHelp backend
+    dbgHelpBackend->registerModule(
+        ev.u.LoadDll.hFile,
+        ev.u.LoadDll.lpBaseOfDll,
+        dllName,
+        0  // Size not provided in event - DbgHelp will figure it out
+    );
+    
+    // Close the file handle
+    if (ev.u.LoadDll.hFile) {
+        CloseHandle(ev.u.LoadDll.hFile);
+    }
+}
+
+void WindowsBackend::handleUnloadDllEvent(const DEBUG_EVENT &ev) {
+    if (log) {
+        std::string msg = "(windows) UNLOAD_DLL base=0x" + 
+                         std::to_string((uint64_t)ev.u.UnloadDll.lpBaseOfDll);
+        log(msg);
+    }
+    
+    // TODO: Could notify symbol provider to unload module symbols
+}
+
 void WindowsBackend::handleOtherDebugEvent(const DEBUG_EVENT &ev) {
     (void)ev;
-    // other events: CREATE_THREAD, EXIT_THREAD, LOAD_DLL, UNLOAD_DLL, OUTPUT_DEBUG_STRING
 }
 
 // isAttached() and attachedPid() are implemented inline in the header
