@@ -1,15 +1,15 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
-#include "backends/Backend.h"
+#include "smalldbg/Debugger.h"
 
 namespace smalldbg {
 
-Process::Process(Backend* be, int p) 
-    : backend(be), pid(p), firstThread(nullptr) {
+Process::Process(Debugger* dbg, int p) 
+    : debugger(dbg), pid(p), firstThread(nullptr) {
 }
 
 void Process::registerThread(ThreadId tid) {
-    auto thread = std::make_shared<Thread>(backend, this, tid);
+    auto thread = std::make_shared<Thread>(this, tid);
     threadMap[tid] = thread;
     
     // First thread becomes primary
@@ -39,33 +39,27 @@ std::shared_ptr<Thread> Process::primaryThread() {
 }
 
 Status Process::readMemory(Address address, void* outBuf, size_t size) const {
-    if (!backend) return Status::NotAttached;
-    return backend->readMemory(address, outBuf, size);
+    return debugger->readMemory(address, outBuf, size);
 }
 
 Status Process::writeMemory(Address address, const void* data, size_t size) {
-    if (!backend) return Status::NotAttached;
-    return backend->writeMemory(address, data, size);
+    return debugger->writeMemory(address, data, size);
 }
 
 bool Process::isAttached() const {
-    if (!backend) return false;
-    return backend->isAttached();
+    return debugger->isAttached();
 }
 
 StopReason Process::getStopReason() const {
-    if (!backend) return StopReason::None;
-    return backend->getStopReason();
+    return debugger->getStopReason();
 }
 
 bool Process::isStopped() const {
-    if (!backend) return false;
-    return backend->isStopped();
+    return debugger->isStopped();
 }
 
 Address Process::getStopAddress() const {
-    if (!backend) return 0;
-    return backend->getStopAddress();
+    return debugger->getStopAddress();
 }
 
 } // namespace smalldbg

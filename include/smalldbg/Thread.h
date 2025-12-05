@@ -3,20 +3,25 @@
 
 #include "Types.h"
 #include <memory>
+#include <vector>
 
 namespace smalldbg {
 
-class Backend;
 class Process;
+class StackTrace;
+class SymbolProvider;
+class Debugger;
 
 class Thread {
 public:
-    Thread(Backend* be, Process* proc, ThreadId tid);
+    Thread(Process* proc, ThreadId tid);
     ~Thread() = default;
 
     // Thread identification
     ThreadId getThreadId() const { return threadId; }
     Process* getProcess() const { return process; }
+    Debugger* getDebugger() const;
+    SymbolProvider* getSymbolProvider() const;
     
     // Register access
     Status getRegisters(Registers& out) const;
@@ -26,8 +31,10 @@ public:
     Address getStackPointer() const;
     Address getFramePointer() const;
 
+    // Stack trace - returns nullptr on failure
+    StackTrace* getStackTrace(size_t maxFrames = 64) const;
+
 private:
-    Backend* backend;
     Process* process;
     ThreadId threadId;
 };

@@ -1,16 +1,21 @@
 #include "smalldbg/Thread.h"
 #include "smalldbg/Process.h"
-#include "backends/Backend.h"
+#include "smalldbg/Debugger.h"
+#include "smalldbg/StackTrace.h"
+#include "smalldbg/SymbolProvider.h"
 
 namespace smalldbg {
 
-Thread::Thread(Backend* be, Process* proc, ThreadId tid)
-    : backend(be), process(proc), threadId(tid) {
+Thread::Thread(Process* proc, ThreadId tid)
+    : process(proc), threadId(tid) {
+}
+
+Debugger* Thread::getDebugger() const {
+    return process->getDebugger();
 }
 
 Status Thread::getRegisters(Registers& out) const {
-    if (!backend) return Status::NotAttached;
-    return backend->getRegisters(const_cast<Thread*>(this), out);
+    return getDebugger()->getRegisters(this, out);
 }
 
 Address Thread::getInstructionPointer() const {
@@ -50,6 +55,23 @@ Address Thread::getFramePointer() const {
     }
     
     return 0;
+}
+
+SymbolProvider* Thread::getSymbolProvider() const {
+    return getDebugger()->getSymbolProvider();
+}
+
+StackTrace* Thread::getStackTrace(size_t maxFrames) const {
+    // Create a stack trace and unwind
+    StackTrace* stackTrace = new StackTrace(this);
+    Status status = stackTrace->unwind(maxFrames);
+    
+    if (status != Status::Ok) {
+        delete stackTrace;
+        return nullptr;
+    }
+    
+    return stackTrace;
 }
 
 } // namespace smalldbg

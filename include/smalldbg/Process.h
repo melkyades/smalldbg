@@ -9,12 +9,12 @@
 
 namespace smalldbg {
 
-class Backend;
 class Thread;
+class Debugger;
 
 class Process {
 public:
-    Process(Backend* be, int pid);
+    Process(Debugger* dbg, int pid);
     ~Process() = default;
 
     // Process identification
@@ -34,13 +34,14 @@ public:
     StopReason getStopReason() const;
     bool isStopped() const;
     Address getStopAddress() const;
+    
+    Debugger* getDebugger() const { return debugger; }
 
     // Internal: called by backend when thread is created
     void registerThread(ThreadId tid);
 
 private:
-    friend class Debugger;
-    Backend* backend;
+    Debugger* debugger{nullptr};
     int pid;
     std::map<ThreadId, std::shared_ptr<Thread>> threadMap;
     std::shared_ptr<Thread> firstThread;
