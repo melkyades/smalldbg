@@ -26,6 +26,7 @@ public:
     Status readMemory(Address address, void *outBuf, size_t size) const override;
     Status writeMemory(Address address, const void *data, size_t size) override;
     Status getRegisters(Thread* thread, Registers &out) const override;
+    Status recoverCallerRegisters(Registers& regs) const override;
     
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }

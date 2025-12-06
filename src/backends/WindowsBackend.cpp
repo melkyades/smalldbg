@@ -374,6 +374,94 @@ Status WindowsBackend::contextToRegisters(const CONTEXT &ctx, Registers &out) co
         return Status::Error;
     }
 
+Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
+    if (arch != Arch::X64) {
+        // Only X64 supported for now
+        return Status::Error;
+    }
+    
+    // Use RtlLookupFunctionEntry and RtlVirtualUnwind
+    // to properly restore all registers using .pdata unwind information
+    
+    DWORD64 imageBase = 0;
+    PRUNTIME_FUNCTION func = RtlLookupFunctionEntry(regs.x64.rip, &imageBase, NULL);
+    
+    if (!func) {
+        // No unwind info available - likely a leaf function or no .pdata
+        return Status::Error;
+    }
+    
+    // Save original RIP to detect if unwinding actually changed anything
+    Address originalRip = regs.x64.rip;
+    
+    // Set up CONTEXT structure with current register values
+    CONTEXT context = {};
+    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    context.Rip = regs.x64.rip;
+    context.Rsp = regs.x64.rsp;
+    context.Rbp = regs.x64.rbp;
+    context.Rax = regs.x64.rax;
+    context.Rbx = regs.x64.rbx;
+    context.Rcx = regs.x64.rcx;
+    context.Rdx = regs.x64.rdx;
+    context.Rsi = regs.x64.rsi;
+    context.Rdi = regs.x64.rdi;
+    context.R8 = regs.x64.r8;
+    context.R9 = regs.x64.r9;
+    context.R10 = regs.x64.r10;
+    context.R11 = regs.x64.r11;
+    context.R12 = regs.x64.r12;
+    context.R13 = regs.x64.r13;
+    context.R14 = regs.x64.r14;
+    context.R15 = regs.x64.r15;
+    context.EFlags = static_cast<DWORD>(regs.x64.rflags);
+    
+    // Perform virtual unwind
+    PVOID handlerData = NULL;
+    DWORD64 establisherFrame = 0;
+    
+    __try {
+        RtlVirtualUnwind(
+            UNW_FLAG_NHANDLER,      // We don't need exception handler info
+            imageBase,
+            context.Rip,
+            func,
+            &context,
+            &handlerData,
+            &establisherFrame,
+            NULL
+        );
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        // Virtual unwind failed
+        return Status::Error;
+    }
+    
+    // Check if unwinding actually did something (RIP should have changed)
+    if (context.Rip == 0 || context.Rip == originalRip) {
+        // Unwinding failed or didn't progress
+        return Status::Error;
+    }
+    
+    // Update our register structure with unwound values
+    // Note: RtlVirtualUnwind restores callee-saved registers and updates
+    // RIP/RSP to point to the caller's context
+    regs.x64.rip = context.Rip;
+    regs.x64.rsp = context.Rsp;
+    regs.x64.rbp = context.Rbp;
+    regs.x64.rbx = context.Rbx;
+    regs.x64.rsi = context.Rsi;
+    regs.x64.rdi = context.Rdi;
+    regs.x64.r12 = context.R12;
+    regs.x64.r13 = context.R13;
+    regs.x64.r14 = context.R14;
+    regs.x64.r15 = context.R15;
+    
+    // Note: Volatile registers (rax, rcx, rdx, r8-r11) are NOT restored
+    // as they are caller-saved and may not be preserved across calls
+    
+    return Status::Ok;
+}
+
 bool WindowsBackend::createProcessForDebug() {
     STARTUPINFOA si = {};
     si.cb = sizeof(si);
@@ -427,6 +515,23 @@ void WindowsBackend::debugLoop() {
 
         bool shouldContinue = false;
         DWORD continueStatus = DBG_CONTINUE;
+        
+        // Log all events with their type codes
+        const char* eventName = "UNKNOWN";
+        switch (ev.dwDebugEventCode) {
+        case EXCEPTION_DEBUG_EVENT: eventName = "EXCEPTION"; break;
+        case CREATE_THREAD_DEBUG_EVENT: eventName = "CREATE_THREAD"; break;
+        case CREATE_PROCESS_DEBUG_EVENT: eventName = "CREATE_PROCESS"; break;
+        case EXIT_THREAD_DEBUG_EVENT: eventName = "EXIT_THREAD"; break;
+        case EXIT_PROCESS_DEBUG_EVENT: eventName = "EXIT_PROCESS"; break;
+        case LOAD_DLL_DEBUG_EVENT: eventName = "LOAD_DLL"; break;
+        case UNLOAD_DLL_DEBUG_EVENT: eventName = "UNLOAD_DLL"; break;
+        case OUTPUT_DEBUG_STRING_EVENT: eventName = "OUTPUT_DEBUG_STRING"; break;
+        case RIP_EVENT: eventName = "RIP"; break;
+        }
+        if (log) {
+            log(std::string("(windows) event=") + eventName + " code=" + std::to_string(ev.dwDebugEventCode) + " tid=" + std::to_string(ev.dwThreadId));
+        }
 
         switch (ev.dwDebugEventCode) {
         case EXCEPTION_DEBUG_EVENT:
@@ -492,6 +597,9 @@ void WindowsBackend::debugLoop() {
             stopped = false;
         }
         
+        static std::atomic<int> continueCounter{0};
+        int continueId = ++continueCounter;
+        if (log) log("(windows) ContinueDebugEvent #" + std::to_string(continueId) + " pid=" + std::to_string(ev.dwProcessId) + " tid=" + std::to_string(ev.dwThreadId) + " status=" + std::to_string(continueStatus));
         ContinueDebugEvent(ev.dwProcessId, ev.dwThreadId, continueStatus);
     }
 }
@@ -518,11 +626,20 @@ bool WindowsBackend::handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr
     std::lock_guard<std::mutex> g(bpMutex);
     auto it = bpOriginal.find((Address)addr);
     if (it == bpOriginal.end()) {
-        // Not our breakpoint - this is likely the initial loader breakpoint
-        stopReason = StopReason::InitialBreakpoint;
-        stopAddress = (Address)addr;
-        if (log) log(std::string("(windows) BREAKPOINT (initial/system) at 0x") + std::to_string(addr));
-        return false; // stop on initial breakpoint
+        // Not our breakpoint - check if this is the initial loader breakpoint
+        if (!seenInitialBreakpoint) {
+            seenInitialBreakpoint = true;
+            stopReason = StopReason::InitialBreakpoint;
+            stopAddress = (Address)addr;
+            if (log) log(std::string("(windows) BREAKPOINT (initial/loader) at 0x") + std::to_string(addr));
+            return false; // stop on initial breakpoint
+        } else {
+            // Unknown system breakpoint after initialization
+            stopReason = StopReason::Breakpoint;
+            stopAddress = (Address)addr;
+            if (log) log(std::string("(windows) BREAKPOINT (system/unknown) at 0x") + std::to_string(addr));
+            return false; // stop on system breakpoint
+        }
     }
     
     // Hit a user breakpoint - this is interesting, stop!
@@ -711,7 +828,7 @@ void WindowsBackend::handleUnloadDllEvent(const DEBUG_EVENT &ev) {
 }
 
 void WindowsBackend::handleOtherDebugEvent(const DEBUG_EVENT &ev) {
-    (void)ev;
+    if (log) log("(windows) DEBUG_EVENT code=" + std::to_string(ev.dwDebugEventCode) + " pid=" + std::to_string(ev.dwProcessId) + " tid=" + std::to_string(ev.dwThreadId));
 }
 
 // isAttached() and attachedPid() are implemented inline in the header

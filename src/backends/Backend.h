@@ -34,6 +34,10 @@ public:
     virtual Status readMemory(Address address, void *outBuf, size_t size) const = 0;
     virtual Status writeMemory(Address address, const void *data, size_t size) = 0;
     virtual Status getRegisters(Thread* thread, Registers &out) const = 0;
+    
+    // Stack unwinding: restore caller's register state from current frame
+    // Returns Status::Ok if successful, Status::Error if no unwind info available
+    virtual Status recoverCallerRegisters(Registers& regs) const = 0;
 
     virtual bool isAttached() const { return false; }
     virtual std::optional<int> attachedPid() const { return std::nullopt; }

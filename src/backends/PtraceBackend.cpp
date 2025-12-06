@@ -91,6 +91,12 @@ Status PtraceBackend::getRegisters(Thread* thread, Registers &out) const {
     return Status::Error;
 }
 
+Status PtraceBackend::recoverCallerRegisters(Registers& regs) const {
+    // TODO: implement DWARF-based register restoration
+    (void)regs;
+    return Status::Error;
+}
+
 StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
     // TODO: implement ptrace event wait
     (void)reason;
