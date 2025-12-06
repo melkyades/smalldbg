@@ -4,6 +4,7 @@
 #include "Types.h"
 #include <string>
 #include <optional>
+#include <vector>
 
 namespace smalldbg {
 
@@ -11,6 +12,8 @@ namespace smalldbg {
 struct Symbol;
 struct SourceLocation;
 struct SymbolOptions;
+struct LocalVariable;
+struct StackFrame;
 
 // Abstract interface for symbol backends (DbgHelp, DWARF, user-defined, etc.)
 class SymbolBackend {
@@ -30,6 +33,10 @@ public:
     
     // Source/line information
     virtual std::optional<SourceLocation> getSourceLocation(Address addr) = 0;
+    
+    // Local variables at a given address (within a function)
+    // Populates frame->localVariables directly
+    virtual void getLocalVariables(StackFrame* frame) = 0;
     
     // Status
     virtual bool isInitialized() const = 0;

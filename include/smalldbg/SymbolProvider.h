@@ -70,6 +70,9 @@ public:
     // Source/line information
     std::optional<SourceLocation> getSourceLocation(Address addr);
     std::optional<Address> getAddressFromLine(const std::string& filename, uint32_t line);
+    
+    // Local variables - populates frame->localVariables directly
+    void getLocalVariables(StackFrame* frame);
 
 private:
     Backend* backend;
