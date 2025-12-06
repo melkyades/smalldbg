@@ -1,4 +1,5 @@
 #include "smalldbg/SymbolProvider.h"
+#include "smalldbg/StackTrace.h"
 #include "backends/Backend.h"
 
 namespace smalldbg {
@@ -74,6 +75,17 @@ std::optional<Address> SymbolProvider::getAddressFromLine(const std::string& fil
     (void)filename;
     (void)line;
     return std::nullopt;
+}
+
+void SymbolProvider::getLocalVariables(StackFrame* frame) {
+    // Try backends in priority order, stop at first that populates variables
+    for (auto& backend : backends) {
+        size_t beforeCount = frame->localVariables.size();
+        backend->getLocalVariables(frame);
+        if (frame->localVariables.size() > beforeCount) {
+            return;  // Backend populated variables, we're done
+        }
+    }
 }
 
 } // namespace smalldbg

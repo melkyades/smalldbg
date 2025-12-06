@@ -27,6 +27,9 @@ public:
     // Source/line information
     std::optional<SourceLocation> getSourceLocation(Address addr) override;
     
+    // Local variables - populates frame->localVariables directly
+    void getLocalVariables(StackFrame* frame) override;
+    
     // Status
     bool isInitialized() const override { return initialized; }
     

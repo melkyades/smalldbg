@@ -1,12 +1,33 @@
 #include "DbgHelpBackend.h"
 #include "../platform/windows/HttpDownload.h"
+#include "smalldbg/StackTrace.h"
 #include <DbgHelp.h>
 #include <Psapi.h>
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include <set>
 
 #pragma comment(lib, "dbghelp.lib")
+
+// CV_AMD64 register constants (from cvconst.h in DIA SDK)
+#ifndef CV_AMD64_RBP
+#define CV_AMD64_RBP 333
+#endif
+#ifndef CV_AMD64_EBP
+#define CV_AMD64_EBP 22
+#endif
+#ifndef CV_AMD64_RSP
+#define CV_AMD64_RSP 332
+#endif
+#ifndef CV_AMD64_ESP
+#define CV_AMD64_ESP 21
+#endif
+
+// Symbol tags
+#ifndef SymTagData
+#define SymTagData 7
+#endif
 
 namespace smalldbg {
 
@@ -163,7 +184,7 @@ bool DbgHelpBackend::tryDownloadWithSymFindFile(const CV_INFO_PDB70* cvInfo) {
     std::string pdbDir = pdbFilePath.parent_path().string();
     addPdbDirectoryToSearchPath(pdbDir);
     
-    fprintf(stderr, "  Successfully loaded symbols from cache\n");
+    fprintf(stderr, "  Found in cache: %s\n", pdbPath);
     fflush(stderr);
     return true;
 }
@@ -192,7 +213,7 @@ bool DbgHelpBackend::tryDownloadWithHTTP(const char* pdbName, const char* signat
     std::string pdbDir = pdbFilePath.parent_path().string();
     addPdbDirectoryToSearchPath(pdbDir);
     
-    fprintf(stderr, "  Downloaded and cached symbols\n");
+    fprintf(stderr, "  Downloaded to: %s\n", localPath);
     fflush(stderr);
     return true;
 }
@@ -275,7 +296,14 @@ void DbgHelpBackend::tryFetchPdbForModule(void* baseAddress, const std::string& 
     // Extract PDB filename
     const char* pdbName = extractPdbFileName(cvInfo->PdbFileName);
     
+    // Build expected cache path
+    char cachePath[MAX_PATH];
+    sprintf_s(cachePath, sizeof(cachePath), "%s\\%s\\%s",
+            symbolOptions.cacheDirectory.c_str(),
+            pdbName, signature);
+    
     fprintf(stderr, "Downloading symbols for %s...\n", imageName.c_str());
+    fprintf(stderr, "  Cache path: %s\n", cachePath);
     fflush(stderr);
     
     // Try SymFindFileInPath first (checks cache)
@@ -415,6 +443,132 @@ std::optional<SourceLocation> DbgHelpBackend::getSourceLocation(Address addr) {
     loc.address = line.Address;
     
     return loc;
+}
+
+// Helper struct for symbol enumeration context
+struct EnumSymbolContext {
+    StackFrame* frame;
+    HANDLE proc;
+    std::set<std::string> seen;  // Track variable names to avoid duplicates
+};
+
+// Process a single symbol during enumeration
+static BOOL CALLBACK processLocalSymbol(PSYMBOL_INFO pSymInfo, ULONG SymbolSize, PVOID UserContext) {
+    EnumSymbolContext* ctx = static_cast<EnumSymbolContext*>(UserContext);
+    
+    // Only interested in local variables and parameters
+    if (pSymInfo->Tag != SymTagData) {
+        return TRUE;  // Continue enumeration
+    }
+    
+    // Skip if size is unreasonably large or zero (likely corrupt/invalid data)
+    if (pSymInfo->Size == 0 || pSymInfo->Size > 8192) {
+        return TRUE;
+    }
+    
+    // Skip duplicates
+    std::string varName = pSymInfo->Name;
+    if (ctx->seen.count(varName) > 0) {
+        return TRUE;
+    }
+    ctx->seen.insert(varName);
+    
+    LocalVariable var;
+    var.name = pSymInfo->Name;
+    var.frame = ctx->frame;  // Frame pointer is stable (no copy)
+    
+    // Get type information
+    DWORD typeId = pSymInfo->TypeIndex;
+    if (typeId != 0) {
+        // Get actual type size
+        ULONG64 typeSize = 0;
+        if (SymGetTypeInfo(ctx->proc, pSymInfo->ModBase, typeId, TI_GET_LENGTH, &typeSize)) {
+            var.size = static_cast<size_t>(typeSize);
+        } else {
+            var.size = pSymInfo->Size;  // Fallback to Size field
+        }
+        
+        // Get type name
+        WCHAR* typeName = nullptr;
+        if (SymGetTypeInfo(ctx->proc, pSymInfo->ModBase, typeId, TI_GET_SYMNAME, &typeName)) {
+            if (typeName) {
+                // Convert from wide string
+                int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, typeName, -1, NULL, 0, NULL, NULL);
+                if (sizeNeeded > 0) {
+                    std::string typeStr(sizeNeeded, 0);
+                    WideCharToMultiByte(CP_UTF8, 0, typeName, -1, &typeStr[0], sizeNeeded, NULL, NULL);
+                    var.typeName = typeStr.c_str();  // Remove null terminator
+                }
+                LocalFree(typeName);
+            }
+        }
+    } else {
+        var.size = pSymInfo->Size;  // Fallback if no type index
+    }
+    
+    // Determine variable location based on flags
+    if (pSymInfo->Flags & SYMFLAG_REGISTER) {
+        var.locationType = VariableLocation::Register;
+        var.offset = pSymInfo->Register;
+    } else if (pSymInfo->Flags & SYMFLAG_REGREL) {
+        // Register-relative (typically rbp-relative or rsp-relative)
+        // pSymInfo->Address contains a SIGNED offset from the register
+        int32_t signedOffset = static_cast<int32_t>(static_cast<uint32_t>(pSymInfo->Address));
+        
+        if (pSymInfo->Register == CV_AMD64_RBP || pSymInfo->Register == CV_AMD64_EBP) {
+            var.locationType = VariableLocation::FrameRelative;
+        } else if (pSymInfo->Register == CV_AMD64_RSP || pSymInfo->Register == CV_AMD64_ESP) {
+            var.locationType = VariableLocation::StackRelative;
+        } else {
+            var.locationType = VariableLocation::Unknown;
+        }
+        var.offset = signedOffset;
+    } else if (pSymInfo->Flags & SYMFLAG_FRAMEREL) {
+        var.locationType = VariableLocation::FrameRelative;
+        int32_t signedOffset = static_cast<int32_t>(static_cast<uint32_t>(pSymInfo->Address));
+        var.offset = signedOffset;
+    } else if (pSymInfo->Address != 0) {
+        // Absolute address (only if non-zero)
+        var.locationType = VariableLocation::Memory;
+        var.address = pSymInfo->Address;
+    } else {
+        // No valid location information
+        var.locationType = VariableLocation::Unknown;
+    }
+    
+    ctx->frame->localVariables.push_back(var);
+    return TRUE;  // Continue enumeration
+}
+
+void DbgHelpBackend::getLocalVariables(StackFrame* frame) {
+    if (!initialized) {
+        return;
+    }
+    
+    Address addr = frame->ip();
+    
+    // First, find the function containing this address
+    SYMBOL_INFO_PACKAGE sip = {};
+    sip.si.SizeOfStruct = sizeof(SYMBOL_INFO);
+    sip.si.MaxNameLen = sizeof(sip.name);
+    
+    DWORD64 displacement = 0;
+    if (!SymFromAddr(processHandle, addr, &displacement, &sip.si)) {
+        return;
+    }
+    
+    // Setup enumeration context
+    EnumSymbolContext ctx;
+    ctx.frame = frame;
+    ctx.proc = processHandle;
+    
+    // Enumerate symbols (locals and parameters) within this function
+    IMAGEHLP_STACK_FRAME stackFrame = {};
+    stackFrame.InstructionOffset = addr;
+    SymSetContext(processHandle, &stackFrame, nullptr);
+    
+    // Enumerate symbols in the current context
+    SymEnumSymbols(processHandle, 0, nullptr, processLocalSymbol, &ctx);
 }
 
 } // namespace smalldbg
