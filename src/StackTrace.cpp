@@ -1,5 +1,6 @@
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/SymbolProvider.h"
+#include "smalldbg/Unwinder.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Debugger.h"
@@ -23,42 +24,49 @@ Status StackTrace::unwind(size_t maxFrames) {
 
     // Get initial register context
     Registers regs;
-    Status status = debugger->getRegisters(regs);
+    Status status = debugger->getRegisters(thread, regs);
     if (status != Status::Ok) {
         return status;
     }
 
-    // Extract x64 registers (assuming X64 for now - simple case)
-    Address ip = regs.x64.rip;
-    Address bp = regs.x64.rbp;
-    Address sp = regs.x64.rsp;
-    
-    // Walk the stack using frame pointers
-    // This is the simple case - assumes frame pointers are used (-fno-omit-frame-pointer)
-    while (frames.size() < maxFrames && processFrame(ip, bp, sp, debugger, symbols)) {
-        // Continue unwinding
+    // Walk the stack using frame pointers and restore registers at each frame
+    // This assumes frame pointers are used (-fno-omit-frame-pointer)
+    while (frames.size() < maxFrames && regs.x64.rip != 0 && regs.x64.rbp != 0) {
+        // Create the frame
+        auto frame = std::make_unique<StackFrame>();
+        frame->registers = regs;
+        frame->hasRegisters = true;
+        frame->thread = thread;
+        
+        // Let processFrame enrich the frame with symbols, source info, etc.
+        if (!processFrame(*frame, symbols)) {
+            break;
+        }
+        
+        // Add to collection (frame pointer remains stable in vector)
+        frames.push_back(std::move(frame));
+        
+        // Recover caller's register state
+        if (!recoverCallerRegisters(regs, debugger)) {
+            break;
+        }
     }
     
     return Status::Ok;
 }
 
-bool StackTrace::processFrame(Address& ip, Address& bp, Address& sp,
-                              Debugger* debugger, SymbolProvider* symbols) {
-    if (ip == 0) {
+bool StackTrace::processFrame(StackFrame& frame, SymbolProvider* symbols) {
+    // Validate frame
+    if (frame.ip() == 0 || frame.fp() == 0) {
         return false;
     }
     
-    StackFrame frame;
-    frame.instructionPointer = ip;
-    frame.framePointer = bp;
-    frame.stackPointer = sp;
-    
     // Try to resolve symbol information
-    auto symbol = symbols->getSymbolByAddress(ip);
+    auto symbol = symbols->getSymbolByAddress(frame.ip());
     if (symbol) {
         frame.functionName = symbol->name;
         frame.moduleName = symbol->moduleName;
-        frame.functionOffset = ip - symbol->address;
+        frame.functionOffset = frame.ip() - symbol->address;
     } else {
         frame.functionName = "<unknown>";
         frame.moduleName = "<unknown>";
@@ -66,18 +74,44 @@ bool StackTrace::processFrame(Address& ip, Address& bp, Address& sp,
     }
     
     // Try to get source location
-    auto location = symbols->getSourceLocation(ip);
+    auto location = symbols->getSourceLocation(frame.ip());
     if (location) {
         frame.sourceFile = location->filename;
         frame.sourceLine = location->line;
     }
     
-    frames.push_back(frame);
+    // Get local variables for this frame (populates frame.localVariables directly)
+    symbols->getLocalVariables(&frame);
     
-    // Check if we've reached the end
-    if (bp == 0) {
-        return false;
+    return true;
+}
+
+bool StackTrace::recoverCallerRegisters(Registers& regs, Debugger* debugger) {
+    // Try registered unwinders first (e.g., custom unwinders for VM frames)
+    const auto& unwinders = debugger->getUnwinders();
+    for (const auto& unwinder : unwinders) {
+        if (unwinder->canUnwind(regs.x64.rip, debugger)) {
+            Status status = unwinder->unwind(regs, debugger);
+            if (status == Status::Ok) {
+                return true;
+            }
+        }
     }
+    
+    // Try to use platform-specific unwinding (Windows .pdata or DWARF)
+    Status status = debugger->recoverCallerRegisters(regs);
+    
+    if (status == Status::Ok) {
+        // Backend successfully unwound using platform-specific info
+        return true;
+    }
+    
+    // Fallback to manual unwinding
+    return manualUnwind(regs, debugger);
+}
+
+bool StackTrace::manualUnwind(Registers& regs, Debugger* debugger) {
+    Address bp = regs.x64.rbp;
     
     // Read the next frame pointer and return address from the stack
     // Stack layout (x64):
@@ -105,10 +139,11 @@ bool StackTrace::processFrame(Address& ip, Address& bp, Address& sp,
         return false;
     }
     
-    // Move to next frame
-    ip = nextIp;
-    sp = bp + 16; // Approximate - past saved BP and return address
-    bp = nextBp;
+    // Update register values to reflect the unwound state (manual fallback)
+    regs.x64.rip = nextIp;
+    regs.x64.rbp = nextBp;
+    regs.x64.rsp = nextBp + 16; // Approximate - past saved BP and return address
+    // Note: Other registers are NOT restored in manual mode
     
     return true;
 }
