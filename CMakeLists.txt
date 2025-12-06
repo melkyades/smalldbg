@@ -51,6 +51,9 @@ target_link_libraries(symbols_example PRIVATE smalldbg)
 add_executable(stacktrace_example examples/stacktrace_example.cpp)
 target_link_libraries(stacktrace_example PRIVATE smalldbg)
 
+add_executable(locals_example examples/locals_example.cpp)
+target_link_libraries(locals_example PRIVATE smalldbg)
+
 add_executable(test_backend tests/test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
 
