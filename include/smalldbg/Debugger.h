@@ -13,6 +13,7 @@ namespace smalldbg {
 class Backend;
 class Process;
 class Thread;
+class Unwinder;
 
 class Debugger {
 public:
@@ -58,6 +59,7 @@ public:
     Status writeMemory(Address address, const void *data, size_t size);
     Status getRegisters(Registers &out) const;
     Status getRegisters(const Thread* thread, Registers &out) const;
+    Status recoverCallerRegisters(Registers& regs) const;
 
     // Logging callback (simple) — optional
     void setLogCallback(std::function<void(const std::string &)> cb);
@@ -70,12 +72,17 @@ public:
     SymbolProvider* getSymbolProvider();
     Status setSymbolOptions(const SymbolOptions& options);  // Set options before process creation
     
+    // Unwinder registration
+    void registerUnwinder(std::unique_ptr<Unwinder> unwinder);
+    const std::vector<std::unique_ptr<Unwinder>>& getUnwinders() const { return unwinders; }
+    
     Backend* getBackend() const { return backend; }
 
 private:
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
+    std::vector<std::unique_ptr<Unwinder>> unwinders; // registered unwinders (checked in order)
 };
 
 } // namespace smalldbg

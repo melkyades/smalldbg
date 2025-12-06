@@ -2,6 +2,7 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/SymbolProvider.h"
+#include "smalldbg/Unwinder.h"
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -87,6 +88,10 @@ Status Debugger::getRegisters(const Thread* thread, Registers &out) const {
     return backend->getRegisters(const_cast<Thread*>(thread), out);
 }
 
+Status Debugger::recoverCallerRegisters(Registers& regs) const {
+    return backend->recoverCallerRegisters(regs);
+}
+
 bool Debugger::isAttached() const { return backend->isAttached(); }
 
 std::optional<int> Debugger::attachedPid() const { return backend->attachedPid(); }
@@ -124,6 +129,10 @@ SymbolProvider* Debugger::getSymbolProvider() {
 Status Debugger::setSymbolOptions(const SymbolOptions& options) {
     symbolProvider->setOptions(options);
     return Status::Ok;
+}
+
+void Debugger::registerUnwinder(std::unique_ptr<Unwinder> unwinder) {
+    unwinders.push_back(std::move(unwinder));
 }
 
 } // namespace smalldbg
