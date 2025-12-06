@@ -22,21 +22,55 @@ void printRegisters(const Registers& regs) {
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " <pid>\n";
+        std::cerr << "   or: " << argv[0] << " --launch <executable> [args...]\n";
         return 1;
     }
 
-    int pid = std::atoi(argv[1]);
+    Debugger dbg(Mode::External, Arch::X64);
     
-    // Create debugger and attach to process
-    Debugger dbg(Mode::External);
-    
-    std::cout << "Attaching to PID " << pid << "...\n";
-    if (dbg.attach(pid) != Status::Ok) {
-        std::cerr << "Failed to attach\n";
-        return 1;
+    // Check if we should launch instead of attach
+    if (std::string(argv[1]) == "--launch") {
+        if (argc < 3) {
+            std::cerr << "Error: --launch requires an executable path\n";
+            return 1;
+        }
+        
+        std::vector<std::string> args;
+        for (int i = 3; i < argc; i++) {
+            args.push_back(argv[i]);
+        }
+        
+        std::cout << "Launching " << argv[2] << "...\n";
+        if (dbg.launch(argv[2], args) != Status::Ok) {
+            std::cerr << "Failed to launch\n";
+            return 1;
+        }
+        
+        // Wait for process created event
+        if (dbg.waitForEvent(StopReason::ProcessCreated) != StopReason::ProcessCreated) {
+            std::cerr << "Failed to get ProcessCreated event\n";
+            return 1;
+        }
+        
+        std::cout << "Process launched successfully\n";
+        
+        // Continue to initial breakpoint
+        dbg.resume();
+        if (dbg.waitForEvent(StopReason::InitialBreakpoint) != StopReason::InitialBreakpoint) {
+            std::cerr << "Failed to hit initial breakpoint\n";
+            return 1;
+        }
+    } else {
+        int pid = std::atoi(argv[1]);
+        
+        std::cout << "Attaching to PID " << pid << "...\n";
+        if (dbg.attach(pid) != Status::Ok) {
+            std::cerr << "Failed to attach\n";
+            return 1;
+        }
+        
+        std::cout << "Attached successfully\n";
     }
-    
-    std::cout << "Attached successfully\n";
     
     // Get the Process abstraction
     auto process = dbg.getProcess();

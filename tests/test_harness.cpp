@@ -1,4 +1,5 @@
 #include "smalldbg/Debugger.h"
+#include "smalldbg/StackTrace.h"
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -157,8 +158,65 @@ int test_memory_operations(smalldbg::Debugger &dbg) {
     return 0;
 }
 
+int test_stack_trace_and_locals(smalldbg::Debugger &dbg) {
+    std::cout << "\n=== Test 7: Stack Trace and Local Variables ===" << std::endl;
+    
+    // Get current thread
+    auto thread = dbg.getCurrentThread();
+    TEST_ASSERT(thread != nullptr, "Failed to get current thread", 23);
+    TEST_PASS("Got current thread");
+    
+    // Create stack trace
+    smalldbg::StackTrace stackTrace(thread.get());
+    auto s = stackTrace.unwind();
+    TEST_ASSERT(s == smalldbg::Status::Ok, "Failed to unwind stack", 24);
+    TEST_PASS("Stack unwinding successful");
+    
+    const auto& frames = stackTrace.getFrames();
+    TEST_ASSERT(frames.size() > 0, "Should have at least one frame", 25);
+    std::cout << "[INFO] Collected " << frames.size() << " frame(s)" << std::endl;
+    TEST_PASS("Stack frames collected");
+    
+    // Check first frame has valid data
+    const auto& frame0 = *frames[0];
+    TEST_ASSERT(frame0.ip() != 0, "Frame 0 should have valid IP", 26);
+    TEST_ASSERT(frame0.hasRegisters, "Frame 0 should have registers", 27);
+    std::cout << "[INFO] Frame 0 IP: 0x" << std::hex << frame0.ip() << std::dec << std::endl;
+    TEST_PASS("Frame 0 validated");
+    
+    // Check for local variables in at least one frame
+    bool foundLocals = false;
+    for (const auto& frame : frames) {
+        if (!frame->localVariables.empty()) {
+            foundLocals = true;
+            std::cout << "[INFO] Found " << frame->localVariables.size() 
+                     << " local variable(s) in a frame" << std::endl;
+            
+            // Validate first variable
+            const auto& var = frame->localVariables[0];
+            TEST_ASSERT(!var.name.empty(), "Variable should have a name", 28);
+            TEST_ASSERT(var.size > 0, "Variable should have a size", 29);
+            TEST_ASSERT(var.frame == frame.get(), "Variable should reference its frame", 30);
+            
+            std::cout << "[INFO] First variable: " << var.name 
+                     << " (type=" << var.typeName 
+                     << ", size=" << var.size << ")" << std::endl;
+            TEST_PASS("Local variable validated");
+            break;
+        }
+    }
+    
+    if (foundLocals) {
+        TEST_PASS("Local variables found and validated");
+    } else {
+        std::cout << "[INFO] No local variables found (may be optimized out)" << std::endl;
+    }
+    
+    return 0;
+}
+
 int test_logging(int logCount) {
-    std::cout << "\n=== Test 7: Logging Callback ===" << std::endl;
+    std::cout << "\n=== Test 8: Logging Callback ===" << std::endl;
     TEST_ASSERT(logCount > 0, "Should have received log messages", 15);
     std::cout << "[INFO] Total log messages received: " << logCount << std::endl;
     TEST_PASS("Logging callback functional");
@@ -167,7 +225,7 @@ int test_logging(int logCount) {
 }
 
 int test_detach(smalldbg::Debugger &dbg) {
-    std::cout << "\n=== Test 8: Detach ===" << std::endl;
+    std::cout << "\n=== Test 9: Detach ===" << std::endl;
     auto s = dbg.detach();
     TEST_ASSERT(s == smalldbg::Status::Ok, "Failed to detach", 16);
     TEST_PASS("Detached successfully");
@@ -195,6 +253,7 @@ int main() {
     if ((result = test_breakpoint_management(dbg)) != 0) return result;
     if ((result = test_run_control(dbg)) != 0) return result;
     if ((result = test_memory_operations(dbg)) != 0) return result;
+    if ((result = test_stack_trace_and_locals(dbg)) != 0) return result;
     if ((result = test_logging(logCount)) != 0) return result;
     if ((result = test_detach(dbg)) != 0) return result;
 

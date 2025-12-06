@@ -112,13 +112,11 @@ int main(int argc, char* argv[]) {
             std::cout << "Collected " << frames.size() << " frame(s)\n\n";
             
             for (size_t i = 0; i < frames.size(); i++) {
-                const auto& frame = frames[i];
+                const auto& frame = *frames[i];
                     
-                    std::cout << "#" << i << "  ";
-                    std::cout << "0x" << std::hex << std::setw(16) << std::setfill('0') 
-                              << frame.instructionPointer << std::dec << " in ";
-                    
-                    if (!frame.functionName.empty()) {
+                std::cout << "#" << i << "  ";
+                std::cout << "0x" << std::hex << std::setw(16) << std::setfill('0') 
+                          << frame.ip() << std::dec << " in ";                    if (!frame.functionName.empty()) {
                         std::cout << frame.functionName;
                         if (frame.functionOffset > 0) {
                             std::cout << "+0x" << std::hex << frame.functionOffset << std::dec;
@@ -141,8 +139,8 @@ int main(int argc, char* argv[]) {
                     }
                     
                     // Show frame and stack pointers
-                    std::cout << "    fp=0x" << std::hex << frame.framePointer 
-                              << " sp=0x" << frame.stackPointer << std::dec << "\n";
+                    std::cout << "    fp=0x" << std::hex << frame.fp() 
+                              << " sp=0x" << frame.sp() << std::dec << "\n";
             }
             
             delete stackTrace;

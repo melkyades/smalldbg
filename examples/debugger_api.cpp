@@ -3,11 +3,21 @@
 #include "smalldbg/Thread.h"
 #include <iostream>
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <executable> [args...]\\n";
+        return 1;
+    }
+
     smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::Arch::X64);
     dbg.setLogCallback([](const std::string &m){ std::cout << "[LOG] " << m << std::endl; });
 
-    if (dbg.launch("build\\Debug\\test_target.exe", {}) != smalldbg::Status::Ok) {
+    std::vector<std::string> args;
+    for (int i = 2; i < argc; i++) {
+        args.push_back(argv[i]);
+    }
+
+    if (dbg.launch(argv[1], args) != smalldbg::Status::Ok) {
         std::cerr << "launch failed\n";
         return 2;
     }
