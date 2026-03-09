@@ -368,8 +368,8 @@ void DbgHelpBackend::registerModule(HANDLE fileHandle, void* baseAddress, const 
     
     // Always force symbols to load immediately by enumerating
     // This triggers deferred loading and ensures local PDBs are picked up
-        auto callback = [](PSYMBOL_INFO, ULONG, PVOID) -> BOOL { return FALSE; }; // Stop after first symbol
-        SymEnumSymbols(processHandle, (DWORD64)baseAddress, NULL, callback, NULL);
+    auto callback = [](PSYMBOL_INFO, ULONG, PVOID) -> BOOL { return FALSE; }; // Stop after first symbol
+    SymEnumSymbols(processHandle, (DWORD64)baseAddress, NULL, callback, NULL);
     
     // If only exports loaded and no PDB, try fetching from symbol server
     if (symbolOptions.useSymbolServer && 

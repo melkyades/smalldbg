@@ -10,6 +10,7 @@
 #include "backends/Backend.h"
 #ifdef _WIN32
 #include "backends/WindowsBackend.h"
+#include "backends/DbgEngBackend.h"
 #else
 #include "backends/PtraceBackend.h"
 #endif
@@ -59,7 +60,7 @@ Status Debugger::resume() {
 
 Status Debugger::step() {
     auto proc = backend->getProcess();
-    auto thread = selectedThread ? selectedThread : (proc ? proc->primaryThread() : nullptr);
+    auto thread = selectedThread ? selectedThread : proc->primaryThread();
     return backend->step(thread.get());
 }
 
@@ -70,6 +71,30 @@ Status Debugger::step(Thread* thread) {
 Status Debugger::suspend() {
     return backend->suspend();
 }
+
+// --- TTD (Time Travel Debugging) ---
+Status Debugger::openTrace(const std::string& tracePath) {
+    return backend->openTrace(tracePath);
+}
+
+Status Debugger::stepBack() {
+    auto proc = backend->getProcess();
+    auto thread = selectedThread ? selectedThread : proc->primaryThread();
+    return backend->stepBack(thread.get());
+}
+
+Status Debugger::stepBack(Thread* thread) {
+    return backend->stepBack(thread);
+}
+
+Status Debugger::reverseResume() {
+    return backend->reverseResume();
+}
+
+bool Debugger::isTTDTrace() const {
+    return backend->isTTDTrace();
+}
+
 std::string Debugger::executeCommand(const std::string& cmd) const {
     return backend->executeCommand(cmd);
 }

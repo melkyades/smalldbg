@@ -27,6 +27,13 @@ public:
     virtual Status step(Thread* thread) = 0;
     virtual Status suspend() = 0; // Interrupt running process
 
+    // --- Reverse debugging (TTD) ---
+    // Default implementations return NotSupported; override in backends that support TTD
+    virtual Status openTrace(const std::string& tracePath) { (void)tracePath; return Status::NotSupported; }
+    virtual Status stepBack(Thread* thread) { (void)thread; return Status::NotSupported; }
+    virtual Status reverseResume() { return Status::NotSupported; }
+    virtual bool isTTDTrace() const { return false; }
+
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
     virtual Status clearBreakpoint(Address addr) = 0;
     virtual std::vector<Breakpoint> listBreakpoints() const = 0;
