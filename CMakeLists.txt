@@ -31,6 +31,7 @@ add_library(smalldbg STATIC
     src/NativeFrameProcessor.cpp
     src/bindings/CAPI.cpp
 )
+
 # Platform-specific backend sources
 if(WIN32)
     target_sources(smalldbg PRIVATE
@@ -45,6 +46,10 @@ else()
     if(APPLE)
         target_sources(smalldbg PRIVATE
             src/backends/PtracePlatformMac.cpp
+        )
+    else()
+        target_sources(smalldbg PRIVATE
+            src/backends/PtracePlatformLinux.cpp
         )
     endif()
 endif()
@@ -66,6 +71,10 @@ else()
     if(APPLE)
         target_sources(smalldbg PRIVATE
             src/symbols/MachOParser.cpp
+        )
+    else()
+        target_sources(smalldbg PRIVATE
+            src/symbols/ElfParser.cpp
         )
     endif()
 endif()

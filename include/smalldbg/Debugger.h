@@ -30,6 +30,14 @@ public:
     Status step();              // Step using selectedThread or primaryThread
     Status step(Thread* thread); // Step specific thread
     Status suspend(); // Interrupt/break into running process
+    
+    // --- Reverse debugging (TTD) ---
+    Status openTrace(const std::string& tracePath);  // Open a TTD trace file (.run)
+    Status stepBack();              // Step backwards using selectedThread or primaryThread
+    Status stepBack(Thread* thread); // Step backwards on specific thread
+    Status reverseResume();         // Run backwards until breakpoint/start
+    bool isTTDTrace() const;        // Check if we're replaying a TTD trace
+    
     // Execute a raw engine command (DbgEng: "kb", "lm", etc.) and return output.
     // Empty string on backends that don't support it.
     std::string executeCommand(const std::string& cmd) const;
