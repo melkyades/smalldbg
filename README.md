@@ -2,19 +2,24 @@
 
 SmallDBG is a tiny, cross-platform C++ library that provides a minimal debugger API. This repository contains a working implementation (MIT licensed) with platform-specific back-ends that you can extend and integrate.
 
-The current implementation includes a functional Windows backend using the Debug API and demonstrates how the API can be used from C++ (and how it might be scripted from other languages like Smalltalk via the C API). The public types include an architecture enum (`smalldbg::Arch`) so backends can support x64, arm64 and riscv64 targets.
+The library ships with platform backends for Windows (Win32 Debug API, DbgEng/WinDbg engine with TTD support), macOS (ptrace + Mach APIs), and Linux (ptrace + /proc), symbol backends for PDB (DbgHelp), Mach-O, and ELF, and can be used from C++ or scripted from other languages via the C API. The public types include an architecture enum (`smalldbg::Arch`) so backends can support x64, arm64 and riscv64 targets.
 
 Features:
-- C++ Debugger class with attach/launch/detach, resume/step, breakpoint API
-- Functional Windows backend with real process debugging support
+- C++ Debugger class with attach/launch/detach, resume/step/suspend, breakpoint API
+- Windows backends: Win32 Debug API and DbgEng engine (with Time Travel Debugging)
+- macOS backend: ptrace + Mach VM/thread APIs
+- Linux backend: ptrace + /proc filesystem
 - Memory read/write operations
 - Register access (x64/ARM64)
 - Breakpoint management (set/clear/list)
 - **Stack unwinding with full register context** - walk the call stack preserving register state at each frame
 - **Local variable inspection** - enumerate and read local variables using debug symbols (PDB/DWARF)
-- **Symbol resolution** - function names, source locations, and symbol lookup via DbgHelp (Windows)
+- **Symbol resolution** - function names, source locations, and symbol lookup via DbgHelp (Windows), Mach-O (macOS), and ELF (Linux)
+- **Native symbol HTTP API** - REST endpoints to search symbols and list loaded modules
+- **DWARF type inspection** - parse DWARF5 debug info from .o files to inspect C/C++ struct fields via expression paths
 - **Pluggable unwinders** - custom stack unwinding for VMs and interpreters
 - **Process/Thread abstraction** - first-class Process and Thread objects for clearer debugging code
+- **Web API for VM debugging** - the `webside/` subdirectory contains a REST server (Webside protocol) that exposes debug control, object inspection, class browsing, and stack frame analysis for Egg and other Smalltalk VMs
 - Cross-platform CMake build system
 - Test harness with test target program
 
@@ -26,8 +31,6 @@ Examples:
 - `symbols_example` - Symbol provider and source location lookup
 
 Next steps you can take:
-- Implement remaining platform backends (Linux ptrace / macOS)
-- Add DWARF support for Linux local variable inspection
 - Implement watchpoints and hardware breakpoints
 - Add your own language bindings via the C API
 - Extend test coverage for edge cases
@@ -66,7 +69,7 @@ Quick usage (C++):
 int main() {
 	using namespace smalldbg;
 	
-	Debugger dbg(Mode::External, Arch::X64);
+	Debugger dbg(Mode::External, X64::instance());
 	dbg.setLogCallback([](const std::string &m){ std::cout << m << std::endl; });
 	
 	// Enable symbol resolution
