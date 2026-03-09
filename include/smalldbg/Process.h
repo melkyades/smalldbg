@@ -14,11 +14,11 @@ class Debugger;
 
 class Process {
 public:
-    Process(Debugger* dbg, int pid);
+    Process(Debugger* dbg, uintptr_t pid);
     ~Process() = default;
 
     // Process identification
-    int getPid() const { return pid; }
+    uintptr_t getPid() const { return pid; }
     
     // Thread enumeration
     std::vector<std::shared_ptr<Thread>> threads();
@@ -42,7 +42,7 @@ public:
 
 private:
     Debugger* debugger{nullptr};
-    int pid;
+    uintptr_t pid;
     std::map<ThreadId, std::shared_ptr<Thread>> threadMap;
     std::shared_ptr<Thread> firstThread;
 };

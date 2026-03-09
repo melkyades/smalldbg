@@ -23,6 +23,7 @@ public:
     // Symbol lookup
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
     std::optional<Symbol> getSymbolByAddress(Address addr) override;
+    void enumerateSymbols(const std::string& pattern, SymbolCallback callback) override;
     
     // Source/line information
     std::optional<SourceLocation> getSourceLocation(Address addr) override;

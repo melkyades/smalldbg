@@ -5,7 +5,9 @@
 #include "../symbols/DbgHelpBackend.h"
 #include <algorithm>
 #include <cstring>
+#include <sstream>
 #include <windows.h>
+#include <DbgHelp.h>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -13,7 +15,11 @@
 
 namespace smalldbg {
 
-WindowsBackend::WindowsBackend(Debugger* dbg, Mode m, Arch a) : Backend(dbg, m, a) {
+// Single-step flag constants
+constexpr DWORD X86_EFLAGS_TRAP_FLAG = 0x100;      // x86/x64 trap flag (bit 8)
+constexpr DWORD ARM64_CPSR_SS_BIT = 0x200000;  // ARM64 single-step bit (bit 21)
+
+WindowsBackend::WindowsBackend(Debugger* dbg, Mode m, const Arch* a) : Backend(dbg, m, a) {
     processAttachSem = CreateSemaphoreA(NULL, 0, 1, NULL);
 }
 
@@ -45,20 +51,28 @@ Status WindowsBackend::waitForProcessAttach() {
     return Status::Ok;
 }
 
-Status WindowsBackend::attach(int p) {
+Status WindowsBackend::attach(uintptr_t p) {
     if (attached) return Status::AlreadyAttached;
 
-    // Attach using the Windows Debug API
-    if (!DebugActiveProcess(p)) {
-        return Status::Error;
-    }
-    pi.hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION | PROCESS_SUSPEND_RESUME, FALSE, p);
+    // First, open the process handle
+    DWORD dwPid = static_cast<DWORD>(p);
+    pi.hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION | PROCESS_SUSPEND_RESUME, FALSE, dwPid);
     if (!pi.hProcess) {
-        DebugActiveProcessStop(p);
+        DWORD err = GetLastError();
+        if (log) log("(windows) OpenProcess failed for PID " + std::to_string(p) + ", error=" + std::to_string(err));
         return Status::Error;
     }
 
-    pi.dwProcessId = p;
+    // Attach using the Windows Debug API
+    if (!DebugActiveProcess(dwPid)) {
+        DWORD err = GetLastError();
+        if (log) log("(windows) DebugActiveProcess failed for PID " + std::to_string(p) + ", error=" + std::to_string(err));
+        CloseHandle(pi.hProcess);
+        pi.hProcess = NULL;
+        return Status::Error;
+    }
+
+    pi.dwProcessId = dwPid;
     attached = true;
     memory.assign(64*1024, 0);
     regs = Registers{};
@@ -66,7 +80,13 @@ Status WindowsBackend::attach(int p) {
     debugThread = std::thread(&WindowsBackend::debugLoop, this);
     
     Status status = waitForProcessAttach();
-    if (status != Status::Ok) return status;
+    if (status != Status::Ok) {
+        if (pi.hProcess) {
+            CloseHandle(pi.hProcess);
+            pi.hProcess = NULL;
+        }
+        return status;
+    }
     
     if (log) log("(windows) attached to pid " + std::to_string(p));
     return Status::Ok;
@@ -186,18 +206,28 @@ Status WindowsBackend::step(Thread* thread) {
     // Thread is always non-null
     DWORD targetTid = static_cast<DWORD>(thread->getThreadId());
 
-    HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, targetTid);
-    if (!hThread) return Status::Error;
-
+    bool ok = withSuspendedThread(targetTid, THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, [&](HANDLE hThread) {
+        if (isWow64()) {
+            WOW64_CONTEXT wow64Ctx = {};
+            wow64Ctx.ContextFlags = WOW64_CONTEXT_CONTROL;
+            if (!Wow64GetThreadContext(hThread, &wow64Ctx)) return false;
+            wow64Ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
+            return Wow64SetThreadContext(hThread, &wow64Ctx) != 0;
+        } else {
     CONTEXT ctx = {};
     ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-    if (!GetThreadContext(hThread, &ctx)) { CloseHandle(hThread); return Status::Error; }
-
-    // Set trap flag in EFlags/RFlags
-    ctx.EFlags |= 0x100;
-    if (!SetThreadContext(hThread, &ctx)) { CloseHandle(hThread); return Status::Error; }
-    
-    CloseHandle(hThread);
+            if (!GetThreadContext(hThread, &ctx)) return false;
+#if defined(_M_X64)
+            ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
+#elif defined(_M_ARM64)
+            ctx.Cpsr |= ARM64_CPSR_SS_BIT;
+#elif defined(_M_IX86)
+            ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
+#endif
+            return SetThreadContext(hThread, &ctx) != 0;
+        }
+    });
+    if (!ok) return Status::Error;
     
     // Signal continue
     withStopLock([this]() {
@@ -270,35 +300,112 @@ Status WindowsBackend::writeMemory(Address address, const void *data, size_t siz
 }
 
 Status WindowsBackend::getRegisters(Thread* thread, Registers &out) const {
-    if (!attached) return Status::NotAttached;
+    if (!attached) {
+        if (log) log("(windows) getRegisters: not attached");
+        return Status::NotAttached;
+    }
 
-    // Thread is always non-null
-    DWORD targetTid = static_cast<DWORD>(thread->getThreadId());
+    if (log) log("(windows) getRegisters: reading thread " + std::to_string(thread->getThreadId()));
 
-    CONTEXT ctx = {};
-    if (!captureThreadContext(targetTid, ctx)) return Status::Error;
-
-    return contextToRegisters(ctx, out);
+    bool ok = isWow64()
+        ? captureWow64Registers(thread, out)
+        : captureNativeRegisters(thread, out);
+    if (!ok) {
+        if (log) log("(windows) getRegisters: capture failed");
+        return Status::Error;
+    }
+    return Status::Ok;
 }
 
-bool WindowsBackend::captureThreadContext(DWORD tid, CONTEXT &ctx) const {
-        HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, tid);
-        if (!hThread) return false;
+Status WindowsBackend::getNativeRegisters(Thread* thread, Registers &out) const {
+    if (!attached) return Status::NotAttached;
 
-        std::memset(&ctx, 0, sizeof(ctx));
+    // For non-WoW64 processes the native context IS the regular context.
+    if (!isWow64())
+        return getRegisters(thread, out);
+
+    return captureNativeRegisters(thread, out) ? Status::Ok : Status::Error;
+}
+bool WindowsBackend::withSuspendedThread(DWORD tid, DWORD access, const std::function<bool(HANDLE)>& func) const {
+    HANDLE hThread = OpenThread(access | THREAD_SUSPEND_RESUME, FALSE, tid);
+    if (!hThread) {
+        if (log) log("(windows) withSuspendedThread: OpenThread failed, error=" + std::to_string(GetLastError()));
+        return false;
+    }
+    DWORD prev = SuspendThread(hThread);
+    if (prev == (DWORD)-1) {
+        if (log) log("(windows) withSuspendedThread: SuspendThread failed");
+        CloseHandle(hThread);
+        return false;
+    }
+    bool ok = func(hThread);
+    ResumeThread(hThread);
+    CloseHandle(hThread);
+    return ok;
+}
+
+bool WindowsBackend::isWow64() const {
+#if defined(_M_X64) || defined(_M_ARM64)
+    return arch->pointerSize() == 4; // 64-bit debugger with 32-bit target is WoW64
+#else
+    return false;
+#endif
+}
+
+bool WindowsBackend::captureWow64Registers(Thread* thread, Registers &out) const {
+    DWORD tid = static_cast<DWORD>(thread->getThreadId());
+    WOW64_CONTEXT wow64Ctx = {};
+    wow64Ctx.ContextFlags = WOW64_CONTEXT_FULL;
+
+    bool ok = withSuspendedThread(tid, THREAD_GET_CONTEXT, [&](HANDLE hThread) {
+        return Wow64GetThreadContext(hThread, &wow64Ctx) != 0;
+    });
+    if (!ok) return false;
+
+    return wow64ContextToRegisters(wow64Ctx, out) == Status::Ok;
+}
+
+Status WindowsBackend::wow64ContextToRegisters(const WOW64_CONTEXT &ctx, Registers &out) const {
+    out.arch = X86::instance();
+    auto &r = out.x86;
+    r.eip = ctx.Eip;
+    r.esp = ctx.Esp;
+    r.ebp = ctx.Ebp;
+    r.eflags = ctx.EFlags;
+    r.eax = ctx.Eax;
+    r.ebx = ctx.Ebx;
+    r.ecx = ctx.Ecx;
+    r.edx = ctx.Edx;
+    r.esi = ctx.Esi;
+    r.edi = ctx.Edi;
+    r.cs = static_cast<uint16_t>(ctx.SegCs);
+    r.ds = static_cast<uint16_t>(ctx.SegDs);
+    r.es = static_cast<uint16_t>(ctx.SegEs);
+    r.fs = static_cast<uint16_t>(ctx.SegFs);
+    r.gs = static_cast<uint16_t>(ctx.SegGs);
+    r.ss = static_cast<uint16_t>(ctx.SegSs);
+    return Status::Ok;
+}
+
+bool WindowsBackend::captureNativeRegisters(Thread* thread, Registers &out) const {
+    DWORD tid = static_cast<DWORD>(thread->getThreadId());
+    CONTEXT ctx = {};
     #ifdef CONTEXT_ALL
         ctx.ContextFlags = CONTEXT_ALL;
     #else
         ctx.ContextFlags = CONTEXT_FULL;
     #endif
-        bool ok = GetThreadContext(hThread, &ctx) != 0;
-        CloseHandle(hThread);
-        return ok;
+    bool ok = withSuspendedThread(tid, THREAD_GET_CONTEXT, [&](HANDLE hThread) {
+        return GetThreadContext(hThread, &ctx) != 0;
+    });
+    if (!ok) return false;
+
+    return nativeContextToRegisters(ctx, out) == Status::Ok;
 }
 
-Status WindowsBackend::contextToRegisters(const CONTEXT &ctx, Registers &out) const {
-        if (arch == Arch::X64) {
-            out.arch = Arch::X64;
+Status WindowsBackend::nativeContextToRegisters(const CONTEXT &ctx, Registers &out) const {
+    #if defined(_M_X64)
+            out.arch = X64::instance();
             auto &r = out.x64;
             r.rip = ctx.Rip;
             r.rsp = ctx.Rsp;
@@ -351,115 +458,158 @@ Status WindowsBackend::contextToRegisters(const CONTEXT &ctx, Registers &out) co
             r.pc = ctx.Rip;
             r.sp = ctx.Rsp;
             return Status::Ok;
-        } else if (arch == Arch::ARM64) {
-            out.arch = Arch::ARM64;
-    #if defined(_M_ARM64)
+    #elif defined(_M_ARM64)
+            out.arch = ARM64::instance();
             auto &r = out.arm64;
-            r.x0 = ctx.Arm64.X0; r.x1 = ctx.Arm64.X1; r.x2 = ctx.Arm64.X2; r.x3 = ctx.Arm64.X3;
-            r.x4 = ctx.Arm64.X4; r.x5 = ctx.Arm64.X5; r.x6 = ctx.Arm64.X6; r.x7 = ctx.Arm64.X7;
-            r.x8 = ctx.Arm64.X8; r.x9 = ctx.Arm64.X9; r.x10 = ctx.Arm64.X10; r.x11 = ctx.Arm64.X11;
-            r.x12 = ctx.Arm64.X12; r.x13 = ctx.Arm64.X13; r.x14 = ctx.Arm64.X14; r.x15 = ctx.Arm64.X15;
-            r.x16 = ctx.Arm64.X16; r.x17 = ctx.Arm64.X17; r.x18 = ctx.Arm64.X18; r.x19 = ctx.Arm64.X19;
-            r.x20 = ctx.Arm64.X20; r.x21 = ctx.Arm64.X21; r.x22 = ctx.Arm64.X22; r.x23 = ctx.Arm64.X23;
-            r.x24 = ctx.Arm64.X24; r.x25 = ctx.Arm64.X25; r.x26 = ctx.Arm64.X26; r.x27 = ctx.Arm64.X27;
-            r.x28 = ctx.Arm64.X28; r.x29_fp = ctx.Arm64.Fp; r.x30_lr = ctx.Arm64.Lr;
-            r.sp = ctx.Arm64.Sp; r.pc = ctx.Arm64.Pc;
+            // Native ARM64 CONTEXT has X0-X28, Fp, Lr, Sp, Pc directly (no Arm64. prefix)
+            r.x0 = ctx.X0; r.x1 = ctx.X1; r.x2 = ctx.X2; r.x3 = ctx.X3;
+            r.x4 = ctx.X4; r.x5 = ctx.X5; r.x6 = ctx.X6; r.x7 = ctx.X7;
+            r.x8 = ctx.X8; r.x9 = ctx.X9; r.x10 = ctx.X10; r.x11 = ctx.X11;
+            r.x12 = ctx.X12; r.x13 = ctx.X13; r.x14 = ctx.X14; r.x15 = ctx.X15;
+            r.x16 = ctx.X16; r.x17 = ctx.X17; r.x18 = ctx.X18; r.x19 = ctx.X19;
+            r.x20 = ctx.X20; r.x21 = ctx.X21; r.x22 = ctx.X22; r.x23 = ctx.X23;
+            r.x24 = ctx.X24; r.x25 = ctx.X25; r.x26 = ctx.X26; r.x27 = ctx.X27;
+            r.x28 = ctx.X28; r.x29_fp = ctx.Fp; r.x30_lr = ctx.Lr;
+            r.sp = ctx.Sp; r.pc = ctx.Pc;
+            return Status::Ok;
+    #elif defined(_M_IX86)
+            out.arch = X86::instance();
+            auto &r = out.x86;
+            r.eip = ctx.Eip;
+            r.esp = ctx.Esp;
+            r.ebp = ctx.Ebp;
+            r.eflags = ctx.EFlags;
+            r.eax = ctx.Eax;
+            r.ebx = ctx.Ebx;
+            r.ecx = ctx.Ecx;
+            r.edx = ctx.Edx;
+            r.esi = ctx.Esi;
+            r.edi = ctx.Edi;
+            r.cs = static_cast<uint16_t>(ctx.SegCs);
+            r.ds = static_cast<uint16_t>(ctx.SegDs);
+            r.es = static_cast<uint16_t>(ctx.SegEs);
+            r.fs = static_cast<uint16_t>(ctx.SegFs);
+            r.gs = static_cast<uint16_t>(ctx.SegGs);
+            r.ss = static_cast<uint16_t>(ctx.SegSs);
             return Status::Ok;
     #else
-            (void)ctx;
-            return Status::Error;
+            #error "Unsupported architecture"
     #endif
         }
 
+Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
+    // Dispatch on the *registers'* architecture, not the backend's.
+    // This lets callers unwind native (x64) frames even when the
+    // backend targets a WoW64 (x86) process.
+
+    if (regs.arch == X86::instance()) {
+        // Use StackWalk64 with IMAGE_FILE_MACHINE_I386.
+        // This works for WOW64 processes: it reads FPO data from PDBs
+        // (via SymFunctionTableAccess64) and uses ReadProcessMemory to
+        // walk the target process stack.
+        STACKFRAME64 sf = {};
+        sf.AddrPC.Offset    = regs.x86.eip;
+        sf.AddrPC.Mode      = AddrModeFlat;
+        sf.AddrFrame.Offset = regs.x86.ebp;
+        sf.AddrFrame.Mode   = AddrModeFlat;
+        sf.AddrStack.Offset = regs.x86.esp;
+        sf.AddrStack.Mode   = AddrModeFlat;
+
+        BOOL ok = StackWalk64(
+            IMAGE_FILE_MACHINE_I386,
+            pi.hProcess,
+            NULL,                           // hThread (not needed)
+            &sf,
+            NULL,                           // context (not needed for I386)
+            NULL,                           // ReadMemoryRoutine (default)
+            SymFunctionTableAccess64,
+            SymGetModuleBase64,
+            NULL                            // TranslateAddress
+        );
+
+        if (!ok || sf.AddrPC.Offset == 0)
         return Status::Error;
+
+        regs.x86.eip = static_cast<uint32_t>(sf.AddrPC.Offset);
+        regs.x86.ebp = static_cast<uint32_t>(sf.AddrFrame.Offset);
+        regs.x86.esp = static_cast<uint32_t>(sf.AddrStack.Offset);
+        return Status::Ok;
     }
 
-Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
-    if (arch != Arch::X64) {
-        // Only X64 supported for now
-        return Status::Error;
-    }
-    
-    // Use RtlLookupFunctionEntry and RtlVirtualUnwind
-    // to properly restore all registers using .pdata unwind information
-    
-    DWORD64 imageBase = 0;
-    PRUNTIME_FUNCTION func = RtlLookupFunctionEntry(regs.x64.rip, &imageBase, NULL);
-    
-    if (!func) {
-        // No unwind info available - likely a leaf function or no .pdata
-        return Status::Error;
-    }
-    
-    // Save original RIP to detect if unwinding actually changed anything
-    Address originalRip = regs.x64.rip;
-    
-    // Set up CONTEXT structure with current register values
-    CONTEXT context = {};
-    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
-    context.Rip = regs.x64.rip;
-    context.Rsp = regs.x64.rsp;
-    context.Rbp = regs.x64.rbp;
-    context.Rax = regs.x64.rax;
-    context.Rbx = regs.x64.rbx;
-    context.Rcx = regs.x64.rcx;
-    context.Rdx = regs.x64.rdx;
-    context.Rsi = regs.x64.rsi;
-    context.Rdi = regs.x64.rdi;
-    context.R8 = regs.x64.r8;
-    context.R9 = regs.x64.r9;
-    context.R10 = regs.x64.r10;
-    context.R11 = regs.x64.r11;
-    context.R12 = regs.x64.r12;
-    context.R13 = regs.x64.r13;
-    context.R14 = regs.x64.r14;
-    context.R15 = regs.x64.r15;
-    context.EFlags = static_cast<DWORD>(regs.x64.rflags);
-    
-    // Perform virtual unwind
-    PVOID handlerData = NULL;
-    DWORD64 establisherFrame = 0;
-    
-    __try {
-        RtlVirtualUnwind(
-            UNW_FLAG_NHANDLER,      // We don't need exception handler info
-            imageBase,
-            context.Rip,
-            func,
-            &context,
-            &handlerData,
-            &establisherFrame,
+#if defined(_M_X64)
+    // x64 stack unwinding - native x64 host
+    if (regs.arch == X64::instance()) {
+        // Use StackWalk64 with IMAGE_FILE_MACHINE_AMD64.
+        // AMD64 StackWalk64 requires a valid CONTEXT pointer.
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        ctx.Rip = regs.x64.rip;
+        ctx.Rsp = regs.x64.rsp;
+        ctx.Rbp = regs.x64.rbp;
+
+        STACKFRAME64 sf = {};
+        sf.AddrPC.Offset    = regs.x64.rip;
+        sf.AddrPC.Mode      = AddrModeFlat;
+        sf.AddrFrame.Offset = regs.x64.rbp;
+        sf.AddrFrame.Mode   = AddrModeFlat;
+        sf.AddrStack.Offset = regs.x64.rsp;
+        sf.AddrStack.Mode   = AddrModeFlat;
+
+        BOOL ok = StackWalk64(
+            IMAGE_FILE_MACHINE_AMD64,
+            pi.hProcess,
+            NULL,
+            &sf,
+            &ctx,
+            NULL,
+            SymFunctionTableAccess64,
+            SymGetModuleBase64,
             NULL
         );
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        // Virtual unwind failed
+    
+        if (!ok || sf.AddrPC.Offset == 0)
         return Status::Error;
+
+        regs.x64.rip = sf.AddrPC.Offset;
+        regs.x64.rbp = sf.AddrFrame.Offset;
+        regs.x64.rsp = sf.AddrStack.Offset;
+        return Status::Ok;
     }
-    
-    // Check if unwinding actually did something (RIP should have changed)
-    if (context.Rip == 0 || context.Rip == originalRip) {
-        // Unwinding failed or didn't progress
-        return Status::Error;
-    }
-    
-    // Update our register structure with unwound values
-    // Note: RtlVirtualUnwind restores callee-saved registers and updates
-    // RIP/RSP to point to the caller's context
-    regs.x64.rip = context.Rip;
-    regs.x64.rsp = context.Rsp;
-    regs.x64.rbp = context.Rbp;
-    regs.x64.rbx = context.Rbx;
-    regs.x64.rsi = context.Rsi;
-    regs.x64.rdi = context.Rdi;
-    regs.x64.r12 = context.R12;
-    regs.x64.r13 = context.R13;
-    regs.x64.r14 = context.R14;
-    regs.x64.r15 = context.R15;
-    
-    // Note: Volatile registers (rax, rcx, rdx, r8-r11) are NOT restored
-    // as they are caller-saved and may not be preserved across calls
-    
+#elif defined(_M_ARM64)
+    // x64 stack unwinding from ARM64 host (e.g., for x64 emulated processes)
+    // StackWalk64 can work without a CONTEXT pointer if we fill STACKFRAME64 properly
+    if (regs.arch == X64::instance()) {
+        STACKFRAME64 sf = {};
+        sf.AddrPC.Offset    = regs.x64.rip;
+        sf.AddrPC.Mode      = AddrModeFlat;
+        sf.AddrFrame.Offset = regs.x64.rbp;
+        sf.AddrFrame.Mode   = AddrModeFlat;
+        sf.AddrStack.Offset = regs.x64.rsp;
+        sf.AddrStack.Mode   = AddrModeFlat;
+
+        BOOL ok = StackWalk64(
+            IMAGE_FILE_MACHINE_AMD64,
+            pi.hProcess,
+            NULL,
+            &sf,
+            NULL,  // No context pointer available on ARM64 host
+            NULL,
+            SymFunctionTableAccess64,
+            SymGetModuleBase64,
+            NULL
+        );
+
+        if (!ok || sf.AddrPC.Offset == 0)
+            return Status::Error;
+
+        regs.x64.rip = sf.AddrPC.Offset;
+        regs.x64.rbp = sf.AddrFrame.Offset;
+        regs.x64.rsp = sf.AddrStack.Offset;
     return Status::Ok;
+}
+#endif
+
+    return Status::Error;
 }
 
 bool WindowsBackend::createProcessForDebug() {
@@ -498,6 +648,8 @@ void WindowsBackend::debugLoop() {
             withStopLock([this]() { running = false; });
             return;
         }
+    } else {
+        if (log) log("(windows) debugLoop started for attach, waiting for events...");
     }
     
     DEBUG_EVENT ev;
@@ -511,6 +663,13 @@ void WindowsBackend::debugLoop() {
             DWORD err = GetLastError();
             if (err == ERROR_SEM_TIMEOUT) continue;
             break;
+        }
+        
+        // Clear the continue flag now that we have an event to process
+        // This ensures that when we wait for resume/step later, the flag is false
+        {
+            std::lock_guard<std::mutex> lock(stopMutex);
+            continueRequested = false;
         }
 
         bool shouldContinue = false;
@@ -533,32 +692,28 @@ void WindowsBackend::debugLoop() {
             log(std::string("(windows) event=") + eventName + " code=" + std::to_string(ev.dwDebugEventCode) + " tid=" + std::to_string(ev.dwThreadId));
         }
 
+        shouldContinue = true;  // Default to continue; handlers return false to stop
         switch (ev.dwDebugEventCode) {
         case EXCEPTION_DEBUG_EVENT:
             shouldContinue = handleExceptionEvent(ev);
             break;
         case CREATE_THREAD_DEBUG_EVENT:
             handleThreadCreatedEvent(ev);
-            shouldContinue = true;
             break;
         case CREATE_PROCESS_DEBUG_EVENT:
             shouldContinue = handleCreateProcessEvent(ev);
             break;
         case EXIT_PROCESS_DEBUG_EVENT:
             handleExitProcessEvent(ev);
-            shouldContinue = true;
             break;
         case LOAD_DLL_DEBUG_EVENT:
             handleLoadDllEvent(ev);
-            shouldContinue = true;
             break;
         case UNLOAD_DLL_DEBUG_EVENT:
             handleUnloadDllEvent(ev);
-            shouldContinue = true;
             break;
         default:
             handleOtherDebugEvent(ev);
-            shouldContinue = true;
             break;
         }
 
@@ -579,15 +734,18 @@ void WindowsBackend::debugLoop() {
                 } else {
                     if (log) log(std::string("(windows) WARNING: thread not found in process: ") + std::to_string(ev.dwThreadId));
                 }
+                }
             }
-            
-            // Notify anyone waiting for events
-            stopCV.notify_all();
             
             // Notify via callback if set
             if (eventCallback) {
-                eventCallback(stopReason, stopAddress);
+            shouldContinue = eventCallback(stopReason, stopAddress);
             }
+       
+        if (!shouldContinue) {
+            // Notify anyone waiting for events
+            stopCV.notify_all();
+            
             
             // Wait until resume/step is called
             std::unique_lock<std::mutex> lock(stopMutex);
@@ -658,11 +816,27 @@ bool WindowsBackend::handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr
     // set trap flag on the thread so we get a SINGLE_STEP after the next instruction
     HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, ev.dwThreadId);
     if (hThread) {
+        if (arch == X86::instance()) {
+            // WOW64 x86 process: use Wow64Get/SetThreadContext
+            WOW64_CONTEXT wow64Ctx = {};
+            wow64Ctx.ContextFlags = WOW64_CONTEXT_CONTROL;
+            if (Wow64GetThreadContext(hThread, &wow64Ctx)) {
+                wow64Ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
+                Wow64SetThreadContext(hThread, &wow64Ctx);
+            }
+        } else {
         CONTEXT ctx = {};
         ctx.ContextFlags = CONTEXT_CONTROL;
         if (GetThreadContext(hThread, &ctx)) {
-            ctx.EFlags |= 0x100; // set trap flag
+    #if defined(_M_X64)
+                ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
+    #elif defined(_M_ARM64)
+                ctx.Cpsr |= ARM64_CPSR_SS_BIT;
+    #elif defined(_M_IX86)
+                ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
+    #endif
             SetThreadContext(hThread, &ctx);
+            }
         }
         CloseHandle(hThread);
     }
@@ -698,7 +872,7 @@ bool WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
     if (log) log(std::string("(windows) CREATE_PROCESS pid=") + std::to_string(ev.dwProcessId) + " main_tid=" + std::to_string(mainThreadId));
     
     // Create Process object
-    process = std::make_shared<Process>(debugger, static_cast<int>(ev.dwProcessId));
+    initProcess(static_cast<uintptr_t>(ev.dwProcessId));
     process->registerThread(mainThreadId);
     
     // Create and initialize DbgHelp backend now that we have a process handle
@@ -717,7 +891,9 @@ bool WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
     char exeName[MAX_PATH] = {0};
     if (ev.u.CreateProcessInfo.lpImageName) {
         DWORD64 namePtr = 0;
-        ReadProcessMemory(pi.hProcess, ev.u.CreateProcessInfo.lpImageName, &namePtr, sizeof(namePtr), NULL);
+        bool is64bitModule = (uint64_t)ev.u.CreateProcessInfo.lpBaseOfImage > 0xFFFFFFFFULL;
+        size_t ptrSize = is64bitModule ? 8 : arch->pointerSize();
+        ReadProcessMemory(pi.hProcess, ev.u.CreateProcessInfo.lpImageName, &namePtr, ptrSize, NULL);
         
         if (namePtr) {
             if (ev.u.CreateProcessInfo.fUnicode) {
@@ -755,6 +931,9 @@ bool WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
 }
 
 void WindowsBackend::handleThreadCreatedEvent(const DEBUG_EVENT &ev) {
+    stopReason = StopReason::ThreadCreated;
+    stopAddress = 0;
+
     // Close the thread handle provided by the system
     if (ev.u.CreateThread.hThread) {
         CloseHandle(ev.u.CreateThread.hThread);
@@ -776,12 +955,20 @@ void WindowsBackend::handleExitProcessEvent(const DEBUG_EVENT &ev) {
 }
 
 void WindowsBackend::handleLoadDllEvent(const DEBUG_EVENT &ev) {
+
+    stopReason = StopReason::ModuleLoaded;
+
     // Get DLL name if available
     char dllName[MAX_PATH] = {0};
     if (ev.u.LoadDll.lpImageName) {
-        // Read the pointer to the name string
+        // Read the pointer to the name string.
+        // In WOW64 processes, early 64-bit DLLs (ntdll, wow64*.dll) have
+        // 64-bit name pointers while 32-bit DLLs have 32-bit ones.
+        // Use the module base address to distinguish.
         DWORD64 namePtr = 0;
-        ReadProcessMemory(pi.hProcess, ev.u.LoadDll.lpImageName, &namePtr, sizeof(namePtr), NULL);
+        bool is64bitModule = (uint64_t)ev.u.LoadDll.lpBaseOfDll > 0xFFFFFFFFULL;
+        size_t ptrSize = is64bitModule ? 8 : arch->pointerSize();
+        ReadProcessMemory(pi.hProcess, ev.u.LoadDll.lpImageName, &namePtr, ptrSize, NULL);
         
         if (namePtr) {
             if (ev.u.LoadDll.fUnicode) {
@@ -795,12 +982,12 @@ void WindowsBackend::handleLoadDllEvent(const DEBUG_EVENT &ev) {
     }
     
     if (log) {
-        std::string msg = "(windows) LOAD_DLL base=0x" + 
-                         std::to_string((uint64_t)ev.u.LoadDll.lpBaseOfDll);
+        std::stringstream ss;
+        ss << "(windows) LOAD_DLL base=0x" << std::hex << (uint64_t)ev.u.LoadDll.lpBaseOfDll;
         if (dllName[0]) {
-            msg += " " + std::string(dllName);
+            ss << " " << dllName;
         }
-        log(msg);
+        log(ss.str());
     }
     
     // Notify DbgHelp backend
@@ -818,10 +1005,12 @@ void WindowsBackend::handleLoadDllEvent(const DEBUG_EVENT &ev) {
 }
 
 void WindowsBackend::handleUnloadDllEvent(const DEBUG_EVENT &ev) {
+    stopReason = StopReason::ModuleUnloaded;
+    
     if (log) {
-        std::string msg = "(windows) UNLOAD_DLL base=0x" + 
-                         std::to_string((uint64_t)ev.u.UnloadDll.lpBaseOfDll);
-        log(msg);
+        std::stringstream ss;
+        ss << "(windows) UNLOAD_DLL base=0x" << std::hex << (uint64_t)ev.u.UnloadDll.lpBaseOfDll;
+        log(ss.str());
     }
     
     // TODO: Could notify symbol provider to unload module symbols

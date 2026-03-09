@@ -1,5 +1,5 @@
 // POSIX platform helpers implementation
-#include "platform/Platform.h"
+#include "../Platform.h"
 #include <unistd.h>
 
 namespace smalldbg_internal {

@@ -15,10 +15,10 @@ class DbgHelpBackend;
 
 class WindowsBackend : public Backend {
 public:
-    WindowsBackend(Debugger* dbg, Mode m, Arch a);
+    WindowsBackend(Debugger* dbg, Mode m, const Arch* a);
     ~WindowsBackend() override;
 
-    Status attach(int pid) override;
+    Status attach(uintptr_t pid) override;
     Status launch(const std::string &path, const std::vector<std::string> &args) override;
     Status detach() override;
 
@@ -33,6 +33,7 @@ public:
     Status readMemory(Address address, void *outBuf, size_t size) const override;
     Status writeMemory(Address address, const void *data, size_t size) override;
     Status getRegisters(Thread* thread, Registers &out) const override;
+    Status getNativeRegisters(Thread* thread, Registers &out) const;
     Status recoverCallerRegisters(Registers& regs) const override;
     
     StopReason getStopReason() const override { return stopReason; }
@@ -94,8 +95,12 @@ private:
     void handleLoadDllEvent(const DEBUG_EVENT &ev);
     void handleUnloadDllEvent(const DEBUG_EVENT &ev);
     void handleOtherDebugEvent(const DEBUG_EVENT &ev);
-    bool captureThreadContext(DWORD tid, CONTEXT &ctx) const;
-    Status contextToRegisters(const CONTEXT &ctx, Registers &out) const;
+    // WoW64 means we're a 64-bit debugger (x64/ARM64) debugging a 32-bit x86 target.
+    bool isWow64() const;
+    bool captureWow64Registers(Thread* thread, Registers &out) const;
+    bool captureNativeRegisters(Thread* thread, Registers &out) const;
+    Status nativeContextToRegisters(const CONTEXT &ctx, Registers &out) const;
+    Status wow64ContextToRegisters(const WOW64_CONTEXT &ctx, Registers &out) const;
     
     // Helper to execute code under stopMutex protection
     template<typename Func>
@@ -104,12 +109,13 @@ private:
         func();
     }
 
+    // Open a thread, suspend it, call func(hThread), resume and close.
+    // Returns false if open or suspend fails, otherwise returns func's result.
+    bool withSuspendedThread(DWORD tid, DWORD access, const std::function<bool(HANDLE)>& func) const;
+
     bool isAttached() const override { return attached; }
-    std::optional<int> attachedPid() const override { if (attached) return static_cast<int>(pi.dwProcessId); return std::nullopt; }
-    std::shared_ptr<Process> getProcess() const override { return process; }
 
 private:
-    std::shared_ptr<Process> process;
 };
 
 } // namespace smalldbg

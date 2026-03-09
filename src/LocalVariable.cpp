@@ -95,7 +95,7 @@ std::optional<uint64_t> LocalVariable::getValue() const {
     // Read value from memory
     Debugger* debugger = frame->thread->getDebugger();
     uint64_t value = 0;
-    size_t readSize = std::min(size, sizeof(uint64_t));
+    size_t readSize = static_cast<size_t>(std::min(size, static_cast<uint64_t>(sizeof(uint64_t))));
     if (debugger->readMemory(effectiveAddress, &value, readSize) == Status::Ok) {
         return value;
     }

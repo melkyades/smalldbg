@@ -4,7 +4,7 @@
 
 namespace smalldbg {
 
-Process::Process(Debugger* dbg, int p) 
+Process::Process(Debugger* dbg, uintptr_t p) 
     : debugger(dbg), pid(p), firstThread(nullptr) {
 }
 

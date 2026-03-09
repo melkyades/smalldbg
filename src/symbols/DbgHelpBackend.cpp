@@ -68,6 +68,9 @@ Status DbgHelpBackend::initialize(void* procHandle, const SymbolOptions& options
     }
     if (symbolOptions.exactSymbols) {
         symOpts |= SYMOPT_EXACT_SYMBOLS;
+    } else {
+        // Allow loading mismatched PDBs for local development
+        symOpts |= SYMOPT_LOAD_ANYTHING;
     }
     if (symbolOptions.useSymbolServer) {
         symOpts |= SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS;
@@ -329,28 +332,51 @@ void DbgHelpBackend::registerModule(HANDLE fileHandle, void* baseAddress, const 
         NULL, 0
     );
     
-    // Check if we should try to download PDB
-    if (!symbolOptions.useSymbolServer || loadedBase == 0 || imageName.empty()) {
+    if (loadedBase == 0) {
+        // Module load failed
         return;
     }
     
-    // Get module info to check if PDB is already loaded
+    // Get module info to check what symbols were loaded
     IMAGEHLP_MODULE64 modInfo = {};
     modInfo.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
     if (!SymGetModuleInfo64(processHandle, (DWORD64)baseAddress, &modInfo)) {
         return;
     }
     
-    // Only try to fetch PDB if we have exports/deferred symbols and no PDB loaded
-    if ((modInfo.SymType == SymExport || modInfo.SymType == SymDeferred) && 
-        modInfo.LoadedPdbName[0] == '\0') {
-        tryFetchPdbForModule(baseAddress, imageName);
+    // Debug output to see what was loaded
+    if (!imageName.empty()) {
+        const char* symTypeStr = "Unknown";
+        switch (modInfo.SymType) {
+            case SymNone: symTypeStr = "None"; break;
+            case SymExport: symTypeStr = "Export"; break;
+            case SymPdb: symTypeStr = "PDB"; break;
+            case SymDeferred: symTypeStr = "Deferred"; break;
+            case SymCoff: symTypeStr = "COFF"; break;
+            case SymCv: symTypeStr = "CodeView"; break;
+            case SymVirtual: symTypeStr = "Virtual"; break;
+            case SymDia: symTypeStr = "DIA"; break;
+        }
         
-        // Force symbols to load immediately by enumerating (triggers deferred load)
-        // This is necessary because with SYMOPT_DEFERRED_LOADS, symbols aren't loaded
-        // until first access, which can cause SymFromAddr to fail intermittently
+        std::string debugMsg = "Loaded symbols for " + imageName + 
+                              " - Type: " + symTypeStr;
+        if (modInfo.LoadedPdbName[0] != '\0') {
+            debugMsg += ", PDB: " + std::string(modInfo.LoadedPdbName);
+        }
+        OutputDebugStringA(debugMsg.c_str());
+    }
+    
+    // Always force symbols to load immediately by enumerating
+    // This triggers deferred loading and ensures local PDBs are picked up
         auto callback = [](PSYMBOL_INFO, ULONG, PVOID) -> BOOL { return FALSE; }; // Stop after first symbol
         SymEnumSymbols(processHandle, (DWORD64)baseAddress, NULL, callback, NULL);
+    
+    // If only exports loaded and no PDB, try fetching from symbol server
+    if (symbolOptions.useSymbolServer && 
+        (modInfo.SymType == SymExport || modInfo.SymType == SymDeferred) && 
+        modInfo.LoadedPdbName[0] == '\0' && 
+        !imageName.empty()) {
+        tryFetchPdbForModule(baseAddress, imageName);
     }
 }
 
@@ -423,6 +449,32 @@ std::optional<Symbol> DbgHelpBackend::getSymbolByAddress(Address addr) {
     }
     
     return symbol;
+}
+
+struct EnumSymbolsCtx {
+    HANDLE proc;
+    smalldbg::SymbolBackend::SymbolCallback* cb;
+};
+
+static BOOL CALLBACK enumSymbolsCallback(PSYMBOL_INFO pSymInfo, ULONG, PVOID ctx) {
+    auto* c = static_cast<EnumSymbolsCtx*>(ctx);
+    smalldbg::Symbol sym;
+    sym.name = pSymInfo->Name;
+    sym.address = pSymInfo->Address;
+    sym.size = pSymInfo->Size;
+    
+    IMAGEHLP_MODULE64 modInfo = {};
+    modInfo.SizeOfStruct = sizeof(IMAGEHLP_MODULE64);
+    if (SymGetModuleInfo64(c->proc, pSymInfo->Address, &modInfo))
+        sym.moduleName = modInfo.ModuleName;
+    
+    return (*c->cb)(sym) ? TRUE : FALSE;
+}
+
+void DbgHelpBackend::enumerateSymbols(const std::string& pattern, SymbolCallback callback) {
+    if (!initialized) return;
+    EnumSymbolsCtx ctx{processHandle, &callback};
+    SymEnumSymbols(processHandle, 0, pattern.c_str(), enumSymbolsCallback, &ctx);
 }
 
 std::optional<SourceLocation> DbgHelpBackend::getSourceLocation(Address addr) {

@@ -13,22 +13,26 @@ namespace smalldbg {
 class Backend;
 class Process;
 class Thread;
-class Unwinder;
+class StackFrameProcessor;
 
 class Debugger {
 public:
-    explicit Debugger(Mode m, Arch arch = Arch::X64);
+    explicit Debugger(Mode m, const Arch* arch = X64::instance());
     ~Debugger();
 
     // attach/launch lifecycle
-    Status attach(int pid);
+    Status attach(uintptr_t pid);
     Status launch(const std::string &path, const std::vector<std::string> &args = {});
     Status detach();
 
     // run control
     Status resume();
-    Status step();
+    Status step();              // Step using selectedThread or primaryThread
+    Status step(Thread* thread); // Step specific thread
     Status suspend(); // Interrupt/break into running process
+    // Execute a raw engine command (DbgEng: "kb", "lm", etc.) and return output.
+    // Empty string on backends that don't support it.
+    std::string executeCommand(const std::string& cmd) const;
     
     // state queries
     StopReason getStopReason() const;
@@ -47,7 +51,7 @@ public:
 
     // helpers
     bool isAttached() const;
-    std::optional<int> attachedPid() const;
+    std::optional<uintptr_t> attachedPid() const;
 
     // Process/Thread abstraction
     std::shared_ptr<Process> getProcess();
@@ -66,15 +70,16 @@ public:
     
     // Event callback — called when debugger stops
     // Callback receives (reason, address) - address is relevant for breakpoints/exceptions
-    void setEventCallback(std::function<void(StopReason, Address)> cb);
+    // Return false to stop execution, true to continue
+    void setEventCallback(std::function<bool(StopReason, Address)> cb);
 
     // Symbol support
     SymbolProvider* getSymbolProvider();
     Status setSymbolOptions(const SymbolOptions& options);  // Set options before process creation
     
-    // Unwinder registration
-    void registerUnwinder(std::unique_ptr<Unwinder> unwinder);
-    const std::vector<std::unique_ptr<Unwinder>>& getUnwinders() const { return unwinders; }
+    // Frame processor registration
+    void registerFrameProcessor(std::unique_ptr<StackFrameProcessor> processor);
+    const std::vector<std::unique_ptr<StackFrameProcessor>>& getFrameProcessors() const { return frameProcessors; }
     
     Backend* getBackend() const { return backend; }
 
@@ -82,7 +87,7 @@ private:
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
-    std::vector<std::unique_ptr<Unwinder>> unwinders; // registered unwinders (checked in order)
+    std::vector<std::unique_ptr<StackFrameProcessor>> frameProcessors; // registered processors (checked in order)
 };
 
 } // namespace smalldbg

@@ -21,40 +21,19 @@ Status Thread::getRegisters(Registers& out) const {
 Address Thread::getInstructionPointer() const {
     Registers regs{};
     if (getRegisters(regs) != Status::Ok) return 0;
-    
-    if (regs.arch == Arch::X64) {
-        return regs.x64.rip;
-    } else if (regs.arch == Arch::ARM64) {
-        return regs.arm64.pc;
-    }
-    
-    return 0;
+    return regs.ip();
 }
 
 Address Thread::getStackPointer() const {
     Registers regs{};
     if (getRegisters(regs) != Status::Ok) return 0;
-    
-    if (regs.arch == Arch::X64) {
-        return regs.x64.rsp;
-    } else if (regs.arch == Arch::ARM64) {
-        return regs.arm64.sp;
-    }
-    
-    return 0;
+    return regs.sp();
 }
 
 Address Thread::getFramePointer() const {
     Registers regs{};
     if (getRegisters(regs) != Status::Ok) return 0;
-    
-    if (regs.arch == Arch::X64) {
-        return regs.x64.rbp;
-    } else if (regs.arch == Arch::ARM64) {
-        return regs.arm64.x29_fp;
-    }
-    
-    return 0;
+    return regs.fp();
 }
 
 SymbolProvider* Thread::getSymbolProvider() const {
