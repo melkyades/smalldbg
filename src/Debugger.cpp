@@ -2,32 +2,42 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/SymbolProvider.h"
-#include "smalldbg/Unwinder.h"
+#include "smalldbg/StackFrameProcessor.h"
+#include "smalldbg/NativeFrameProcessor.h"
 #include <algorithm>
-#include <iostream>
 #include <sstream>
 
 #include "backends/Backend.h"
+#ifdef _WIN32
 #include "backends/WindowsBackend.h"
+#else
 #include "backends/PtraceBackend.h"
+#endif
 
 namespace smalldbg {
 
-Debugger::Debugger(Mode m, Arch arch) : backend(nullptr), symbolProvider(nullptr) {
+Debugger::Debugger(Mode m, const Arch* arch) : backend(nullptr), symbolProvider(nullptr) {
     // Platform selection for backend
 #ifdef _WIN32
+  #ifdef SMALLDBG_USE_DBGENG
+    backend = new DbgEngBackend(this, m, arch);
+  #else
     backend = new WindowsBackend(this, m, arch);
+  #endif
 #else
     backend = new PtraceBackend(this, m, arch);
 #endif
     
     // Create symbol provider (backends will register their symbol backends)
     symbolProvider = std::make_unique<SymbolProvider>(backend);
+    
+    // Register the native/C frame processor as the default (always last in chain)
+    frameProcessors.push_back(std::make_unique<NativeFrameProcessor>());
 }
 
 Debugger::~Debugger(){ delete backend; }
 
-Status Debugger::attach(int pid) {
+Status Debugger::attach(uintptr_t pid) {
     return backend->attach(pid);
 }
 
@@ -53,8 +63,15 @@ Status Debugger::step() {
     return backend->step(thread.get());
 }
 
+Status Debugger::step(Thread* thread) {
+    return backend->step(thread);
+}
+
 Status Debugger::suspend() {
     return backend->suspend();
+}
+std::string Debugger::executeCommand(const std::string& cmd) const {
+    return backend->executeCommand(cmd);
 }
 
 Status Debugger::setBreakpoint(Address addr, const std::string &name) {
@@ -94,7 +111,7 @@ Status Debugger::recoverCallerRegisters(Registers& regs) const {
 
 bool Debugger::isAttached() const { return backend->isAttached(); }
 
-std::optional<int> Debugger::attachedPid() const { return backend->attachedPid(); }
+std::optional<uintptr_t> Debugger::attachedPid() const { return backend->attachedPid(); }
 
 std::shared_ptr<Process> Debugger::getProcess() {
     return backend->getProcess();
@@ -116,7 +133,7 @@ Address Debugger::getStopAddress() const { return backend->getStopAddress(); }
 
 void Debugger::setLogCallback(std::function<void(const std::string &)> cb) { backend->setLogCallback(std::move(cb)); }
 
-void Debugger::setEventCallback(std::function<void(StopReason, Address)> cb) { backend->setEventCallback(std::move(cb)); }
+void Debugger::setEventCallback(std::function<bool(StopReason, Address)> cb) { backend->setEventCallback(std::move(cb)); }
 
 StopReason Debugger::waitForEvent(StopReason reason, int timeout_ms) {
     return backend->waitForEvent(reason, timeout_ms);
@@ -131,8 +148,10 @@ Status Debugger::setSymbolOptions(const SymbolOptions& options) {
     return Status::Ok;
 }
 
-void Debugger::registerUnwinder(std::unique_ptr<Unwinder> unwinder) {
-    unwinders.push_back(std::move(unwinder));
+void Debugger::registerFrameProcessor(std::unique_ptr<StackFrameProcessor> processor) {
+    // Insert before the last element (the native fallback processor)
+    auto it = frameProcessors.empty() ? frameProcessors.end() : std::prev(frameProcessors.end());
+    frameProcessors.insert(it, std::move(processor));
 }
 
 } // namespace smalldbg
