@@ -4,6 +4,15 @@ project(smalldbg VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Backend selection — set to ON to use the DbgEng (WinDbg engine) backend
+# instead of the plain WinAPI debug loop.  This is recommended when debugging
+# x86 targets on ARM64 hosts.
+if(WIN32)
+    option(SMALLDBG_USE_DBGENG "Use DbgEng backend instead of plain WinAPI" ON)
+else()
+    option(SMALLDBG_USE_DBGENG "Use DbgEng backend instead of plain WinAPI" OFF)
+endif()
+
 # Enable debug symbols for all build types
 if(MSVC)
     add_compile_options(/Zi)
@@ -11,27 +20,54 @@ if(MSVC)
 endif()
 
 add_library(smalldbg STATIC
+    src/Arch.cpp
     src/Debugger.cpp
     src/Process.cpp
     src/Thread.cpp
     src/SymbolProvider.cpp
     src/StackTrace.cpp
-    src/backends/WindowsBackend.cpp
-    src/backends/PtraceBackend.cpp
+    src/StackFrame.cpp
+    src/LocalVariable.cpp
+    src/NativeFrameProcessor.cpp
     src/bindings/CAPI.cpp
 )
+# Platform-specific backend sources
+if(WIN32)
+    target_sources(smalldbg PRIVATE
+        src/backends/WindowsBackend.cpp
+        src/backends/DbgEngBackend.cpp
+    )
+else()
+    target_sources(smalldbg PRIVATE
+        src/backends/PtraceBackend.cpp
+        src/platform/posix/Platform.cpp
+    )
+    if(APPLE)
+        target_sources(smalldbg PRIVATE
+            src/backends/PtracePlatformMac.cpp
+        )
+    endif()
+endif()
 
 # Platform-specific symbol provider sources
 if(WIN32)
     target_sources(smalldbg PRIVATE
         src/symbols/DbgHelpBackend.cpp
+        src/symbols/DbgEngSymbolBackend.cpp
         src/platform/windows/HttpDownload.cpp
+        src/platform/windows/Platform.cpp
     )
-    target_link_libraries(smalldbg PRIVATE dbghelp)
+    target_link_libraries(smalldbg PRIVATE dbghelp dbgeng)
 else()
     target_sources(smalldbg PRIVATE
         src/symbols/DwarfBackend.cpp
+        src/symbols/DwarfTypes.cpp
     )
+    if(APPLE)
+        target_sources(smalldbg PRIVATE
+            src/symbols/MachOParser.cpp
+        )
+    endif()
 endif()
 
 target_include_directories(smalldbg PUBLIC
@@ -39,39 +75,12 @@ target_include_directories(smalldbg PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-add_executable(example examples/debugger_api.cpp)
-target_link_libraries(example PRIVATE smalldbg)
-
-add_executable(process_api examples/process_api.cpp)
-target_link_libraries(process_api PRIVATE smalldbg)
-
-add_executable(symbols_example examples/symbols_example.cpp)
-target_link_libraries(symbols_example PRIVATE smalldbg)
-
-add_executable(stacktrace_example examples/stacktrace_example.cpp)
-target_link_libraries(stacktrace_example PRIVATE smalldbg)
-
-add_executable(locals_example examples/locals_example.cpp)
-target_link_libraries(locals_example PRIVATE smalldbg)
-
-add_executable(test_backend tests/test_harness.cpp)
-target_link_libraries(test_backend PRIVATE smalldbg)
-
-add_executable(test_attach tests/test_attach.cpp)
-target_link_libraries(test_attach PRIVATE smalldbg)
-
-# A small instrumented program used by tests so we can exercise breakpoints, stepping and
-# predictable behavior without relying on external system tools.
-add_executable(test_target tests/test_target.cpp)
-
-# ensure test_target can see our internal src/platform headers
-target_include_directories(test_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-if(WIN32)
-    target_sources(test_target PRIVATE src/platform/windows/Platform.cpp)
-else()
-    target_sources(test_target PRIVATE src/platform/posix/Platform.cpp)
+if(SMALLDBG_USE_DBGENG)
+    target_compile_definitions(smalldbg PRIVATE SMALLDBG_USE_DBGENG=1)
 endif()
 
-enable_testing()
-add_test(NAME backend-test COMMAND test_backend)
+# Examples
+add_subdirectory(examples)
+
+# Tests
+add_subdirectory(tests)
