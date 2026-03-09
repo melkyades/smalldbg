@@ -214,8 +214,8 @@ Status WindowsBackend::step(Thread* thread) {
             wow64Ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
             return Wow64SetThreadContext(hThread, &wow64Ctx) != 0;
         } else {
-    CONTEXT ctx = {};
-    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+            CONTEXT ctx = {};
+            ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
             if (!GetThreadContext(hThread, &ctx)) return false;
 #if defined(_M_X64)
             ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
@@ -390,11 +390,11 @@ Status WindowsBackend::wow64ContextToRegisters(const WOW64_CONTEXT &ctx, Registe
 bool WindowsBackend::captureNativeRegisters(Thread* thread, Registers &out) const {
     DWORD tid = static_cast<DWORD>(thread->getThreadId());
     CONTEXT ctx = {};
-    #ifdef CONTEXT_ALL
-        ctx.ContextFlags = CONTEXT_ALL;
-    #else
-        ctx.ContextFlags = CONTEXT_FULL;
-    #endif
+#ifdef CONTEXT_ALL
+    ctx.ContextFlags = CONTEXT_ALL;
+#else
+    ctx.ContextFlags = CONTEXT_FULL;
+#endif
     bool ok = withSuspendedThread(tid, THREAD_GET_CONTEXT, [&](HANDLE hThread) {
         return GetThreadContext(hThread, &ctx) != 0;
     });
@@ -495,7 +495,7 @@ Status WindowsBackend::nativeContextToRegisters(const CONTEXT &ctx, Registers &o
     #else
             #error "Unsupported architecture"
     #endif
-        }
+    }
 
 Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
     // Dispatch on the *registers'* architecture, not the backend's.
@@ -528,7 +528,7 @@ Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
         );
 
         if (!ok || sf.AddrPC.Offset == 0)
-        return Status::Error;
+            return Status::Error;
 
         regs.x86.eip = static_cast<uint32_t>(sf.AddrPC.Offset);
         regs.x86.ebp = static_cast<uint32_t>(sf.AddrFrame.Offset);
@@ -566,9 +566,9 @@ Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
             SymGetModuleBase64,
             NULL
         );
-    
+
         if (!ok || sf.AddrPC.Offset == 0)
-        return Status::Error;
+            return Status::Error;
 
         regs.x64.rip = sf.AddrPC.Offset;
         regs.x64.rbp = sf.AddrFrame.Offset;
@@ -605,8 +605,8 @@ Status WindowsBackend::recoverCallerRegisters(Registers& regs) const {
         regs.x64.rip = sf.AddrPC.Offset;
         regs.x64.rbp = sf.AddrFrame.Offset;
         regs.x64.rsp = sf.AddrStack.Offset;
-    return Status::Ok;
-}
+        return Status::Ok;
+    }
 #endif
 
     return Status::Error;
@@ -734,13 +734,13 @@ void WindowsBackend::debugLoop() {
                 } else {
                     if (log) log(std::string("(windows) WARNING: thread not found in process: ") + std::to_string(ev.dwThreadId));
                 }
-                }
             }
-            
+        }
+
             // Notify via callback if set
-            if (eventCallback) {
+        if (eventCallback) {
             shouldContinue = eventCallback(stopReason, stopAddress);
-            }
+        }
        
         if (!shouldContinue) {
             // Notify anyone waiting for events
@@ -825,9 +825,9 @@ bool WindowsBackend::handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr
                 Wow64SetThreadContext(hThread, &wow64Ctx);
             }
         } else {
-        CONTEXT ctx = {};
-        ctx.ContextFlags = CONTEXT_CONTROL;
-        if (GetThreadContext(hThread, &ctx)) {
+            CONTEXT ctx = {};
+            ctx.ContextFlags = CONTEXT_CONTROL;
+            if (GetThreadContext(hThread, &ctx)) {
     #if defined(_M_X64)
                 ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
     #elif defined(_M_ARM64)
@@ -835,7 +835,7 @@ bool WindowsBackend::handleBreakpointEvent(const DEBUG_EVENT &ev, uintptr_t addr
     #elif defined(_M_IX86)
                 ctx.EFlags |= X86_EFLAGS_TRAP_FLAG;
     #endif
-            SetThreadContext(hThread, &ctx);
+                SetThreadContext(hThread, &ctx);
             }
         }
         CloseHandle(hThread);

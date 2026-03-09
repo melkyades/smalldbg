@@ -26,7 +26,7 @@ public:
     virtual Status resume() = 0;
     virtual Status step(Thread* thread) = 0;
     virtual Status suspend() = 0; // Interrupt running process
-
+    
     // --- Reverse debugging (TTD) ---
     // Default implementations return NotSupported; override in backends that support TTD
     virtual Status openTrace(const std::string& tracePath) { (void)tracePath; return Status::NotSupported; }
