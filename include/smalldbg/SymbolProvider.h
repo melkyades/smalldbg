@@ -35,6 +35,32 @@ struct SourceLocation {
     Address address{0};
 };
 
+// ---- Native C/C++ type information ----
+
+enum class NativeTypeKind {
+    Void, Bool, Int, UInt, Float, Char,
+    Pointer, Reference,
+    Struct, Class, Union, Enum, Array,
+    Typedef, Const, Volatile,
+    Unknown
+};
+
+struct NativeField {
+    std::string name;
+    uint64_t offset{0};    // byte offset within parent struct
+    uint64_t size{0};      // byte size
+    std::string typeName;  // type of this field
+    NativeTypeKind typeKind{NativeTypeKind::Unknown};
+};
+
+struct NativeTypeInfo {
+    std::string name;                    // fully qualified name
+    NativeTypeKind kind{NativeTypeKind::Unknown};
+    uint64_t size{0};                    // byte size
+    std::vector<NativeField> fields;     // for struct/class/union
+    std::string targetTypeName;          // for pointer/reference/typedef/const/volatile
+};
+
 // Options for symbol loading
 struct SymbolOptions {
     std::string cacheDirectory = "C:\\Symbols";  // Where to cache downloaded symbols
@@ -73,6 +99,13 @@ public:
     
     // Local variables - populates frame->localVariables directly
     void getLocalVariables(StackFrame* frame);
+
+    // Module enumeration
+    std::vector<ModuleInfo> getModules();
+
+    // Type information
+    const NativeTypeInfo* getTypeByName(const std::string& name);
+    std::optional<std::string> getVariableTypeName(const std::string& name);
 
 private:
     Backend* backend;

@@ -54,9 +54,14 @@ std::optional<Symbol> SymbolProvider::getSymbolByAddress(Address addr) {
 }
 
 std::vector<Symbol> SymbolProvider::findSymbols(const std::string& pattern) {
-    // For now, not implemented
-    (void)pattern;
-    return {};
+    std::vector<Symbol> results;
+    for (auto& backend : backends) {
+        backend->enumerateSymbols(pattern, [&](const Symbol& sym) {
+            results.push_back(sym);
+            return true;
+        });
+    }
+    return results;
 }
 
 std::optional<SourceLocation> SymbolProvider::getSourceLocation(Address addr) {
@@ -86,6 +91,33 @@ void SymbolProvider::getLocalVariables(StackFrame* frame) {
             return;  // Backend populated variables, we're done
         }
     }
+}
+
+std::vector<ModuleInfo> SymbolProvider::getModules() {
+    std::vector<ModuleInfo> results;
+    for (auto& backend : backends) {
+        backend->enumerateModules([&](const ModuleInfo& mod) {
+            results.push_back(mod);
+            return true;
+        });
+    }
+    return results;
+}
+
+const NativeTypeInfo* SymbolProvider::getTypeByName(const std::string& name) {
+    for (auto& backend : backends) {
+        auto* result = backend->getTypeByName(name);
+        if (result) return result;
+    }
+    return nullptr;
+}
+
+std::optional<std::string> SymbolProvider::getVariableTypeName(const std::string& name) {
+    for (auto& backend : backends) {
+        auto result = backend->getVariableTypeName(name);
+        if (result) return result;
+    }
+    return std::nullopt;
 }
 
 } // namespace smalldbg

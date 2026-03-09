@@ -9,6 +9,7 @@
 namespace smalldbg {
 
 class Thread;  // Forward declaration
+class StackFrameProcessor;  // Forward declaration
 
 // Represents a single frame in a stack trace
 struct StackFrame {
@@ -21,13 +22,19 @@ struct StackFrame {
     // Back-reference to thread (for memory reads by local variables)
     const Thread* thread{nullptr};
     
-    // Accessors for convenience (direct access to register values)
-    Address& ip() { return registers.x64.rip; }  // Return address / current IP
-    const Address& ip() const { return registers.x64.rip; }
-    Address& fp() { return registers.x64.rbp; }  // Frame pointer (base pointer)
-    const Address& fp() const { return registers.x64.rbp; }
-    Address& sp() { return registers.x64.rsp; }  // Stack pointer
-    const Address& sp() const { return registers.x64.rsp; }
+    // The processor that handled this frame
+    StackFrameProcessor* processor{nullptr};
+    
+    // Previous frame in the trace (towards the top of the stack / most recent call)
+    StackFrame* prev{nullptr};
+    
+    // Arch-aware accessors — delegate to registers
+    Address ip() const { return registers.ip(); }
+    Address fp() const { return registers.fp(); }
+    Address sp() const { return registers.sp(); }
+    void setIp(Address v) { registers.setIp(v); }
+    void setFp(Address v) { registers.setFp(v); }
+    void setSp(Address v) { registers.setSp(v); }
     
     std::string functionName;    // Resolved function name (if available)
     std::string moduleName;      // Module containing this frame
@@ -45,7 +52,6 @@ struct StackFrame {
 };
 
 class Debugger;
-class SymbolProvider;
 
 // Stack trace collector
 class StackTrace {
@@ -64,18 +70,6 @@ public:
 private:
     const Thread* thread;
     std::vector<std::unique_ptr<StackFrame>> frames;
-    
-    // Enrich a frame with symbol and source information
-    // Returns false if frame is invalid (ip or bp are 0)
-    bool processFrame(StackFrame& frame, SymbolProvider* symbols);
-    
-    // Recover caller's register state (platform-specific or manual)
-    // Returns false if unwinding should stop
-    bool recoverCallerRegisters(Registers& regs, Debugger* debugger);
-    
-    // Manual fallback: restore registers using frame pointer
-    // Returns false if unwinding should stop
-    bool manualUnwind(Registers& regs, Debugger* debugger);
 };
 
 } // namespace smalldbg
