@@ -161,8 +161,14 @@ std::string EggHeapObject::printString() const {
         }
     }
 
-    if (!cls.empty())
-        return "a " + cls;
+    if (cls == "UndefinedObject") return "nil";
+    if (cls == "True") return "true";
+    if (cls == "False") return "false";
+
+    if (!cls.empty()) {
+        bool startsWithVowel = cls.find_first_of("AEIOUaeiou") == 0;
+        return (startsWithVowel ? "an " : "a ") + cls;
+    }
 
     std::ostringstream oss;
     oss << "0x" << std::hex << oop_;

@@ -333,9 +333,9 @@ EggInspector::walkSmalltalkFrames(const EvaluatorState& st,
 
         result.push_back(std::move(frame));
 
-        // Follow the frame chain: previous bp = _stack[bp - 1] (0-based)
+        // Follow the frame chain: previous bp is stored at _stack[bp-1]
         uint64_t prevBP = readStackSlot(st, bp);
-        if (prevBP >= bp || prevBP == 0) break;
+        if (prevBP <= bp || prevBP == 0) break;
         bp = prevBP;
     }
 
