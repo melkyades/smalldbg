@@ -72,6 +72,14 @@ private:
         const std::vector<std::string>& segments) const;
     HttpResponse handleSmalltalkDebuggerRoute(
         const std::vector<std::string>& segments, int threadIndex) const;
+
+    // ---- VM Inspector handlers ----
+    HttpResponse handleRegions(const HttpRequest& req) const;
+    HttpResponse handleClassify(const HttpRequest& req) const;
+    HttpResponse handleInspect(const HttpRequest& req) const;
+    HttpResponse handleMemory(const HttpRequest& req) const;
+    HttpResponse handleSymbol(const HttpRequest& req) const;
+    HttpResponse handleDisassemble(const HttpRequest& req) const;
 };
 
 } // namespace webside
