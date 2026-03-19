@@ -954,12 +954,22 @@ void WindowsBackend::handleExitProcessEvent(const DEBUG_EVENT &ev) {
     attached = false;
 }
 
+// Check if a wide string looks like valid text (not 0xCCCC debug fill)
+static bool isValidWideName(const wchar_t* name) {
+    if (!name[0]) return false;
+    for (const wchar_t* p = name; *p; ++p) {
+        if (*p == 0xCCCC) return false;
+    }
+    return true;
+}
+
 void WindowsBackend::handleLoadDllEvent(const DEBUG_EVENT &ev) {
 
     stopReason = StopReason::ModuleLoaded;
 
     // Get DLL name if available
     char dllName[MAX_PATH] = {0};
+    bool nameValid = false;
     if (ev.u.LoadDll.lpImageName) {
         // Read the pointer to the name string.
         // In WOW64 processes, early 64-bit DLLs (ntdll, wow64*.dll) have
@@ -974,10 +984,26 @@ void WindowsBackend::handleLoadDllEvent(const DEBUG_EVENT &ev) {
             if (ev.u.LoadDll.fUnicode) {
                 wchar_t wideName[MAX_PATH];
                 ReadProcessMemory(pi.hProcess, (LPCVOID)namePtr, wideName, sizeof(wideName), NULL);
-                WideCharToMultiByte(CP_UTF8, 0, wideName, -1, dllName, sizeof(dllName), NULL, NULL);
+                if (isValidWideName(wideName)) {
+                    WideCharToMultiByte(CP_UTF8, 0, wideName, -1, dllName, sizeof(dllName), NULL, NULL);
+                    nameValid = true;
+                }
             } else {
                 ReadProcessMemory(pi.hProcess, (LPCVOID)namePtr, dllName, sizeof(dllName), NULL);
+                nameValid = (dllName[0] != '\0');
             }
+        }
+    }
+
+    // Fall back to GetFinalPathNameByHandle when lpImageName yields garbage
+    if (!nameValid && ev.u.LoadDll.hFile) {
+        wchar_t wideName[MAX_PATH];
+        DWORD len = GetFinalPathNameByHandleW(ev.u.LoadDll.hFile, wideName, MAX_PATH, FILE_NAME_NORMALIZED);
+        if (len > 0 && len < MAX_PATH) {
+            // Strip \\?\ prefix if present
+            wchar_t* start = wideName;
+            if (wcsncmp(start, L"\\\\?\\", 4) == 0) start += 4;
+            WideCharToMultiByte(CP_UTF8, 0, start, -1, dllName, sizeof(dllName), NULL, NULL);
         }
     }
     
