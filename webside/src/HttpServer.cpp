@@ -186,9 +186,7 @@ HttpRequest HttpServer::parseRequest(const std::string& rawRequest) {
                 if (eqPos != std::string::npos) {
                     std::string key = param.substr(0, eqPos);
                     std::string value = param.substr(eqPos + 1);
-                    // Basic URL decoding: replace + with space
-                    for (auto& c : value) { if (c == '+') c = ' '; }
-                    request.params[key] = value;
+                    request.params[key] = urlDecode(value);
                 } else if (!param.empty()) {
                     request.params[param] = "true";
                 }
@@ -237,6 +235,27 @@ std::string HttpServer::buildResponse(const HttpResponse& response) {
 
 std::string HttpServer::getRouteKey(const std::string& method, const std::string& path) {
     return method + " " + path;
+}
+
+std::string HttpServer::urlDecode(const std::string& encoded) {
+    std::string decoded;
+    decoded.reserve(encoded.size());
+    for (size_t i = 0; i < encoded.size(); i++) {
+        if (encoded[i] == '%' && i + 2 < encoded.size()) {
+            int hex = 0;
+            std::istringstream iss(encoded.substr(i + 1, 2));
+            if (iss >> std::hex >> hex) {
+                decoded += static_cast<char>(hex);
+                i += 2;
+                continue;
+            }
+        }
+        if (encoded[i] == '+')
+            decoded += ' ';
+        else
+            decoded += encoded[i];
+    }
+    return decoded;
 }
 
 } // namespace webside

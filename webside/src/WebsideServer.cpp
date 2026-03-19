@@ -405,24 +405,7 @@ void WebsideServer::setupBaseRoutes() {
 // =========================================================================
 
 std::string WebsideServer::urlDecode(const std::string& encoded) {
-    std::string decoded;
-    decoded.reserve(encoded.size());
-    for (size_t i = 0; i < encoded.size(); i++) {
-        if (encoded[i] == '%' && i + 2 < encoded.size()) {
-            int hex = 0;
-            std::istringstream iss(encoded.substr(i + 1, 2));
-            if (iss >> std::hex >> hex) {
-                decoded += static_cast<char>(hex);
-                i += 2;
-                continue;
-            }
-        }
-        if (encoded[i] == '+')
-            decoded += ' ';
-        else
-            decoded += encoded[i];
-    }
-    return decoded;
+    return HttpServer::urlDecode(encoded);
 }
 
 std::vector<std::string> WebsideServer::splitPath(const std::string& path) {

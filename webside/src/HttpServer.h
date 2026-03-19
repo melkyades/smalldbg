@@ -44,6 +44,8 @@ public:
     // Stop the server
     void stop();
 
+    static std::string urlDecode(const std::string& encoded);
+
 private:
     int port;
     bool running_ = false;
