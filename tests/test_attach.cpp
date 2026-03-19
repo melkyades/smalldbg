@@ -22,7 +22,7 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     // Now try to attach
-    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::Arch::X64);
+    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::X64::instance());
     dbg.setLogCallback([](const std::string &m){ std::cout << "[LOG] " << m << std::endl; });
     
     auto status = dbg.attach(targetPid);

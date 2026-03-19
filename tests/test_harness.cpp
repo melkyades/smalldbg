@@ -55,7 +55,7 @@ int test_register_access(smalldbg::Debugger &dbg) {
     smalldbg::Registers r;
     auto s = dbg.getRegisters(r);
     TEST_ASSERT(s == smalldbg::Status::Ok, "Failed to get registers", 5);
-    TEST_ASSERT(r.arch == smalldbg::Arch::X64, "Architecture mismatch", 6);
+    TEST_ASSERT(r.arch == smalldbg::X64::instance(), "Architecture mismatch", 6);
     
     std::cout << "[INFO] RIP: 0x" << std::hex << r.x64.rip << std::dec << std::endl;
     std::cout << "[INFO] Stop Address: 0x" << std::hex << stopAddr << std::dec << std::endl;
@@ -237,7 +237,7 @@ int test_detach(smalldbg::Debugger &dbg) {
 }
 
 int main() {
-    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::Arch::X64);
+    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::X64::instance());
     int logCount = 0;
     
     dbg.setLogCallback([&logCount](const std::string &m){
