@@ -10,9 +10,3 @@ Makefile
 # OS
 Thumbs.db
 desktop.ini
-
-# Scratch output files
-test_output.txt
-methods_out.txt
-methods_out2.txt
-webside_out.txt

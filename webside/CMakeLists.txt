@@ -1,9 +1,17 @@
-cmake_minimum_required(VERSION 3.10)
-project(webside-backend VERSION 0.1.0 LANGUAGES CXX)
+# Webside debugger servers — VM-specific frontends built on top of smalldbg
+# and the shared HttpServer / WebsideServer infrastructure.
 
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(WEBSIDE_COMMON
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/HttpServer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideServer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Json.cpp
+)
 
-# NOTE: The webside server targets (webside_egg) are built from
-# the top-level project via examples/CMakeLists.txt.  This standalone
-# CMakeLists is kept for reference but is not the primary build entry point.
+# Add every subdirectory of src/ that has its own CMakeLists.txt
+file(GLOB children RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/src src/*)
+foreach(child ${children})
+    if(IS_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/src/${child}
+       AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/${child}/CMakeLists.txt)
+        add_subdirectory(src/${child})
+    endif()
+endforeach()

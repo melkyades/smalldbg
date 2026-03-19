@@ -93,5 +93,8 @@ endif()
 # Examples
 add_subdirectory(examples)
 
+# Webside debugger servers (Egg, Bee, etc)
+add_subdirectory(webside)
+
 # Tests
 add_subdirectory(tests)
