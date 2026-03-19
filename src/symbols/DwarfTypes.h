@@ -39,7 +39,7 @@ public:
     /// Parse DWARF types from .o files referenced by a Mach-O binary.
     void loadFromBinary(const std::string& binaryPath);
 
-    /// Look up a type by fully-qualified name (e.g. "Egg::Runtime").
+    /// Look up a type by fully-qualified name (e.g. "MyApp::Runtime").
     const NativeTypeInfo* findType(const std::string& name) const;
 
     /// Get the type name of a global variable by its demangled symbol name.

@@ -60,7 +60,6 @@ static bool loadWinDbgPreviewDbgEng() {
     // Known WinDbg Preview installation paths
     const char* windbgPaths[] = {
         "C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_1.2601.12001.0_arm64__8wekyb3d8bbwe\\arm64",
-        "e:\\egg\\smalldbg\\tools\\ttd",
         "C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_1.2601.12001.0_x64__8wekyb3d8bbwe\\amd64",
     };
     

@@ -752,7 +752,7 @@ static void processCompilationUnit(
         if (die.tag == DW5_TAG_pointer_type ||
             die.tag == DW5_TAG_typedef) {
             if (!die.hasTypeRef) continue;
-            // Use the full type name (e.g. "Egg::Runtime *" not just "Egg::Runtime")
+            // Use the full type name (e.g. "MyApp::Runtime *" not just "MyApp::Runtime")
             uint32_t cuRelOffset = offset - cuOffset;
             std::string name = resolveTypeName(cuRelOffset, cuOffset, dies);
             if (name.empty()) continue;

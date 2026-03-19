@@ -14,8 +14,8 @@ namespace smalldbg {
 // A single resolved symbol (address already slid to runtime address)
 struct ResolvedSymbol {
     Address address;
-    std::string name;     // demangled (e.g. "Egg::KnownObjects::nil")
-    std::string rawName;  // mangled without leading _ (e.g. "_ZN3Egg12KnownObjects3nilE")
+    std::string name;     // demangled (e.g. "MyApp::KnownObjects::nil")
+    std::string rawName;  // mangled without leading _ (e.g. "_ZN5MyApp12KnownObjects3nilE")
     uint64_t size;        // estimated from the gap to the next symbol
 };
 
