@@ -62,6 +62,9 @@ public:
     // Unwind the stack
     // maxFrames: maximum number of frames to collect (0 = unlimited)
     Status unwind(size_t maxFrames = 64);
+
+    // Lazily resolve expensive details (source location, locals) for one frame
+    void resolveFrameDetails(size_t index, Debugger* debugger);
     
     // Access collected frames
     const std::vector<std::unique_ptr<StackFrame>>& getFrames() const { return frames; }

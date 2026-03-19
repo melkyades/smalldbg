@@ -30,6 +30,10 @@ public:
     
     // Fill in frame description (functionName, moduleName, source, etc.)
     virtual void process(StackFrame& frame, Debugger* debugger) = 0;
+
+    // Lazily resolve expensive details (source location, locals) for a single frame.
+    // Default implementation does nothing; subclasses override as needed.
+    virtual void resolveDetails(StackFrame& frame, Debugger* debugger) {}
 };
 
 } // namespace smalldbg
