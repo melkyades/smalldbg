@@ -2,7 +2,9 @@
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/Debugger.h"
+#include "smalldbg/Arch.h"
 #include <algorithm>
+#include <cstring>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
@@ -33,9 +35,23 @@ constexpr uint32_t CV_REG_ECX = 18;
 constexpr uint32_t CV_REG_EDX = 19;
 constexpr uint32_t CV_REG_EBX = 20;
 
+static std::optional<uint64_t> getARM64RegisterValue(
+    const ARM64Registers& regs, uint32_t regNum) {
+
+    const uint64_t* regArray = &regs.x0;
+    if (regNum <= 28) return regArray[regNum]; // x0-x28
+    if (regNum == 29) return regs.x29_fp;
+    if (regNum == 30) return regs.x30_lr;
+    if (regNum == 31) return regs.sp;
+    return std::nullopt;
+}
+
 static std::optional<uint64_t> getRegisterValue(const Registers& regs, uint32_t regNum) {
+    if (std::strcmp(regs.arch->name(), "ARM64") == 0)
+        return getARM64RegisterValue(regs.arm64, regNum);
+
+    // x64/x86 registers (CodeView numbering)
     switch (regNum) {
-        // x64 registers
         case CV_AMD64_RAX: return regs.x64.rax;
         case CV_AMD64_RCX: return regs.x64.rcx;
         case CV_AMD64_RDX: return regs.x64.rdx;
@@ -52,13 +68,13 @@ static std::optional<uint64_t> getRegisterValue(const Registers& regs, uint32_t 
         case CV_AMD64_R13: return regs.x64.r13;
         case CV_AMD64_R14: return regs.x64.r14;
         case CV_AMD64_R15: return regs.x64.r15;
-        
+
         // x86 registers (map to lower 32-bits of x64 regs)
         case CV_REG_EAX: return regs.x64.rax & 0xFFFFFFFF;
         case CV_REG_ECX: return regs.x64.rcx & 0xFFFFFFFF;
         case CV_REG_EDX: return regs.x64.rdx & 0xFFFFFFFF;
         case CV_REG_EBX: return regs.x64.rbx & 0xFFFFFFFF;
-        
+
         default: return std::nullopt;
     }
 }
@@ -67,26 +83,26 @@ std::optional<uint64_t> LocalVariable::getValue() const {
     if (!frame->hasRegisters) {
         return std::nullopt;
     }
-    
+
     const Registers& regs = frame->registers;
     Address effectiveAddress = 0;
-    
+
     switch (locationType) {
         case VariableLocation::Register:
             return getRegisterValue(regs, static_cast<uint32_t>(offset));
-            
+
         case VariableLocation::FrameRelative:
-            effectiveAddress = regs.x64.rbp + offset;
+            effectiveAddress = regs.fp() + offset;
             break;
-            
+
         case VariableLocation::StackRelative:
-            effectiveAddress = regs.x64.rsp + offset;
+            effectiveAddress = regs.sp() + offset;
             break;
-            
+
         case VariableLocation::Memory:
             effectiveAddress = address;
             break;
-            
+
         case VariableLocation::Unknown:
         default:
             return std::nullopt;
@@ -103,9 +119,17 @@ std::optional<uint64_t> LocalVariable::getValue() const {
     return std::nullopt;
 }
 
-static std::string getRegisterName(uint32_t regNum) {
+static std::string getRegisterName(const Registers& regs, uint32_t regNum) {
+    if (std::strcmp(regs.arch->name(), "ARM64") == 0) {
+        if (regNum <= 28) return "x" + std::to_string(regNum);
+        if (regNum == 29) return "fp";
+        if (regNum == 30) return "lr";
+        if (regNum == 31) return "sp";
+        return "reg" + std::to_string(regNum);
+    }
+
+    // x64/x86
     switch (regNum) {
-        // x64 registers
         case CV_AMD64_RAX: return "rax";
         case CV_AMD64_RCX: return "rcx";
         case CV_AMD64_RDX: return "rdx";
@@ -122,30 +146,31 @@ static std::string getRegisterName(uint32_t regNum) {
         case CV_AMD64_R13: return "r13";
         case CV_AMD64_R14: return "r14";
         case CV_AMD64_R15: return "r15";
-        
-        // x86 registers
         case CV_REG_EAX: return "eax";
         case CV_REG_ECX: return "ecx";
         case CV_REG_EDX: return "edx";
         case CV_REG_EBX: return "ebx";
-        
-        default: 
+        default:
             return "reg" + std::to_string(regNum);
     }
 }
 
 std::string LocalVariable::getLocationString() const {
     std::ostringstream oss;
-    
+    const char* fpName = std::strcmp(frame->registers.arch->name(), "ARM64") == 0
+                         ? "fp" : "rbp";
+    const char* spName = std::strcmp(frame->registers.arch->name(), "ARM64") == 0
+                         ? "sp" : "rsp";
+
     switch (locationType) {
         case VariableLocation::Register:
-            oss << getRegisterName(static_cast<uint32_t>(offset));
+            oss << getRegisterName(frame->registers, static_cast<uint32_t>(offset));
             break;
         case VariableLocation::FrameRelative:
-            oss << "rbp" << (offset >= 0 ? "+" : "") << offset;
+            oss << fpName << (offset >= 0 ? "+" : "") << offset;
             break;
         case VariableLocation::StackRelative:
-            oss << "rsp" << (offset >= 0 ? "+" : "") << offset;
+            oss << spName << (offset >= 0 ? "+" : "") << offset;
             break;
         case VariableLocation::Memory:
             oss << "0x" << std::hex << address;
