@@ -45,11 +45,11 @@ else()
     )
     if(APPLE)
         target_sources(smalldbg PRIVATE
-            src/backends/PtracePlatformMac.cpp
+            src/platform/posix/macos/PtracePlatformMac.cpp
         )
     else()
         target_sources(smalldbg PRIVATE
-            src/backends/PtracePlatformLinux.cpp
+            src/platform/posix/linux/PtracePlatformLinux.cpp
         )
     endif()
 endif()
@@ -71,10 +71,12 @@ else()
     if(APPLE)
         target_sources(smalldbg PRIVATE
             src/symbols/MachOParser.cpp
+            src/platform/posix/macos/SourceResolverMac.cpp
         )
     else()
         target_sources(smalldbg PRIVATE
             src/symbols/ElfParser.cpp
+            src/platform/posix/linux/SourceResolverLinux.cpp
         )
     endif()
 endif()

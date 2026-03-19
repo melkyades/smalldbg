@@ -1,14 +1,13 @@
-// macOS PtracePlatform — uses Mach APIs for memory, registers, and threads.
+// Linux PtracePlatform — uses ptrace, /proc, and process_vm_readv.
 #pragma once
 
-#include "PtracePlatform.h"
-#include <mach/mach_types.h>
+#include "../../../backends/PtracePlatform.h"
 
 namespace smalldbg {
 
-class PtracePlatformMac : public PtracePlatform {
+class PtracePlatformLinux : public PtracePlatform {
 public:
-    ~PtracePlatformMac() override;
+    ~PtracePlatformLinux() override = default;
 
     int ptraceTraceMe() override;
     int ptraceAttach(int pid) override;
@@ -31,11 +30,12 @@ public:
 
 private:
     int targetPid{-1};
-    mach_port_t taskPort{MACH_PORT_NULL};
-    std::vector<mach_port_t> cachedThreadPorts;
 
-    // Read one dyld_image_info entry and append to modules
-    void readModuleEntry(std::vector<ModuleInfo>& modules, Address entryAddr) const;
+    // Write a single aligned word via PTRACE_POKEDATA
+    Status pokeWord(Address wordAddr, long word) const;
+
+    // Parse one line of /proc/<pid>/maps and append to modules if it names a file
+    void parseMapsLine(std::vector<ModuleInfo>& modules, const std::string& line) const;
 };
 
 } // namespace smalldbg

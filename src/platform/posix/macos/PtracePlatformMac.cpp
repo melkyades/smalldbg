@@ -8,7 +8,7 @@
 //   - task_info(TASK_DYLD_INFO) for module enumeration
 
 #include "PtracePlatformMac.h"
-#include "../../include/smalldbg/Arch.h"
+#include "../../../../include/smalldbg/Arch.h"
 #include <cstring>
 #include <sys/ptrace.h>
 #include <signal.h>

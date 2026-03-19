@@ -9,7 +9,7 @@
 //   - /proc/<pid>/maps for module enumeration
 
 #include "PtracePlatformLinux.h"
-#include "../../include/smalldbg/Arch.h"
+#include "../../../../include/smalldbg/Arch.h"
 #include <cstring>
 #include <cerrno>
 #include <sys/ptrace.h>

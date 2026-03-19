@@ -2,6 +2,7 @@
 // from Mach-O .o files on macOS (referenced via N_OSO stab entries).
 
 #include "DwarfTypes.h"
+#include "SymbolsInternal.h"
 
 #ifdef __APPLE__
 #include <mach-o/loader.h>
@@ -23,35 +24,44 @@ namespace smalldbg {
 // =========================================================================
 
 enum : uint16_t {
-    DW5_TAG_array_type       = 0x01,
-    DW5_TAG_class_type       = 0x02,
-    DW5_TAG_enumeration_type = 0x04,
-    DW5_TAG_member           = 0x0d,
-    DW5_TAG_pointer_type     = 0x0f,
-    DW5_TAG_reference_type   = 0x10,
-    DW5_TAG_compile_unit     = 0x11,
-    DW5_TAG_structure_type   = 0x13,
-    DW5_TAG_typedef          = 0x16,
-    DW5_TAG_union_type       = 0x17,
-    DW5_TAG_subrange_type    = 0x21,
-    DW5_TAG_base_type        = 0x24,
-    DW5_TAG_const_type       = 0x26,
-    DW5_TAG_volatile_type    = 0x35,
-    DW5_TAG_variable         = 0x34,
-    DW5_TAG_namespace        = 0x39,
-    DW5_TAG_rvalue_ref_type  = 0x42,
-    DW5_TAG_restrict_type    = 0x37,
+    DW5_TAG_array_type        = 0x01,
+    DW5_TAG_class_type        = 0x02,
+    DW5_TAG_enumeration_type  = 0x04,
+    DW5_TAG_formal_parameter  = 0x05,
+    DW5_TAG_lexical_block     = 0x0b,
+    DW5_TAG_member            = 0x0d,
+    DW5_TAG_pointer_type      = 0x0f,
+    DW5_TAG_reference_type    = 0x10,
+    DW5_TAG_compile_unit      = 0x11,
+    DW5_TAG_structure_type    = 0x13,
+    DW5_TAG_typedef           = 0x16,
+    DW5_TAG_union_type        = 0x17,
+    DW5_TAG_subrange_type     = 0x21,
+    DW5_TAG_base_type         = 0x24,
+    DW5_TAG_const_type        = 0x26,
+    DW5_TAG_subprogram        = 0x2E,
+    DW5_TAG_variable          = 0x34,
+    DW5_TAG_volatile_type     = 0x35,
+    DW5_TAG_namespace         = 0x39,
+    DW5_TAG_rvalue_ref_type   = 0x42,
+    DW5_TAG_restrict_type     = 0x37,
+    DW5_TAG_inlined_subroutine = 0x1D,
 };
 
 enum : uint16_t {
     DW5_AT_location           = 0x02,
     DW5_AT_name               = 0x03,
     DW5_AT_byte_size          = 0x0b,
+    DW5_AT_low_pc             = 0x11,
+    DW5_AT_high_pc            = 0x12,
     DW5_AT_count              = 0x37,
     DW5_AT_data_member_loc    = 0x38,
     DW5_AT_declaration        = 0x3c,
     DW5_AT_encoding           = 0x3e,
     DW5_AT_external           = 0x3f,
+    DW5_AT_abstract_origin     = 0x31,
+    DW5_AT_frame_base         = 0x40,
+    DW5_AT_specification      = 0x47,
     DW5_AT_type               = 0x49,
     DW5_AT_linkage_name       = 0x6e,
     DW5_AT_str_offsets_base   = 0x72,
@@ -187,6 +197,7 @@ struct AttrValue {
     uint64_t unsigned_val{0};
     int64_t signed_val{0};
     std::string string_val;
+    std::vector<uint8_t> block_val;   // location expression bytes (exprloc/block)
     bool is_present{false};
 };
 
@@ -272,11 +283,20 @@ static AttrValue readFormValue(uint8_t form, const uint8_t*& p,
         break;
     case DW5_FORM_exprloc: {
         uint64_t len = readULEB128(p, end);
-        p += len; // skip expression bytes
+        if (p + len <= end) {
+            val.block_val.assign(p, p + len);
+            p += len;
+        }
         break;
     }
     case DW5_FORM_block1:
-        if (p < end) { uint8_t len = *p++; p += len; }
+        if (p < end) {
+            uint8_t len = *p++;
+            if (p + len <= end) {
+                val.block_val.assign(p, p + len);
+                p += len;
+            }
+        }
         break;
     case DW5_FORM_flag_present:
         val.unsigned_val = 1;
@@ -318,24 +338,19 @@ struct ParsedDIE {
     bool hasByteSize{false};
     bool hasMemberLocation{false};
     bool isDeclaration{false};
+    // Subprogram address range
+    uint64_t lowPC{0};
+    uint64_t highPC{0};
+    bool hasLowPC{false};
+    bool hasHighPC{false};
+    bool highPCIsLength{false};
+    // DW_AT_specification / DW_AT_abstract_origin reference
+    uint32_t specRef{0};
+    bool hasSpecRef{false};
+    // Location expressions (for frame_base, variable locations)
+    std::vector<uint8_t> frameBaseExpr;
+    std::vector<uint8_t> locationExpr;
 };
-
-// =========================================================================
-// Demangle helper
-// =========================================================================
-
-#ifdef __APPLE__
-static std::string demangleName(const char* name) {
-    int status = 0;
-    char* demangled = abi::__cxa_demangle(name, nullptr, nullptr, &status);
-    if (status == 0 && demangled) {
-        std::string result(demangled);
-        free(demangled);
-        return result;
-    }
-    return name;
-}
-#endif
 
 // =========================================================================
 // Type resolution — convert parsed DIEs into NativeTypeInfo
@@ -394,7 +409,7 @@ static std::string buildQualifiedName(
         }
         parent = pdie.parentOffset;
     }
-    return result;
+    return simplifyTypeName(std::move(result));
 }
 
 // Resolve a type reference to its display name.
@@ -482,6 +497,171 @@ static std::string resolveTargetStructName(
     default:
         return "";
     }
+}
+
+// =========================================================================
+// DWARF location expression evaluator (simple cases only)
+// =========================================================================
+
+static uint32_t extractFrameBaseReg(const std::vector<uint8_t>& expr) {
+    if (expr.empty()) return 29; // default to FP on ARM64
+    uint8_t op = expr[0];
+    // DW_OP_reg0..DW_OP_reg31
+    if (op >= 0x50 && op <= 0x6f)
+        return op - 0x50;
+    // DW_OP_regx
+    if (op == 0x90 && expr.size() >= 2) {
+        const uint8_t* p = expr.data() + 1;
+        const uint8_t* end = expr.data() + expr.size();
+        return static_cast<uint32_t>(readULEB128(p, end));
+    }
+    return 29;
+}
+
+static DwarfVariable evaluateVariableLocation(
+    const std::vector<uint8_t>& expr, uint32_t frameBaseReg,
+    const std::string& name, const std::string& typeName,
+    uint64_t typeSize, bool isParam) {
+
+    DwarfVariable var;
+    var.name = name;
+    var.typeName = typeName;
+    var.typeSize = typeSize;
+    var.isParameter = isParam;
+
+    if (expr.empty()) return var;
+
+    const uint8_t* p = expr.data();
+    const uint8_t* end = p + expr.size();
+    uint8_t op = *p++;
+
+    // DW_OP_reg0..DW_OP_reg31: value is in register N
+    if (op >= 0x50 && op <= 0x6f) {
+        var.locationType = VariableLocation::Register;
+        var.dwarfRegNum = op - 0x50;
+        return var;
+    }
+
+    // DW_OP_regx: value is in register (ULEB128)
+    if (op == 0x90) {
+        var.locationType = VariableLocation::Register;
+        var.dwarfRegNum = static_cast<uint32_t>(readULEB128(p, end));
+        return var;
+    }
+
+    // DW_OP_fbreg + SLEB128: relative to frame base
+    if (op == 0x91) {
+        int64_t offset = readSLEB128(p, end);
+        var.locationType = VariableLocation::FrameRelative;
+        var.locationOffset = offset;
+        return var;
+    }
+
+    // DW_OP_breg0..DW_OP_breg31 + SLEB128: register + offset
+    if (op >= 0x70 && op <= 0x8f) {
+        uint32_t reg = op - 0x70;
+        int64_t offset = readSLEB128(p, end);
+        if (reg == frameBaseReg) {
+            var.locationType = VariableLocation::FrameRelative;
+            var.locationOffset = offset;
+        } else if (reg == 31) { // SP on ARM64, RSP on x64
+            var.locationType = VariableLocation::StackRelative;
+            var.locationOffset = offset;
+        } else {
+            // Other register-based addressing — treat as register for now
+            var.locationType = VariableLocation::Register;
+            var.dwarfRegNum = reg;
+        }
+        return var;
+    }
+
+    // DW_OP_addr: absolute address
+    if (op == 0x03 && p + 8 <= end) {
+        uint64_t addr;
+        std::memcpy(&addr, p, 8);
+        var.locationType = VariableLocation::Memory;
+        var.locationOffset = static_cast<int64_t>(addr);
+        return var;
+    }
+
+    return var; // Unknown expression
+}
+
+// =========================================================================
+// Process subprograms from parsed DIEs
+// =========================================================================
+
+static void processSubprogramDIE(
+    const ParsedDIE& spDie, uint32_t spOffset, uint32_t cuOffset,
+    const std::unordered_map<uint32_t, ParsedDIE>& dies,
+    std::vector<DwarfSubprogram>& out) {
+
+    if (!spDie.hasLowPC || !spDie.hasHighPC) return;
+    if (spDie.isDeclaration) return;
+
+    DwarfSubprogram sub;
+    sub.lowPC = spDie.lowPC;
+    sub.highPC = spDie.highPCIsLength ? (spDie.lowPC + spDie.highPC) : spDie.highPC;
+
+    // Resolve name: check this DIE first, then follow specification chain
+    std::string linkName = spDie.linkageName;
+    std::string shortName = spDie.name;
+    uint32_t nameOffset = spOffset;
+    if (linkName.empty() && shortName.empty() && spDie.hasSpecRef) {
+        uint32_t absRef = cuOffset + spDie.specRef;
+        auto sit = dies.find(absRef);
+        if (sit != dies.end()) {
+            linkName = sit->second.linkageName;
+            shortName = sit->second.name;
+            nameOffset = absRef;
+        }
+    }
+
+    if (!linkName.empty())
+        sub.name = demangle(linkName.c_str());
+    else if (!shortName.empty())
+        sub.name = buildQualifiedName(nameOffset, dies);
+
+    if (sub.name.empty()) return;
+
+    uint32_t frameBaseReg = extractFrameBaseReg(spDie.frameBaseExpr);
+
+    // Collect direct children and children of lexical blocks
+    for (auto& [offset, die] : dies) {
+        bool isChild = (die.parentOffset == spOffset);
+        if (!isChild) {
+            // Check if inside a lexical block that's a child of this subprogram
+            auto pit = dies.find(die.parentOffset);
+            if (pit != dies.end() && pit->second.tag == DW5_TAG_lexical_block &&
+                pit->second.parentOffset == spOffset) {
+                isChild = true;
+            }
+        }
+        if (!isChild) continue;
+
+        bool isParam = (die.tag == DW5_TAG_formal_parameter);
+        bool isLocal = (die.tag == DW5_TAG_variable);
+        if (!isParam && !isLocal) continue;
+        if (die.name.empty()) continue;
+        if (die.locationExpr.empty()) continue;
+
+        std::string typeName;
+        uint64_t typeSize = 0;
+        if (die.hasTypeRef) {
+            typeName = resolveTypeName(die.typeRef, cuOffset, dies);
+            uint32_t absRef = cuOffset + die.typeRef;
+            auto tit = dies.find(absRef);
+            if (tit != dies.end() && tit->second.hasByteSize)
+                typeSize = tit->second.byteSize;
+        }
+
+        auto var = evaluateVariableLocation(
+            die.locationExpr, frameBaseReg,
+            die.name, typeName, typeSize, isParam);
+        sub.variables.push_back(std::move(var));
+    }
+
+    out.push_back(std::move(sub));
 }
 
 // =========================================================================
@@ -614,7 +794,7 @@ static void processCompilationUnit(
         // Use the demangled linkage name or the qualified name
         std::string varName;
         if (!die.linkageName.empty()) {
-            varName = demangleName(die.linkageName.c_str());
+            varName = demangle(die.linkageName.c_str());
         } else {
             varName = buildQualifiedName(offset, dies);
         }
@@ -642,7 +822,8 @@ struct DwarfSections {
 
 static void parseDwarfCU(const DwarfSections& sec,
                           std::unordered_map<std::string, NativeTypeInfo>& typeDB,
-                          std::unordered_map<std::string, std::string>& varDB) {
+                          std::unordered_map<std::string, std::string>& varDB,
+                          std::vector<DwarfSubprogram>& subprograms) {
 
     const uint8_t* p = sec.info;
     const uint8_t* infoEnd = sec.info + sec.infoSize;
@@ -746,6 +927,27 @@ static void parseDwarfCU(const DwarfSections& sec,
                 case DW5_AT_str_offsets_base:
                     strOffsBase = static_cast<uint32_t>(val.unsigned_val);
                     break;
+                case DW5_AT_low_pc:
+                    die.lowPC = val.unsigned_val;
+                    die.hasLowPC = true;
+                    break;
+                case DW5_AT_high_pc:
+                    die.highPC = val.unsigned_val;
+                    die.hasHighPC = true;
+                    die.highPCIsLength = (attr.form != DW5_FORM_addr &&
+                                         attr.form != DW5_FORM_addrx);
+                    break;
+                case DW5_AT_frame_base:
+                    die.frameBaseExpr = std::move(val.block_val);
+                    break;
+                case DW5_AT_location:
+                    die.locationExpr = std::move(val.block_val);
+                    break;
+                case DW5_AT_specification:
+                case DW5_AT_abstract_origin:
+                    die.specRef = static_cast<uint32_t>(val.unsigned_val);
+                    die.hasSpecRef = true;
+                    break;
                 }
             }
 
@@ -757,6 +959,12 @@ static void parseDwarfCU(const DwarfSections& sec,
 
         // Second pass: resolve types and merge into database
         processCompilationUnit(dies, cuOffset, typeDB, varDB);
+
+        // Third pass: extract subprogram variables
+        for (auto& [offset, die] : dies) {
+            if (die.tag == DW5_TAG_subprogram)
+                processSubprogramDIE(die, offset, cuOffset, dies, subprograms);
+        }
 
         p = cuEnd;
     }
@@ -994,7 +1202,7 @@ void DwarfTypeDatabase::parseDwarfFromObject(const uint8_t* base, size_t size) {
 #ifdef __APPLE__
     auto sections = findDwarfSections(base, size);
     if (!sections.info || !sections.abbrev) return;
-    parseDwarfCU(sections, types, variableTypes);
+    parseDwarfCU(sections, types, variableTypes, subprograms);
 #else
     (void)base; (void)size;
 #endif
@@ -1065,6 +1273,23 @@ std::optional<std::string> DwarfTypeDatabase::getVariableTypeName(
     const std::string& name) const {
     auto it = variableTypes.find(name);
     return (it != variableTypes.end()) ? std::optional(it->second) : std::nullopt;
+}
+
+const DwarfSubprogram* DwarfTypeDatabase::findSubprogram(uint64_t pc) const {
+    for (auto& sub : subprograms) {
+        if (pc >= sub.lowPC && pc < sub.highPC)
+            return &sub;
+    }
+    return nullptr;
+}
+
+const DwarfSubprogram* DwarfTypeDatabase::findSubprogramByName(
+    const std::string& name) const {
+
+    for (auto& sub : subprograms) {
+        if (sub.name == name) return &sub;
+    }
+    return nullptr;
 }
 
 } // namespace smalldbg

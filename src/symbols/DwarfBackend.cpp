@@ -164,7 +164,27 @@ std::optional<SourceLocation> DwarfBackend::getSourceLocation(Address addr) {
 }
 
 void DwarfBackend::getLocalVariables(StackFrame* frame) {
-    (void)frame;
+    loadTypeInfo();
+
+    if (frame->functionName.empty()) return;
+
+    auto* sub = typeDb.findSubprogramByName(frame->functionName);
+    if (!sub) return;
+
+    for (auto& dvar : sub->variables) {
+        if (dvar.locationType == VariableLocation::Unknown) continue;
+
+        LocalVariable lv;
+        lv.name = dvar.name;
+        lv.typeName = dvar.typeName;
+        lv.size = dvar.typeSize > 0 ? dvar.typeSize : 8;
+        lv.locationType = dvar.locationType;
+        lv.offset = (dvar.locationType == VariableLocation::Register)
+                    ? static_cast<int64_t>(dvar.dwarfRegNum)
+                    : dvar.locationOffset;
+        lv.frame = frame;
+        frame->localVariables.push_back(std::move(lv));
+    }
 }
 
 void DwarfBackend::loadTypeInfo() {
