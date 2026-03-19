@@ -52,18 +52,23 @@ void NativeFrameProcessor::process(StackFrame& frame, Debugger* debugger) {
         frame.functionName = symbol->name;
         frame.moduleName = symbol->moduleName;
         frame.functionOffset = frame.ip() - symbol->address;
-        
+    } else {
+        frame.functionName = "<unknown>";
+        frame.moduleName = "<unknown>";
+        frame.functionOffset = 0;
+    }
+}
+
+void NativeFrameProcessor::resolveDetails(StackFrame& frame, Debugger* debugger) {
+    if (frame.sourceFile.empty() && !frame.functionName.empty() &&
+        frame.functionName != "<unknown>") {
+        SymbolProvider* symbols = debugger->getSymbolProvider();
         auto location = symbols->getSourceLocation(frame.ip());
         if (location) {
             frame.sourceFile = location->filename;
             frame.sourceLine = location->line;
         }
-        
         symbols->getLocalVariables(&frame);
-    } else {
-        frame.functionName = "<unknown>";
-        frame.moduleName = "<unknown>";
-        frame.functionOffset = 0;
     }
 }
 

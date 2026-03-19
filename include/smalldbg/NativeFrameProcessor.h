@@ -18,6 +18,9 @@ public:
     
     // Fill in symbol, module, source location, and local variables
     void process(StackFrame& frame, Debugger* debugger) override;
+
+    // Lazily resolve source location and local variables for a single frame
+    void resolveDetails(StackFrame& frame, Debugger* debugger) override;
 };
 
 } // namespace smalldbg

@@ -72,4 +72,10 @@ Status StackTrace::unwind(size_t maxFrames) {
     return Status::Ok;
 }
 
+void StackTrace::resolveFrameDetails(size_t index, Debugger* debugger) {
+    if (index < frames.size() && frames[index]->processor) {
+        frames[index]->processor->resolveDetails(*frames[index], debugger);
+    }
+}
+
 } // namespace smalldbg
