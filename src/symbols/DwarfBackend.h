@@ -53,6 +53,9 @@ private:
     // Lazily load DWARF type info from .o files
     void loadTypeInfo();
     DwarfTypeDatabase typeDb;
+
+    // Source location cache (address → resolved location or nullopt)
+    std::unordered_map<Address, std::optional<SourceLocation>> sourceLocationCache;
 };
 
 } // namespace smalldbg

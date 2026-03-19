@@ -9,6 +9,8 @@
 #include "ObjectFileParser.h"
 #include "../backends/Backend.h"
 #include "../../include/smalldbg/SymbolProvider.h"
+#include "../../include/smalldbg/StackTrace.h"
+#include "../platform/SourceResolver.h"
 #include <algorithm>
 
 namespace smalldbg {
@@ -35,6 +37,7 @@ void DwarfBackend::shutdown() {
     initialized = false;
     processHandle = nullptr;
     modules.clear();
+    sourceLocationCache.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +105,7 @@ std::optional<Symbol> DwarfBackend::getSymbolByName(const std::string& name) {
             return makeSymbol(mod->symbols[it->second], mod->shortName);
     }
 
-    // 3. Suffix match: "debugRuntime" matches "Egg::debugRuntime"
+    // 3. Suffix match: "doSomething" matches "MyApp::doSomething"
     std::string suffix = "::" + name;
     for (auto& mod : modules) {
         for (auto& sym : mod->symbols) {
@@ -159,7 +162,21 @@ void DwarfBackend::enumerateModules(ModuleCallback callback) {
 }
 
 std::optional<SourceLocation> DwarfBackend::getSourceLocation(Address addr) {
-    (void)addr;
+    auto cacheIt = sourceLocationCache.find(addr);
+    if (cacheIt != sourceLocationCache.end())
+        return cacheIt->second;
+
+    loadModules();
+
+    for (auto& mod : modules) {
+        if (addr >= mod->loadAddress && (mod->textEnd == 0 || addr < mod->textEnd)) {
+            auto result = resolveSourceLocation(mod->path, mod->loadAddress, addr);
+            sourceLocationCache[addr] = result;
+            return result;
+        }
+    }
+
+    sourceLocationCache[addr] = std::nullopt;
     return std::nullopt;
 }
 
