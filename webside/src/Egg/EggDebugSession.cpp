@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <set>
 
@@ -13,6 +14,131 @@ namespace webside {
 // Evaluator frame constants (used in getSmalltalkFrameBindings)
 static constexpr int FRAME_TO_FIRST_ARG_DELTA = 2;
 static constexpr int FRAME_TO_FIRST_TEMP_DELTA = 5;
+
+// Parse a Smalltalk method header to extract argument and temporary names.
+// Handles unary (e.g. "foo"), binary (e.g. "+ other"), and keyword
+// (e.g. "at: key put: value") selectors, plus temp declarations (| a b c |).
+struct MethodNames {
+    std::vector<std::string> args;
+    std::vector<std::string> temps;
+};
+
+static std::string nextWord(const std::string& src, size_t& pos) {
+    while (pos < src.size() && std::isspace(static_cast<unsigned char>(src[pos])))
+        pos++;
+    if (pos >= src.size()) return "";
+    // String literal — skip
+    if (src[pos] == '\'') return "";
+    // Identifier
+    if (std::isalpha(static_cast<unsigned char>(src[pos])) ||
+        src[pos] == '_') {
+        size_t start = pos;
+        while (pos < src.size() &&
+               (std::isalnum(static_cast<unsigned char>(src[pos])) ||
+                src[pos] == '_'))
+            pos++;
+        return src.substr(start, pos - start);
+    }
+    return "";
+}
+
+static MethodNames parseMethodHeader(const std::string& src) {
+    MethodNames names;
+    size_t pos = 0;
+
+    // Skip leading whitespace
+    while (pos < src.size() && std::isspace(static_cast<unsigned char>(src[pos])))
+        pos++;
+    if (pos >= src.size()) return names;
+
+    // Determine selector kind by first non-space char
+    char first = src[pos];
+    if (std::isalpha(static_cast<unsigned char>(first)) || first == '_') {
+        // Could be unary or keyword
+        std::string word = nextWord(src, pos);
+        while (pos < src.size() &&
+               std::isspace(static_cast<unsigned char>(src[pos])))
+            pos++;
+        if (pos < src.size() && src[pos] == ':') {
+            // Keyword selector: "key1: arg1 key2: arg2 ..."
+            pos++; // skip ':'
+            std::string arg = nextWord(src, pos);
+            if (!arg.empty()) names.args.push_back(arg);
+            // Continue for more keywords
+            while (pos < src.size()) {
+                while (pos < src.size() &&
+                       std::isspace(static_cast<unsigned char>(src[pos])))
+                    pos++;
+                if (pos >= src.size()) break;
+                // Next keyword or temp bar
+                if (src[pos] == '|' || src[pos] == '<' ||
+                    src[pos] == '[' || src[pos] == '^')
+                    break;
+                std::string kw = nextWord(src, pos);
+                if (kw.empty()) break;
+                while (pos < src.size() &&
+                       std::isspace(static_cast<unsigned char>(src[pos])))
+                    pos++;
+                if (pos < src.size() && src[pos] == ':') {
+                    pos++; // skip ':'
+                    std::string a = nextWord(src, pos);
+                    if (!a.empty()) names.args.push_back(a);
+                } else {
+                    break;
+                }
+            }
+        }
+        // else: unary selector, no args
+    } else {
+        // Binary selector (e.g. +, -, ==)
+        while (pos < src.size() &&
+               !std::isspace(static_cast<unsigned char>(src[pos])) &&
+               !std::isalpha(static_cast<unsigned char>(src[pos])) &&
+               src[pos] != '_')
+            pos++;
+        std::string arg = nextWord(src, pos);
+        if (!arg.empty()) names.args.push_back(arg);
+    }
+
+    // Parse temp declarations: | name1 name2 ... |
+    while (pos < src.size() && std::isspace(static_cast<unsigned char>(src[pos])))
+        pos++;
+
+    // Skip pragmas: <primitive: ...>
+    while (pos < src.size() && src[pos] == '<') {
+        size_t end = src.find('>', pos);
+        if (end == std::string::npos) break;
+        pos = end + 1;
+        while (pos < src.size() &&
+               std::isspace(static_cast<unsigned char>(src[pos])))
+            pos++;
+    }
+
+    // Skip string literal (e.g. "docstring")
+    while (pos < src.size() && src[pos] == '"') {
+        size_t end = src.find('"', pos + 1);
+        if (end == std::string::npos) break;
+        pos = end + 1;
+        while (pos < src.size() &&
+               std::isspace(static_cast<unsigned char>(src[pos])))
+            pos++;
+    }
+
+    if (pos < src.size() && src[pos] == '|') {
+        pos++; // skip opening |
+        while (pos < src.size()) {
+            while (pos < src.size() &&
+                   std::isspace(static_cast<unsigned char>(src[pos])))
+                pos++;
+            if (pos >= src.size() || src[pos] == '|') break;
+            std::string tmp = nextWord(src, pos);
+            if (tmp.empty()) break;
+            names.temps.push_back(tmp);
+        }
+    }
+
+    return names;
+}
 
 // ---- Construction / Destruction ----
 
@@ -92,11 +218,31 @@ std::optional<int> EggDebugSession::getPid() const {
 
 // ---- Debug control ----
 
+bool EggDebugSession::ensureTrace(size_t maxFrames) const {
+    if (cachedTrace)
+        return true;
+
+    auto process = debugger->getProcess();
+    if (!process) return false;
+
+    auto mainThread = process->primaryThread();
+    if (!mainThread) return false;
+
+    cachedTrace = std::make_unique<smalldbg::StackTrace>(mainThread.get());
+    if (cachedTrace->unwind(maxFrames) != smalldbg::Status::Ok) {
+        cachedTrace.reset();
+        return false;
+    }
+    return true;
+}
+
 bool EggDebugSession::resume() {
+    cachedTrace.reset();
     return debugger->resume() == smalldbg::Status::Ok;
 }
 
 bool EggDebugSession::suspend() {
+    cachedTrace.reset();
     if (debugger->isStopped())
         return true;
 
@@ -111,7 +257,100 @@ bool EggDebugSession::suspend() {
 }
 
 bool EggDebugSession::step() {
+    cachedTrace.reset();
     return debugger->step() == smalldbg::Status::Ok;
+}
+
+bool EggDebugSession::stepOver() {
+    cachedTrace.reset();
+    // Step over: set a temporary breakpoint at the next instruction in the
+    // current frame (i.e. the return address of the callee if stepping into
+    // a call, or the very next instruction otherwise).  We approximate this
+    // by setting a breakpoint at the caller's IP (frame 1) so that if the
+    // current instruction is a call we stop when it returns.  Then resume.
+    // If there's no caller frame we fall back to a plain single-step.
+    auto thread = debugger->getCurrentThread();
+    if (!thread) return step();
+
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
+        return step();
+
+    auto returnAddr = trace.getFrames()[1]->ip();
+    debugger->setBreakpoint(returnAddr, "__stepover_tmp");
+    bool ok = debugger->resume() == smalldbg::Status::Ok;
+    if (ok) {
+        debugger->waitForEvent(smalldbg::StopReason::None, -1);
+    }
+    debugger->clearBreakpoint(returnAddr);
+    return ok;
+}
+
+bool EggDebugSession::stepOut() {
+    cachedTrace.reset();
+    // Step out: set a temporary breakpoint at the caller's return address
+    // (frame 1 IP) and resume execution.
+    auto thread = debugger->getCurrentThread();
+    if (!thread) return false;
+
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
+        return false;
+
+    auto returnAddr = trace.getFrames()[1]->ip();
+    debugger->setBreakpoint(returnAddr, "__stepout_tmp");
+    bool ok = debugger->resume() == smalldbg::Status::Ok;
+    if (ok) {
+        debugger->waitForEvent(smalldbg::StopReason::None, -1);
+    }
+    debugger->clearBreakpoint(returnAddr);
+    return ok;
+}
+
+bool EggDebugSession::stepBack() {
+    cachedTrace.reset();
+    return debugger->stepBack() == smalldbg::Status::Ok;
+}
+
+bool EggDebugSession::reverseStepOver() {
+    cachedTrace.reset();
+    // Reverse step over: step backwards, skipping over calls.
+    // Use the caller's IP as a reverse breakpoint target.
+    auto thread = debugger->getCurrentThread();
+    if (!thread) return stepBack();
+
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
+        return stepBack();
+
+    auto returnAddr = trace.getFrames()[1]->ip();
+    debugger->setBreakpoint(returnAddr, "__revstepover_tmp");
+    bool ok = debugger->reverseResume() == smalldbg::Status::Ok;
+    if (ok) {
+        debugger->waitForEvent(smalldbg::StopReason::None, -1);
+    }
+    debugger->clearBreakpoint(returnAddr);
+    return ok;
+}
+
+bool EggDebugSession::reverseStepOut() {
+    cachedTrace.reset();
+    // Reverse step out: run backwards until we re-enter the current frame.
+    auto thread = debugger->getCurrentThread();
+    if (!thread) return false;
+
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
+        return false;
+
+    auto returnAddr = trace.getFrames()[1]->ip();
+    debugger->setBreakpoint(returnAddr, "__revstepout_tmp");
+    bool ok = debugger->reverseResume() == smalldbg::Status::Ok;
+    if (ok) {
+        debugger->waitForEvent(smalldbg::StopReason::None, -1);
+    }
+    debugger->clearBreakpoint(returnAddr);
+    return ok;
 }
 
 // ---- State queries ----
@@ -453,17 +692,10 @@ std::string EggDebugSession::search(const std::string& text, bool ignoreCase,
 // ---- Frame listing (native C++ stack) ----
 
 std::string EggDebugSession::listFrames(size_t maxFrames) const {
-    auto process = debugger->getProcess();
-    if (!process) return "[]";
-
-    auto mainThread = process->primaryThread();
-    if (!mainThread) return "[]";
-
-    smalldbg::StackTrace trace(mainThread.get());
-    if (trace.unwind(maxFrames) != smalldbg::Status::Ok)
+    if (!ensureTrace(maxFrames))
         return "[]";
 
-    const auto& frames = trace.getFrames();
+    const auto& frames = cachedTrace->getFrames();
     auto arr = Json::array();
     for (size_t i = 0; i < frames.size(); i++) {
         const auto& f = *frames[i];
@@ -477,25 +709,113 @@ std::string EggDebugSession::listFrames(size_t maxFrames) const {
 
         arr.add(Json::object()
             .set("index", static_cast<int>(i + 1))
-            .set("label", label));
+            .set("label", label)
+            .set("ip", Json::hex(f.ip())));
     }
     return arr.dump();
 }
 
+// ---- C++ function source extraction from file ----
+
+static bool readFileLines(const std::string& path,
+                          std::vector<std::string>& out) {
+    std::ifstream file(path);
+    if (!file.is_open()) return false;
+    std::string line;
+    while (std::getline(file, line))
+        out.push_back(line);
+    return !out.empty();
+}
+
+static int findOpeningBrace(const std::vector<std::string>& lines, int fromLine) {
+    int depth = 0;
+    for (int i = fromLine; i >= 0; i--) {
+        const auto& s = lines[i];
+        for (int j = static_cast<int>(s.size()) - 1; j >= 0; j--) {
+            if (s[j] == '}') depth++;
+            else if (s[j] == '{') {
+                if (depth == 0) return i;
+                depth--;
+            }
+        }
+    }
+    return -1;
+}
+
+static int findSignatureStart(const std::vector<std::string>& lines,
+                              int openBraceLine) {
+    int start = openBraceLine;
+    for (int i = openBraceLine - 1; i >= 0; i--) {
+        const auto& s = lines[i];
+        if (s.empty()) break;
+        char first = 0;
+        for (char c : s) {
+            if (c != ' ' && c != '\t') { first = c; break; }
+        }
+        if (first == '}' || first == '#' || first == 0) break;
+        start = i;
+    }
+    return start;
+}
+
+static int findClosingBrace(const std::vector<std::string>& lines,
+                            int openBraceLine) {
+    int depth = 0;
+    for (int i = openBraceLine; i < static_cast<int>(lines.size()); i++) {
+        for (char c : lines[i]) {
+            if (c == '{') depth++;
+            else if (c == '}') {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+    }
+    return -1;
+}
+
+struct ExtractedSource {
+    std::string text;
+    int ipOffset{0};  // character offset of the IP line within text
+    int ipLength{0};  // length of the IP line
+};
+
+static ExtractedSource extractFunctionSource(const std::string& filePath,
+                                             uint32_t ipLine) {
+    ExtractedSource result;
+    std::vector<std::string> lines;
+    if (!readFileLines(filePath, lines)) return result;
+    if (ipLine == 0 || ipLine > lines.size()) return result;
+
+    int target = static_cast<int>(ipLine) - 1;
+    int openLine = findOpeningBrace(lines, target);
+    if (openLine < 0) return result;
+
+    int sigStart = findSignatureStart(lines, openLine);
+    int closeLine = findClosingBrace(lines, openLine);
+    if (closeLine < 0) return result;
+
+    int charOffset = 0;
+    for (int i = sigStart; i <= closeLine; i++) {
+        if (i > sigStart) result.text += '\n';
+        if (i == target) {
+            result.ipOffset = static_cast<int>(result.text.size());
+            result.ipLength = static_cast<int>(lines[i].size());
+        }
+        result.text += lines[i];
+    }
+    return result;
+}
+
 std::string EggDebugSession::getFrameDetail(int index) const {
-    auto process = debugger->getProcess();
-    if (!process) return "{}";
-
-    auto mainThread = process->primaryThread();
-    if (!mainThread) return "{}";
-
-    smalldbg::StackTrace trace(mainThread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok)
+    if (!ensureTrace())
         return "{}";
 
-    const auto& frames = trace.getFrames();
+    const auto& frames = cachedTrace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size()))
         return "{}";
+
+    // Lazily resolve source location for this frame
+    cachedTrace->resolveFrameDetails(index - 1, debugger.get());
 
     const auto& f = *frames[index - 1];
     std::string label;
@@ -508,9 +828,29 @@ std::string EggDebugSession::getFrameDetail(int index) const {
 
     std::string modName = f.moduleName.empty() ? "<native>" : f.moduleName;
 
+    std::string source;
+    int intervalStart = 0;
+    int intervalEnd = 0;
+
+    if (!f.sourceFile.empty() && f.sourceLine > 0) {
+        auto extracted = extractFunctionSource(f.sourceFile, f.sourceLine);
+        if (!extracted.text.empty()) {
+            source = extracted.text;
+            intervalStart = extracted.ipOffset;
+            intervalEnd = extracted.ipOffset + extracted.ipLength;
+        } else {
+            source = f.functionName + " (source file not accessible: "
+                   + f.sourceFile + ":" + std::to_string(f.sourceLine) + ")";
+        }
+    } else {
+        source = f.functionName + " (native code)";
+    }
+
     auto j = Json::object()
         .set("index", index)
         .set("label", label)
+        .set("ip", Json::hex(f.ip()))
+        .set("functionAddress", Json::hex(f.ip() - f.functionOffset))
         .set("class", Json::object()
             .set("name", modName)
             .set("definition", "")
@@ -523,18 +863,61 @@ std::string EggDebugSession::getFrameDetail(int index) const {
             .set("selector", f.functionName)
             .set("methodClass", f.moduleName)
             .set("category", "native")
-            .set("source", f.functionName + " (native code)")
+            .set("source", source)
             .set("author", "")
             .set("timestamp", "")
             .set("package", ""))
-        .set("interval", Json::object().set("start", 0).set("end", 0));
+        .set("interval", Json::object()
+            .set("start", intervalStart)
+            .set("end", intervalEnd));
 
     return j.dump();
 }
 
 std::string EggDebugSession::getFrameBindings(int index) const {
-    // For now, return empty bindings for native frames
-    return "[]";
+    if (!ensureTrace())
+        return "[]";
+
+    const auto& frames = cachedTrace->getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size()))
+        return "[]";
+
+    // Lazily resolve locals for this frame
+    cachedTrace->resolveFrameDetails(index - 1, debugger.get());
+
+    const auto& f = *frames[index - 1];
+    auto arr = Json::array();
+
+    // Frame registers: IP, FP, SP
+    arr.add(Json::object()
+        .set("name", "IP")
+        .set("value", Json::hex(f.ip())));
+    arr.add(Json::object()
+        .set("name", "FP")
+        .set("value", Json::hex(f.fp())));
+    arr.add(Json::object()
+        .set("name", "SP")
+        .set("value", Json::hex(f.sp())));
+
+    // Local variables (from DWARF debug info)
+    for (const auto& lv : f.localVariables) {
+        // Skip compiler-generated internal variables (e.g. __begin1, __end1,
+        // __range1 from range-based for loops)
+        if (lv.name.size() >= 2 && lv.name[0] == '_' && lv.name[1] == '_')
+            continue;
+        auto binding = Json::object()
+            .set("name", lv.name)
+            .set("type", lv.typeName)
+            .set("location", lv.getLocationString());
+        auto val = lv.getValue();
+        if (val.has_value())
+            binding.set("value", Json::hex(val.value()));
+        else
+            binding.set("value", "?");
+        arr.add(binding);
+    }
+
+    return arr.dump();
 }
 
 // ---- Green thread management ----
@@ -644,6 +1027,7 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
     arr.add(Json::object()
         .set("name", "self")
         .set("value", inspector->describeRemoteObject(f.receiver))
+        .set("oop", Json::hex(f.receiver.oop()))
         .set("type", "special"));
 
     if (!f.method)
@@ -652,14 +1036,20 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
     int argCount = f.method.argCount();
     int tempCount = f.method.tempCount();
 
+    auto names = parseMethodHeader(f.method.sourceCode());
+
     // Arguments: _stack[bp + FRAME_TO_FIRST_ARG_DELTA + i - 1] (0-based)
     for (int i = 0; i < argCount && i < 20; i++) {
         uint64_t argVal = inspector->readStackSlot(gt.state,
             f.bp + FRAME_TO_FIRST_ARG_DELTA + i);
+        std::string name = (i < static_cast<int>(names.args.size()))
+            ? names.args[i]
+            : "arg" + std::to_string(i + 1);
         arr.add(Json::object()
-            .set("name", "arg" + std::to_string(i + 1))
+            .set("name", name)
             .set("value", inspector->describeRemoteObject(
                               inspector->objectAt(argVal)))
+            .set("oop", Json::hex(argVal))
             .set("type", "argument"));
     }
 
@@ -667,10 +1057,14 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
     for (int i = 0; i < tempCount && i < 20; i++) {
         uint64_t tempVal = inspector->readStackSlot(gt.state,
             f.bp - FRAME_TO_FIRST_TEMP_DELTA - i);
+        std::string name = (i < static_cast<int>(names.temps.size()))
+            ? names.temps[i]
+            : "temp" + std::to_string(i + 1);
         arr.add(Json::object()
-            .set("name", "temp" + std::to_string(i + 1))
+            .set("name", name)
             .set("value", inspector->describeRemoteObject(
                               inspector->objectAt(tempVal)))
+            .set("oop", Json::hex(tempVal))
             .set("type", "temporary"));
     }
 

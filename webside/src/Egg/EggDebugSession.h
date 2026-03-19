@@ -44,7 +44,14 @@ public:
     // ---- Debug control ----
     bool resume();
     bool suspend();
-    bool step();
+    bool step();          // single-step (step into)
+    bool stepOver();      // step over (run to next line in same frame)
+    bool stepOut();       // step out (run until current frame returns)
+
+    // ---- Reverse debug control (TTD) ----
+    bool stepBack();          // reverse single-step
+    bool reverseStepOver();   // reverse step over
+    bool reverseStepOut();    // reverse step out
 
     // ---- State queries ----
     std::string getStopReason() const;
@@ -114,6 +121,10 @@ public:
 private:
     std::unique_ptr<smalldbg::Debugger> debugger;
     std::unique_ptr<egg::EggInspector> inspector;
+
+    // Cached native stack trace (lazily populated, invalidated on resume/step)
+    mutable std::unique_ptr<smalldbg::StackTrace> cachedTrace;
+    bool ensureTrace(size_t maxFrames = 256) const;
 
     // ---- Green thread list ----
     std::vector<GreenThread> greenThreads;
