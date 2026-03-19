@@ -21,7 +21,7 @@ int main(int argc, char* argv[]) {
     std::string targetPath = argv[1];
     
     // Create debugger
-    Debugger debugger(Mode::External, Arch::X64);
+    Debugger debugger(Mode::External, X64::instance());
     
     // Enable symbol server
     SymbolOptions symOpts;

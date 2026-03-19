@@ -9,7 +9,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::Arch::X64);
+    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::X64::instance());
     dbg.setLogCallback([](const std::string &m){ std::cout << "[LOG] " << m << std::endl; });
 
     std::vector<std::string> args;

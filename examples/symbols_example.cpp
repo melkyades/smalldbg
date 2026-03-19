@@ -17,7 +17,7 @@ int main(int argc, char* argv[]) {
     std::string exePath = argv[1];
     
     // Create debugger and launch process
-    Debugger dbg(Mode::External, Arch::X64);
+    Debugger dbg(Mode::External, X64::instance());
     dbg.setLogCallback([](const std::string &m){ 
         std::cout << "[DBG] " << m << std::endl; 
     });

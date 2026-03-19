@@ -8,7 +8,7 @@
 using namespace smalldbg;
 
 void printRegisters(const Registers& regs) {
-    if (regs.arch == Arch::X64) {
+    if (regs.arch == X64::instance()) {
         std::cout << "  RAX: 0x" << std::hex << regs.x64.rax << "\n";
         std::cout << "  RBX: 0x" << std::hex << regs.x64.rbx << "\n";
         std::cout << "  RCX: 0x" << std::hex << regs.x64.rcx << "\n";
@@ -26,7 +26,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    Debugger dbg(Mode::External, Arch::X64);
+    Debugger dbg(Mode::External, X64::instance());
     
     // Check if we should launch instead of attach
     if (std::string(argv[1]) == "--launch") {
