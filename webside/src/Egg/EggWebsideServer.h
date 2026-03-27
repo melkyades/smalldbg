@@ -79,7 +79,7 @@ private:
     HttpResponse handleInspect(const HttpRequest& req) const;
     HttpResponse handleMemory(const HttpRequest& req) const;
     HttpResponse handleSymbol(const HttpRequest& req) const;
-    HttpResponse handleDisassemble(const HttpRequest& req) const;
+    HttpResponse handleDisassemble(const HttpRequest& req);
 };
 
 } // namespace webside

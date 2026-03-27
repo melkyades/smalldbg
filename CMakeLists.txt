@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.10)
 project(smalldbg VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Add include directories for src, include, and include/smalldbg
+include_directories(${CMAKE_SOURCE_DIR}/include/smalldbg ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 
 # Backend selection — set to ON to use the DbgEng (WinDbg engine) backend
 # instead of the plain WinAPI debug loop.  This is recommended when debugging
@@ -19,6 +22,9 @@ if(MSVC)
     add_link_options(/DEBUG)
 endif()
 
+find_package(capstone REQUIRED)
+
+
 add_library(smalldbg STATIC
     src/Arch.cpp
     src/Debugger.cpp
@@ -30,7 +36,10 @@ add_library(smalldbg STATIC
     src/LocalVariable.cpp
     src/NativeFrameProcessor.cpp
     src/bindings/CAPI.cpp
+    src/Disassembler.cpp
 )
+
+target_link_libraries(smalldbg PRIVATE capstone::capstone)
 
 # Platform-specific backend sources
 if(WIN32)
