@@ -7,7 +7,8 @@
 #include <chrono>
 #include <cstring>
 #include <algorithm>
-#include "smalldbg/Arm64Disasm.h"
+
+#include "smalldbg/Disassembler.h"
 
 namespace webside {
 
@@ -826,7 +827,7 @@ HttpResponse EggWebsideServer::handleSymbol(const HttpRequest& req) const {
     return res;
 }
 
-HttpResponse EggWebsideServer::handleDisassemble(const HttpRequest& req) const {
+HttpResponse EggWebsideServer::handleDisassemble(const HttpRequest& req) {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
 
@@ -839,16 +840,12 @@ HttpResponse EggWebsideServer::handleDisassemble(const HttpRequest& req) const {
 
     uint64_t addr = parseHexParam(addrIt->second);
 
-    int count = 64;
+    int byteCount = 64;
     auto countIt = req.params.find("count");
     if (countIt != req.params.end()) {
-        try { count = std::stoi(countIt->second); } catch (...) {}
+        try { byteCount = std::stoi(countIt->second); } catch (...) {}
     }
-    count = std::clamp(count, 1, 4096);
-
-    // Round count up to multiple of 4 (ARM64 instruction size)
-    int byteCount = ((count + 3) / 4) * 4;
-    byteCount = std::clamp(byteCount, 4, 4096);
+    byteCount = std::clamp(byteCount, 1, 4096);
 
     auto process = session->getDebugger()->getProcess();
     std::vector<uint8_t> buf(byteCount);
@@ -858,17 +855,16 @@ HttpResponse EggWebsideServer::handleDisassemble(const HttpRequest& req) const {
         return res;
     }
 
+        smalldbg::Disassembler *dis = session->getDebugger()->getDisassembler();
+        auto insns = dis->disassemble(buf.data(), buf.size(), addr);
+
     auto instructions = Json::array();
-    for (int i = 0; i + 3 < byteCount; i += 4) {
-        uint32_t insn = buf[i] | (buf[i+1] << 8) | (buf[i+2] << 16) | (buf[i+3] << 24);
-        char hexBytes[12];
-        snprintf(hexBytes, sizeof(hexBytes), "%02X%02X%02X%02X",
-                 buf[i], buf[i+1], buf[i+2], buf[i+3]);
+    for (const auto& ins : insns) {
         instructions.add(Json::object()
-            .set("address", Json::hex(addr + i))
-            .set("size", 4)
-            .set("bytes", std::string(hexBytes))
-            .set("text", smalldbg::disassembleOne(insn, addr + i)));
+            .set("address", Json::hex(ins.address))
+            .set("size", ins.size)
+            .set("bytes", ins.bytes)
+            .set("text", ins.text));
     }
 
     auto result = Json::object()

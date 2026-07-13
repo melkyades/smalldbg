@@ -8,6 +8,8 @@
 #include <optional>
 #include <memory>
 
+#include "Disassembler.h"
+
 namespace smalldbg {
 
 class Backend;
@@ -90,12 +92,14 @@ public:
     const std::vector<std::unique_ptr<StackFrameProcessor>>& getFrameProcessors() const { return frameProcessors; }
     
     Backend* getBackend() const { return backend; }
+    Disassembler* getDisassembler() { return disassembler.get(); }
 
 private:
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
     std::vector<std::unique_ptr<StackFrameProcessor>> frameProcessors; // registered processors (checked in order)
+    std::unique_ptr<Disassembler> disassembler; // disassembler instance
 };
 
 } // namespace smalldbg

@@ -31,6 +31,8 @@ Debugger::Debugger(Mode m, const Arch* arch) : backend(nullptr), symbolProvider(
     
     // Create symbol provider (backends will register their symbol backends)
     symbolProvider = std::make_unique<SymbolProvider>(backend);
+
+    disassembler = std::make_unique<Disassembler>(arch);
     
     // Register the native/C frame processor as the default (always last in chain)
     frameProcessors.push_back(std::make_unique<NativeFrameProcessor>());
