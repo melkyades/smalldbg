@@ -1,5 +1,5 @@
 [requires]
-capstone/5.0.7
+capstone/5.0.6
 
 [generators]
 CMakeDeps
