@@ -229,8 +229,21 @@ DbgEngBackend::DbgEngBackend(Debugger* dbg, Mode m, const Arch* a)
 DbgEngBackend::~DbgEngBackend() {
     if (attached) {
         detach();
+    } else {
+        // The process may have already exited (onProcessExit clears `attached`).
+        // The event loop thread must still be joined before the std::thread
+        // member is destroyed, otherwise its destructor calls std::terminate.
+        joinEventThread();
     }
     releaseInterfaces();
+}
+
+void DbgEngBackend::joinEventThread() {
+    running = false;
+    // Break out of WaitForEvent(INFINITE) in pumpEvents.
+    if (control) control->SetInterrupt(DEBUG_INTERRUPT_EXIT);
+    cv.notify_all();
+    if (eventThread.joinable()) eventThread.join();
 }
 
 // ---------------------------------------------------------------------------
@@ -342,11 +355,7 @@ Status DbgEngBackend::launch(const std::string& path, const std::vector<std::str
 Status DbgEngBackend::detach() {
     if (!attached) return Status::NotAttached;
 
-    running = false;
-    // Break out of WaitForEvent(INFINITE) in pumpEvents
-    if (control) control->SetInterrupt(DEBUG_INTERRUPT_EXIT);
-    cv.notify_all();
-    if (eventThread.joinable()) eventThread.join();
+    joinEventThread();
 
     if (client) {
         client->DetachProcesses();

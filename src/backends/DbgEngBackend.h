@@ -118,6 +118,10 @@ private:
     // The debug event pump (runs on its own thread).
     void eventLoop();
 
+    // Signal the event loop to stop and join the event thread. Safe to call
+    // whether or not the process is still attached (e.g. after it has exited).
+    void joinEventThread();
+
     // Populate stop state from the current engine state.
     void captureStopState();
 
