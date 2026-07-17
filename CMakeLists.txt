@@ -4,8 +4,11 @@ project(smalldbg VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Add include directories for src, include, and include/smalldbg
-include_directories(${CMAKE_SOURCE_DIR}/include/smalldbg ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+# Add include directories for include and src. Note: include/smalldbg is
+# deliberately NOT on the search path — on case-insensitive filesystems it would
+# let smalldbg/Process.h shadow the CRT <process.h> (pulled in by <thread>),
+# breaking _beginthreadex. Public headers are included as <smalldbg/...>.
+include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 
 # Backend selection — set to ON to use the DbgEng (WinDbg engine) backend
 # instead of the plain WinAPI debug loop.  This is recommended when debugging

@@ -5,7 +5,7 @@
 #include <capstone/capstone.h>
 
 #include "smalldbg/Disassembler.h"
-#include "Arch.h"
+#include "smalldbg/Arch.h"
 
 namespace smalldbg {
 
