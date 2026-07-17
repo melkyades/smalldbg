@@ -1,5 +1,6 @@
 [requires]
 capstone/5.0.6
+doctest/2.4.11
 
 [generators]
 CMakeDeps

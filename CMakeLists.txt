@@ -108,5 +108,7 @@ add_subdirectory(examples)
 # Webside debugger servers (Egg, Bee, etc)
 add_subdirectory(webside)
 
-# Tests
+# Tests — enable_testing() must be called at the top level so `ctest` run from the
+# build root discovers tests registered in the tests/ subdirectory.
+enable_testing()
 add_subdirectory(tests)

@@ -1,5 +1,18 @@
 # Tests CMakeLists.txt
 
+find_package(doctest REQUIRED)
+
+# Fast, deterministic unit tests (no target process required).
+add_executable(unit_tests
+    unit/doctest_main.cpp
+    unit/test_disassembler.cpp
+    unit/test_arch.cpp
+)
+target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
+
+# Legacy end-to-end harness. Still built, but not registered with ctest yet:
+# it drives a live target interactively (stdin "wait" mode) and is being
+# migrated to the doctest-based backend suite.
 add_executable(test_backend test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
 
@@ -22,7 +35,7 @@ else()
 endif()
 
 enable_testing()
-add_test(NAME backend-test COMMAND test_backend)
+add_test(NAME unit-tests COMMAND unit_tests)
 
 # Include DbgEng register tests (Windows only, separate diagnostic tools)
 if(WIN32)
