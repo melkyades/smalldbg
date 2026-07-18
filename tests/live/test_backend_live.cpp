@@ -7,6 +7,10 @@
 //    input. The single run-control test resumes straight to process exit.
 //  * test_target is launched with no arguments, so it never enters the stdin
 //    "wait" mode and always runs to completion on its own.
+#if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <doctest/doctest.h>
 
 #include "smalldbg/Debugger.h"
@@ -16,6 +20,9 @@
 
 #include "util.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 using namespace smalldbg;
 
 namespace {
@@ -23,11 +30,36 @@ namespace {
 // Launch test_target and return a debugger already stopped at the initial
 // breakpoint. On failure the returned debugger is not attached.
 void launchAtInitialStop(Debugger& dbg) {
+    if (std::getenv("SMALLDBG_TEST_LOG")) {
+        dbg.setLogCallback([](const std::string& m){ fprintf(stderr, "LOG %s\n", m.c_str()); });
+    }
     REQUIRE(dbg.launch(test::testTargetPath()) == Status::Ok);
     // initSession() leaves the backend stopped at the loader breakpoint.
     StopReason reason = dbg.waitForEvent(StopReason::None, 5000);
     REQUIRE(reason != StopReason::None);
     REQUIRE(dbg.isStopped());
+}
+
+// Launch test_target, run it to the "break_here" breakpoint, and return the
+// resolved symbol. Startup module loads intervene between the loader stop
+// and user code, so tests that need real code (e.g. single-stepping) must
+// reach this point first rather than stepping from the loader breakpoint.
+Symbol launchAtBreakHere(Debugger& dbg) {
+    launchAtInitialStop(dbg);
+
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+    auto sym = symbols->getSymbolByName("test_target!break_here");
+    REQUIRE(sym.has_value());
+    REQUIRE(sym->address != 0);
+
+    REQUIRE(dbg.setBreakpoint(sym->address, "break_here") == Status::Ok);
+
+    REQUIRE(dbg.resume() == Status::Ok);
+    StopReason reason = dbg.waitForEvent(StopReason::Breakpoint, 15000);
+    REQUIRE(reason == StopReason::Breakpoint);
+
+    return *sym;
 }
 
 } // namespace
@@ -123,4 +155,35 @@ TEST_CASE("resuming runs the target to a clean exit") {
     REQUIRE(dbg.resume() == Status::Ok);
     StopReason reason = dbg.waitForEvent(StopReason::ProcessExit, 15000);
     CHECK(reason == StopReason::ProcessExit);
+}
+
+TEST_CASE("a breakpoint on a known function is hit when the target runs") {
+    Debugger dbg(Mode::External, X64::instance());
+    Symbol sym = launchAtBreakHere(dbg);
+
+    // The stop address should be at (or within) the break_here function.
+    Registers r;
+    REQUIRE(dbg.getRegisters(r) == Status::Ok);
+    CHECK(r.ip() >= sym.address);
+    CHECK(r.ip() < sym.address + (sym.size ? sym.size : 64));
+
+    dbg.detach();
+}
+
+TEST_CASE("single-stepping advances the instruction pointer") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+
+    Registers before;
+    REQUIRE(dbg.getRegisters(before) == Status::Ok);
+
+    REQUIRE(dbg.step() == Status::Ok);
+    StopReason reason = dbg.waitForEvent(StopReason::SingleStep, 15000);
+    REQUIRE(reason == StopReason::SingleStep);
+
+    Registers after;
+    REQUIRE(dbg.getRegisters(after) == Status::Ok);
+    CHECK(after.ip() != before.ip());
+
+    dbg.detach();
 }
