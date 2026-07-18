@@ -1,6 +1,7 @@
 # Build files
 /build_*
 /build-*
+/build/*
 /.vs/
 /.vscode/
 *.vcxproj*
