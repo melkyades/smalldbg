@@ -68,7 +68,13 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolByName(const std::string& na
 
     ULONG64 offset = 0;
     HRESULT hr = symbols->GetOffsetByName(name.c_str(), &offset);
-    if (FAILED(hr)) return std::nullopt;
+    if (FAILED(hr)) {
+        // Symbols can be deferred-loaded; force a reload and retry once
+        // before giving up.
+        symbols->Reload("/f");
+        hr = symbols->GetOffsetByName(name.c_str(), &offset);
+        if (FAILED(hr)) return std::nullopt;
+    }
 
     Symbol sym;
     sym.name = name;
