@@ -37,6 +37,26 @@ endif()
 enable_testing()
 add_test(NAME unit-tests COMMAND unit_tests)
 
+# Live end-to-end backend tests (launch a real target under the debugger).
+# Windows-only for now, since they drive the DbgEng/WinAPI backends.
+if(WIN32)
+    set(LIVE_UTIL_SRC live/util-win32.cpp)
+else()
+    set(LIVE_UTIL_SRC live/util-posix.cpp)
+endif()
+
+if(WIN32)
+    add_executable(live_tests
+        unit/doctest_main.cpp
+        live/test_backend_live.cpp
+        ${LIVE_UTIL_SRC}
+    )
+    target_include_directories(live_tests PRIVATE live)
+    target_link_libraries(live_tests PRIVATE smalldbg doctest::doctest)
+    add_dependencies(live_tests test_target)
+    add_test(NAME live-tests COMMAND live_tests)
+endif()
+
 # Include DbgEng register tests (Windows only, separate diagnostic tools)
 if(WIN32)
     add_subdirectory(dbgeng_regs)
