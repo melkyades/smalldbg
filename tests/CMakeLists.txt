@@ -34,6 +34,15 @@ else()
     target_sources(test_target PRIVATE ${CMAKE_SOURCE_DIR}/src/platform/posix/Platform.cpp)
 endif()
 
+# Emit debug info for test_target so the live tests can resolve its functions
+# (e.g. break_here) by name through the symbol provider.
+if(MSVC)
+    target_compile_options(test_target PRIVATE /Zi)
+    target_link_options(test_target PRIVATE /DEBUG)
+else()
+    target_compile_options(test_target PRIVATE -g)
+endif()
+
 enable_testing()
 add_test(NAME unit-tests COMMAND unit_tests)
 

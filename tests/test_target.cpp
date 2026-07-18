@@ -14,9 +14,10 @@
 
 volatile int g_test_value = 42;
 
-static void break_here() {
-    // Intentionally empty — tests can set a breakpoint on this function
-    // to pause the program at a well-known address.
+// Marked noinline: tests set a breakpoint on this function's own symbol
+// address, so the compiler must not fold it into its caller (it would
+// otherwise vanish under /O2, leaving the symbol address dead code).
+static SMALLDBG_NOINLINE void break_here() {
     volatile int x = 0;
     (void)x;
 }
