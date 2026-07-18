@@ -1250,9 +1250,9 @@ void DbgEngBackend::captureStopState() {
             stopReason = StopReason::Breakpoint;
             break;
         case DEBUG_EVENT_EXCEPTION:
-            // In TTD mode, breakpoint exceptions during steps are normal
-            // trace events — treat step completion as SingleStep.
-            if (isTTD && stepPending) {
+            // A pending step completes via a STATUS_SINGLE_STEP exception on
+            // both live targets and TTD traces — report it as SingleStep.
+            if (stepPending) {
                 stopReason = StopReason::SingleStep;
             } else {
                 // If a callback wanted to break it would have already set
