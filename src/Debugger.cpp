@@ -19,26 +19,31 @@ namespace smalldbg {
 
 Debugger::Debugger(Mode m, const Arch* arch) : backend(nullptr), symbolProvider(nullptr) {
     // Platform selection for backend
+    const Arch* initialArch = arch ? arch : X64::instance();
 #ifdef _WIN32
   #ifdef SMALLDBG_USE_DBGENG
-    backend = new DbgEngBackend(this, m, arch);
+    backend = new DbgEngBackend(this, m, initialArch);
   #else
-    backend = new WindowsBackend(this, m, arch);
+    backend = new WindowsBackend(this, m, initialArch);
   #endif
 #else
-    backend = new PtraceBackend(this, m, arch);
+    backend = new PtraceBackend(this, m, initialArch);
 #endif
-    
+
     // Create symbol provider (backends will register their symbol backends)
     symbolProvider = std::make_unique<SymbolProvider>(backend);
 
-    disassembler = std::make_unique<Disassembler>(arch);
-    
+    disassembler = std::make_unique<Disassembler>(initialArch);
+
     // Register the native/C frame processor as the default (always last in chain)
     frameProcessors.push_back(std::make_unique<NativeFrameProcessor>());
 }
 
 Debugger::~Debugger(){ delete backend; }
+
+void Debugger::updateArch(const Arch* arch) {
+    disassembler = std::make_unique<Disassembler>(arch);
+}
 
 Status Debugger::attach(uintptr_t pid) {
     return backend->attach(pid);

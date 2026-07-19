@@ -19,7 +19,7 @@ class StackFrameProcessor;
 
 class Debugger {
 public:
-    explicit Debugger(Mode m, const Arch* arch = X64::instance());
+    explicit Debugger(Mode m, const Arch* arch = nullptr);
     ~Debugger();
 
     // attach/launch lifecycle
@@ -93,6 +93,10 @@ public:
     
     Backend* getBackend() const { return backend; }
     Disassembler* getDisassembler() { return disassembler.get(); }
+
+    /// Update arch after the backend detects the target's real architecture
+    /// (e.g. a WoW64 process running under a 64-bit host).
+    void updateArch(const Arch* arch);
 
 private:
     Backend *backend; // pointer to backend implementation
