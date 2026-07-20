@@ -16,6 +16,14 @@ namespace smalldbg {
 
 class DbgEngBackend;  // forward declaration for event callbacks
 
+// Strategy for syncing the DbgEng engine's effective processor type before
+// a PC/register read (defined in DbgEngBackend.cpp). The engine can revert
+// its effective type after processing an event, which would misdecode a
+// WoW64 target's registers/PC; every read call site invokes sync()
+// unconditionally, and the concrete strategy installed (native vs. wow64)
+// determines whether that's a no-op or a real fixup.
+class EffectiveTypeSync;
+
 /// Event callbacks — the engine calls into these during WaitForEvent.
 /// Each callback sets stopReason on the backend.
 /// Returning DEBUG_STATUS_BREAK causes WaitForEvent to return S_OK.
@@ -135,6 +143,8 @@ private:
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
 
+    void drainSyntheticEvents(uintptr_t targetPid);  // resume briefly to flush queued thread/module events
+
     // Phase 2: main loop helpers
     bool waitForResumeSignal();  // wait for resume/step, false → exit
     void beginExecution(ULONG& execStatus);  // set execution status on engine
@@ -159,6 +169,8 @@ private:
     // --- Process state ---
     bool attached = false;
     bool isTTD = false;  // True if replaying a TTD trace
+
+    const EffectiveTypeSync* effectiveTypeSync = nullptr;  // set in initLaunch()/initAttach()
 
     // --- Event thread ---
     std::thread eventThread;

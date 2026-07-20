@@ -92,6 +92,15 @@ static std::string toHex(uint64_t val) {
     return oss.str();
 }
 
+static bool isWow64Process(ULONG pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (!h) return false;
+    BOOL wow64 = FALSE;
+    bool result = IsWow64Process(h, &wow64) && wow64;
+    CloseHandle(h);
+    return result;
+}
+
 namespace smalldbg {
 
 // ---------------------------------------------------------------------------
@@ -118,6 +127,46 @@ public:
 private:
     std::string captured_;
 };
+
+// See DbgEngBackend.h for EffectiveTypeSync's rationale.
+class EffectiveTypeSync {
+public:
+    virtual ~EffectiveTypeSync() = default;
+    virtual void sync(IDebugControl4* control,
+                       const std::function<void(const std::string&)>& log) const = 0;
+
+    static const EffectiveTypeSync* native();
+    static const EffectiveTypeSync* wow64();
+};
+
+namespace {
+
+class NativeEffectiveType final : public EffectiveTypeSync {
+public:
+    void sync(IDebugControl4*, const std::function<void(const std::string&)>&) const override {}
+};
+
+class WoW64EffectiveType final : public EffectiveTypeSync {
+public:
+    void sync(IDebugControl4* control,
+              const std::function<void(const std::string&)>& log) const override {
+        HRESULT hr = control->SetEffectiveProcessorType(IMAGE_FILE_MACHINE_I386);
+        if (FAILED(hr) && log)
+            log("(dbgeng) SetEffectiveProcessorType(x86) failed hr=" + toHex((unsigned long)hr));
+    }
+};
+
+} // namespace
+
+const EffectiveTypeSync* EffectiveTypeSync::native() {
+    static const NativeEffectiveType instance;
+    return &instance;
+}
+
+const EffectiveTypeSync* EffectiveTypeSync::wow64() {
+    static const WoW64EffectiveType instance;
+    return &instance;
+}
 
 // ---------------------------------------------------------------------------
 // DbgEngEventCallbacks
@@ -224,6 +273,7 @@ HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::UnloadModule(PCSTR imageName, UL
 DbgEngBackend::DbgEngBackend(Debugger* dbg, Mode m, const Arch* a)
     : Backend(dbg, m, a)
 {
+    effectiveTypeSync = EffectiveTypeSync::native();
 }
 
 DbgEngBackend::~DbgEngBackend() {
@@ -733,6 +783,8 @@ Status DbgEngBackend::getRegisters(Thread* thread, Registers& out) const {
         return Status::Error;
     }
 
+    effectiveTypeSync->sync(control, log);
+
     arch->readRegisters(ri, out);
     if (log) log("(dbgeng) getRegisters: ip=" + toHex(out.ip()) + " sp=" + toHex(out.sp()));
     return Status::Ok;
@@ -931,6 +983,13 @@ bool DbgEngBackend::initLaunch() {
     sysObjects->GetCurrentProcessSystemId(&sysPid);
     attached = true;
     initProcess(static_cast<uintptr_t>(sysPid));
+
+    if (isWow64Process(sysPid)) {
+        effectiveTypeSync = EffectiveTypeSync::wow64();
+        effectiveTypeSync->sync(control, log);
+        if (log) log("(dbgeng) WoW64 target detected (pid=" + std::to_string(sysPid) + ")");
+        drainSyntheticEvents(static_cast<uintptr_t>(sysPid));
+    }
     return true;
 }
 
@@ -942,15 +1001,62 @@ bool DbgEngBackend::initAttach() {
         return false;
     }
 
+    // Create the Process right away so that synthetic CREATE_THREAD
+    // callbacks (fired during the first WaitForEvent) can register threads.
+    attached = true;
+    initProcess(static_cast<uintptr_t>(attachPid));
+
+    bool wow64 = isWow64Process(static_cast<ULONG>(attachPid));
+    if (wow64) {
+        effectiveTypeSync = EffectiveTypeSync::wow64();
+        effectiveTypeSync->sync(control, log);
+        if (log) log("(dbgeng) WoW64 target detected (pid=" + std::to_string(attachPid) + ")");
+    }
+
+    // The first WaitForEvent returns at the CREATE_PROCESS event
+    // (our callback returns DEBUG_STATUS_BREAK).  Synthetic
+    // CREATE_THREAD and LOAD_MODULE events are still queued.
     hr = control->WaitForEvent(0, INFINITE);
     if (FAILED(hr)) {
         if (log) log("(dbgeng) WaitForEvent (attach) failed");
+        client->DetachProcesses();
+        client->EndSession(DEBUG_END_PASSIVE);
+        attached = false;
+        process.reset();
         return false;
     }
 
-    attached = true;
-    initProcess(static_cast<uintptr_t>(attachPid));
+    if (wow64) drainSyntheticEvents(attachPid);
     return true;
+}
+
+void DbgEngBackend::drainSyntheticEvents(uintptr_t targetPid) {
+    control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
+    control->SetExecutionStatus(DEBUG_STATUS_GO);
+    HRESULT hr = control->WaitForEvent(0, 2000);
+    if (log) log("(dbgeng) WaitForEvent (drain) hr=" + toHex((unsigned long)hr));
+
+    if (hr != S_FALSE) return;
+
+    ULONG engineProcId = 0;
+    if (!SUCCEEDED(sysObjects->GetProcessIdBySystemId(
+            static_cast<ULONG>(targetPid), &engineProcId))) {
+        if (log) log("(dbgeng) restore current process failed after drain timeout");
+        return;
+    }
+
+    sysObjects->SetCurrentProcessId(engineProcId);
+    // Pick the first thread as current.
+    ULONG numThreads = 0;
+    sysObjects->GetNumberThreads(&numThreads);
+    if (numThreads > 0) {
+        ULONG firstId = 0;
+        sysObjects->GetThreadIdsByIndex(0, 1, &firstId, nullptr);
+        sysObjects->SetCurrentThreadId(firstId);
+    }
+    if (log) log("(dbgeng) restored current process="
+                 + std::to_string(engineProcId)
+                 + " threads=" + std::to_string(numThreads));
 }
 
 bool DbgEngBackend::initOpenTrace() {
@@ -998,15 +1104,17 @@ void DbgEngBackend::enumerateInitialThreads() {
 }
 
 bool DbgEngBackend::initArchAndRegisters() {
-    ULONG actualType = 0;
-    HRESULT hr = control->GetActualProcessorType(&actualType);
+    effectiveTypeSync->sync(control, log);
+
+    ULONG effectiveType = 0;
+    HRESULT hr = control->GetEffectiveProcessorType(&effectiveType);
     if (FAILED(hr)) {
-        if (log) log("(dbgeng) GetActualProcessorType failed hr=" + toHex((unsigned long)hr));
+        if (log) log("(dbgeng) GetEffectiveProcessorType failed hr=" + toHex((unsigned long)hr));
         return false;
     }
 
     const Arch* targetArch = nullptr;
-    switch (actualType) {
+    switch (effectiveType) {
     case IMAGE_FILE_MACHINE_I386:  targetArch = X86::instance();   break;
     case IMAGE_FILE_MACHINE_AMD64: targetArch = X64::instance();   break;
     case IMAGE_FILE_MACHINE_ARM64: targetArch = ARM64::instance(); break;
@@ -1014,19 +1122,27 @@ bool DbgEngBackend::initArchAndRegisters() {
     }
 
     if (!targetArch) {
-        if (log) log("(dbgeng) Unknown target machine type " + std::to_string(actualType));
+        if (log) log("(dbgeng) Unknown target machine type " + std::to_string(effectiveType));
         return false;
     }
 
     if (targetArch != arch) {
-        if (log) {
-            log("(dbgeng) Architecture mismatch: debugger is " + std::string(arch->name())
-                + " but target is " + std::string(targetArch->name()));
-            log("(dbgeng) Cross-architecture debugging is not supported.");
+        if (effectiveTypeSync != EffectiveTypeSync::wow64()) {
+            if (log) {
+                log("(dbgeng) Architecture mismatch: debugger is " + std::string(arch ? arch->name() : "(none)")
+                    + " but target is " + std::string(targetArch->name()));
+                log("(dbgeng) Cross-architecture debugging is not supported.");
+            }
+            client->DetachProcesses();
+            client->EndSession(DEBUG_END_PASSIVE);
+            return false;
         }
-        client->DetachProcesses();
-        client->EndSession(DEBUG_END_PASSIVE);
-        return false;
+        if (log) {
+            log("(dbgeng) target is " + std::string(targetArch->name())
+                + ", updating from " + std::string(arch ? arch->name() : "(none)"));
+        }
+        arch = targetArch;
+        debugger->updateArch(targetArch);
     }
 
     ri.resolve(registers);
@@ -1070,6 +1186,7 @@ void DbgEngBackend::beginExecution(ULONG& execStatus) {
                    execStatus == DEBUG_STATUS_REVERSE_STEP_INTO);
     stepPending = isStep;
     if (isStep) {
+        effectiveTypeSync->sync(control, log);
         ULONG64 pcBefore = 0;
         registers->GetInstructionOffset(&pcBefore);
         lastStepPC = static_cast<Address>(pcBefore);
@@ -1114,6 +1231,7 @@ void DbgEngBackend::pumpEvents(ULONG execStatus) {
             continue;
         }
 
+        effectiveTypeSync->sync(control, log);
         ULONG64 pc = 0;
         registers->GetInstructionOffset(&pc);
 
@@ -1224,6 +1342,8 @@ std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
 // ---------------------------------------------------------------------------
 
 void DbgEngBackend::captureStopState() {
+    effectiveTypeSync->sync(control, log);
+
     ULONG64 pc = 0;
     registers->GetInstructionOffset(&pc);
 
