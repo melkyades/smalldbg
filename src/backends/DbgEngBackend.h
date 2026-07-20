@@ -77,6 +77,7 @@ public:
     // --- TTD (Time Travel Debugging) ---
     Status openTrace(const std::string& tracePath) override;
     Status stepBack(Thread* thread) override;
+    Status reverseStepOver(Thread* thread) override;
     Status reverseResume() override;
     bool isTTDTrace() const override { return isTTD; }
 

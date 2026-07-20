@@ -37,6 +37,7 @@ public:
     Status openTrace(const std::string& tracePath);  // Open a TTD trace file (.run)
     Status stepBack();              // Step backwards using selectedThread or primaryThread
     Status stepBack(Thread* thread); // Step backwards on specific thread
+    Status reverseStepOver(Thread* thread); // Step backwards over calls on specific thread
     Status reverseResume();         // Run backwards until breakpoint/start
     bool isTTDTrace() const;        // Check if we're replaying a TTD trace
     

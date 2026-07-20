@@ -94,6 +94,10 @@ Status Debugger::stepBack(Thread* thread) {
     return backend->stepBack(thread);
 }
 
+Status Debugger::reverseStepOver(Thread* thread) {
+    return backend->reverseStepOver(thread);
+}
+
 Status Debugger::reverseResume() {
     return backend->reverseResume();
 }

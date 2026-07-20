@@ -576,6 +576,36 @@ Status DbgEngBackend::stepBack(Thread* thread) {
     return Status::Ok;
 }
 
+Status DbgEngBackend::reverseStepOver(Thread* thread) {
+    if (!attached) return Status::NotAttached;
+    if (!isTTD) {
+        if (log) log("(dbgeng) reverseStepOver: not a TTD trace");
+        return Status::NotSupported;
+    }
+
+    if (thread && sysObjects) {
+        ULONG engineId = 0;
+        HRESULT hr = sysObjects->GetThreadIdBySystemId(
+            static_cast<ULONG>(thread->getThreadId()), &engineId);
+        if (SUCCEEDED(hr)) {
+            sysObjects->SetCurrentThreadId(engineId);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> g(mutex);
+        stepRequested = true;
+        stepThreadId = thread ? static_cast<DWORD>(thread->getThreadId()) : 0;
+        pendingExecStatus = DEBUG_STATUS_REVERSE_STEP_OVER;
+        continueRequested = true;
+        stopped = false;
+    }
+    cv.notify_all();
+
+    if (log) log("(dbgeng) reverseStepOver requested");
+    return Status::Ok;
+}
+
 Status DbgEngBackend::reverseResume() {
     if (!attached) return Status::NotAttached;
     if (!isTTD) {
@@ -1183,7 +1213,8 @@ void DbgEngBackend::beginExecution(ULONG& execStatus) {
 
     // Remember PC before stepping (for TTD end-of-trace detection).
     bool isStep = (execStatus == DEBUG_STATUS_STEP_INTO ||
-                   execStatus == DEBUG_STATUS_REVERSE_STEP_INTO);
+                   execStatus == DEBUG_STATUS_REVERSE_STEP_INTO ||
+                   execStatus == DEBUG_STATUS_REVERSE_STEP_OVER);
     stepPending = isStep;
     if (isStep) {
         effectiveTypeSync->sync(control, log);
