@@ -122,6 +122,10 @@ Status Debugger::setBreakpoint(Address addr, const std::string &name) {
     return backend->setBreakpoint(addr, name);
 }
 
+Status Debugger::setWatchpoint(Address addr, uint64_t match, uint64_t mask) {
+    return backend->setWatchpoint(addr, match, mask);
+}
+
 Status Debugger::clearBreakpoint(Address addr) {
     return backend->clearBreakpoint(addr);
 }

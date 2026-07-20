@@ -64,6 +64,13 @@ public:
     Status clearBreakpoint(Address addr);
     std::vector<Breakpoint> listBreakpoints() const;
 
+    // HW watchpoint (write, 8 bytes). addr=0 clears. match=0 means
+    // "log every hit, never break"; non-zero means break when the value
+    // at addr matches `(read & mask) == match`. Implemented only by
+    // PtraceBackend on macOS/arm64; other backends are no-ops.
+    Status setWatchpoint(Address addr, uint64_t match = 0,
+                         uint64_t mask = 0xFFFFFFFFFFFFFFFFULL);
+
     // helpers
     bool isAttached() const;
     std::optional<uintptr_t> attachedPid() const;
