@@ -81,6 +81,10 @@ public:
     Status reverseResume() override;
     bool isTTDTrace() const override { return isTTD; }
 
+    // --- Post-mortem crash-dump loading ---
+    Status openDump(const std::string& dumpPath) override;
+    bool isDumpFile() const override { return isDump; }
+
     Status setBreakpoint(Address addr, const std::string& name) override;
     Status clearBreakpoint(Address addr) override;
     std::vector<Breakpoint> listBreakpoints() const override;
@@ -140,6 +144,7 @@ private:
     bool initLaunch();         // launch a child process
     bool initAttach();         // attach to an existing process
     bool initOpenTrace();      // open a TTD trace file
+    bool initOpenDump();       // open a crash/WER dump file
     bool initArchAndRegisters();  // validate target arch, resolve register indices
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
@@ -170,6 +175,7 @@ private:
     // --- Process state ---
     bool attached = false;
     bool isTTD = false;  // True if replaying a TTD trace
+    bool isDump = false; // True if inspecting a static crash/WER dump
 
     const EffectiveTypeSync* effectiveTypeSync = nullptr;  // set in initLaunch()/initAttach()
 
@@ -181,9 +187,9 @@ private:
     std::string launchPath;
     std::vector<std::string> launchArgs;
     uintptr_t attachPid = 0;
-    enum class InitMode { None, Launch, Attach, OpenTrace };
+    enum class InitMode { None, Launch, Attach, OpenTrace, OpenDump };
     InitMode initMode = InitMode::None;
-    std::string tracePath;  // for InitMode::OpenTrace
+    std::string tracePath;  // for InitMode::OpenTrace / InitMode::OpenDump
     bool initOk = false;
     std::mutex initMutex;
     std::condition_variable initCv;

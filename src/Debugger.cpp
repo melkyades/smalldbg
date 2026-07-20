@@ -106,6 +106,14 @@ bool Debugger::isTTDTrace() const {
     return backend->isTTDTrace();
 }
 
+Status Debugger::openDump(const std::string& dumpPath) {
+    return backend->openDump(dumpPath);
+}
+
+bool Debugger::isDumpFile() const {
+    return backend->isDumpFile();
+}
+
 std::string Debugger::executeCommand(const std::string& cmd) const {
     return backend->executeCommand(cmd);
 }

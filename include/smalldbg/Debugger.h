@@ -40,6 +40,10 @@ public:
     Status reverseStepOver(Thread* thread); // Step backwards over calls on specific thread
     Status reverseResume();         // Run backwards until breakpoint/start
     bool isTTDTrace() const;        // Check if we're replaying a TTD trace
+
+    // --- Post-mortem crash-dump loading ---
+    Status openDump(const std::string& dumpPath);  // Open a crash/WER dump (.dmp)
+    bool isDumpFile() const;        // Check if we're inspecting a crash dump
     
     // Execute a raw engine command (DbgEng: "kb", "lm", etc.) and return output.
     // Empty string on backends that don't support it.

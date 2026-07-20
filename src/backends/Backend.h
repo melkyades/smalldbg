@@ -35,6 +35,12 @@ public:
     virtual Status reverseResume() { return Status::NotSupported; }
     virtual bool isTTDTrace() const { return false; }
 
+    // --- Post-mortem crash-dump loading ---
+    // Open a crash/WER dump (.dmp) as a frozen, read-only process snapshot.
+    // Default returns NotSupported; override in backends that support it.
+    virtual Status openDump(const std::string& dumpPath) { (void)dumpPath; return Status::NotSupported; }
+    virtual bool isDumpFile() const { return false; }
+
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
     virtual Status clearBreakpoint(Address addr) = 0;
     virtual std::vector<Breakpoint> listBreakpoints() const = 0;

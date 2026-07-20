@@ -413,6 +413,7 @@ Status DbgEngBackend::detach() {
     }
 
     attached = false;
+    isDump = false;
     process.reset();
     releaseInterfaces();
 
@@ -431,6 +432,10 @@ Status DbgEngBackend::detach() {
 
 Status DbgEngBackend::resume() {
     if (!attached) return Status::NotAttached;
+    if (isDump) {
+        if (log) log("(dbgeng) resume: not supported on a static crash dump");
+        return Status::NotSupported;
+    }
 
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -453,6 +458,10 @@ Status DbgEngBackend::resume() {
 
 Status DbgEngBackend::step(Thread* thread) {
     if (!attached) return Status::NotAttached;
+    if (isDump) {
+        if (log) log("(dbgeng) step: not supported on a static crash dump");
+        return Status::NotSupported;
+    }
 
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -473,6 +482,10 @@ Status DbgEngBackend::suspend() {
     if (!attached) {
         if (log) log("(dbgeng) suspend: not attached");
         return Status::NotAttached;
+    }
+    if (isDump) {
+        // A crash dump is already a frozen snapshot; nothing to interrupt.
+        return Status::Ok;
     }
 
     {
@@ -542,6 +555,46 @@ Status DbgEngBackend::openTrace(const std::string& path) {
 
     isTTD = true;
     if (log) log("(dbgeng) TTD trace opened via DbgEng: " + tracePath);
+    return Status::Ok;
+}
+
+Status DbgEngBackend::openDump(const std::string& path) {
+    if (attached) {
+        if (log) log("(dbgeng) openDump: already attached, detach first");
+        return Status::Error;
+    }
+
+    if (log) log("(dbgeng) openDump: opening " + path);
+
+    // Crash/WER dumps are handled by the standard system dbgeng.dll (loaded
+    // lazily by initInterfaces()).  Unlike TTD traces, no WinDbg Preview
+    // engine is required.  The dump is opened as a frozen, read-only process
+    // snapshot: registers, memory, modules and stacks are available, but run
+    // control (resume/step) is not.
+    tracePath = path;
+    initMode = InitMode::OpenDump;
+    running = true;
+    initDone = false;
+    initOk = false;
+
+    if (eventThread.joinable()) eventThread.join();
+    eventThread = std::thread(&DbgEngBackend::eventLoop, this);
+
+    // Wait for init to complete
+    {
+        std::unique_lock<std::mutex> lock(initMutex);
+        initCv.wait(lock, [this]{ return initDone; });
+    }
+
+    if (!initOk) {
+        if (log) log("(dbgeng) openDump: DbgEng OpenDumpFile failed");
+        running = false;
+        if (eventThread.joinable()) eventThread.join();
+        return Status::Error;
+    }
+
+    isDump = true;
+    if (log) log("(dbgeng) crash dump opened via DbgEng: " + tracePath);
     return Status::Ok;
 }
 
@@ -944,6 +997,7 @@ bool DbgEngBackend::initSession() {
     case InitMode::Launch:    ok = initLaunch();    break;
     case InitMode::Attach:    ok = initAttach();    break;
     case InitMode::OpenTrace: ok = initOpenTrace(); break;
+    case InitMode::OpenDump:  ok = initOpenDump();  break;
     default:                  break;
     }
 
@@ -1118,6 +1172,34 @@ bool DbgEngBackend::initOpenTrace() {
     attached = true;
     isTTD = true;
     initProcess(static_cast<uintptr_t>(sysPid));
+    return true;
+}
+
+bool DbgEngBackend::initOpenDump() {
+    if (log) log("(dbgeng) OpenDump: calling OpenDumpFile for " + tracePath);
+
+    HRESULT hr = client->OpenDumpFile(tracePath.c_str());
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) OpenDumpFile failed hr=" + toHex((unsigned long)hr));
+        return false;
+    }
+
+    // Process the dump header — this loads the register context, module list
+    // and thread list from the snapshot.  A crash dump is static, so a single
+    // WaitForEvent is enough to reach the frozen state.
+    hr = control->WaitForEvent(0, INFINITE);
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) WaitForEvent (OpenDumpFile) failed hr=" + toHex((unsigned long)hr));
+        return false;
+    }
+
+    // Position the engine on the faulting thread/context recorded in the dump.
+    ULONG sysPid = 0;
+    if (sysObjects) sysObjects->GetCurrentProcessSystemId(&sysPid);
+    attached = true;
+    isDump = true;
+    initProcess(static_cast<uintptr_t>(sysPid));
+    if (log) log("(dbgeng) OpenDump: dump loaded, frozen snapshot ready");
     return true;
 }
 
