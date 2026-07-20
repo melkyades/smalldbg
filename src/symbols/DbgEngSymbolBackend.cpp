@@ -174,6 +174,35 @@ void DbgEngSymbolBackend::enumerateSymbols(const std::string& pattern, SymbolCal
     symbols->EndSymbolMatch(handle);
 }
 
+void DbgEngSymbolBackend::enumerateModules(ModuleCallback callback) {
+    if (!symbols || !callback) return;
+
+    ULONG loaded = 0, unloaded = 0;
+    if (FAILED(symbols->GetNumberModules(&loaded, &unloaded))) return;
+
+    for (ULONG i = 0; i < loaded; ++i) {
+        DEBUG_MODULE_PARAMETERS params = {};
+        if (FAILED(symbols->GetModuleParameters(1, nullptr, i, &params)))
+            continue;
+
+        char nameBuf[512] = {};
+        symbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, i, 0,
+                                     nameBuf, sizeof(nameBuf), nullptr);
+        char shortBuf[256] = {};
+        symbols->GetModuleNameString(DEBUG_MODNAME_MODULE, i, 0,
+                                     shortBuf, sizeof(shortBuf), nullptr);
+
+        ModuleInfo info;
+        info.path = nameBuf;
+        info.shortName = shortBuf;
+        info.loadAddress = static_cast<Address>(params.Base);
+        info.endAddress  = static_cast<Address>(params.Base + params.Size);
+        info.symbolCount = static_cast<uint64_t>(params.SymbolType != DEBUG_SYMTYPE_NONE ? 1 : 0);
+
+        if (!callback(info)) return;
+    }
+}
+
 std::optional<SourceLocation> DbgEngSymbolBackend::getSourceLocation(Address addr) {
     if (!symbols) return std::nullopt;
 

@@ -35,6 +35,9 @@ public:
     std::optional<Symbol> getSymbolByAddress(Address addr) override;
     void enumerateSymbols(const std::string& pattern, SymbolCallback callback) override;
 
+    // Module enumeration
+    void enumerateModules(ModuleCallback callback) override;
+
     // Source/line information
     std::optional<SourceLocation> getSourceLocation(Address addr) override;
 
