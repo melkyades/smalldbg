@@ -77,36 +77,10 @@ void PtraceBackend::enumerateAndRegisterThreads() {
 Status PtraceBackend::launch(const std::string &path, const std::vector<std::string> &args) {
     if (attached) return Status::AlreadyAttached;
 
-    pid_t child = fork();
-    if (child < 0) {
-        if (log) log("(ptrace) fork failed: " + std::string(strerror(errno)));
-        return Status::Error;
-    }
+    int child = platform->spawnStopped(path, args);
+    if (child < 0) return Status::Error;
 
-    if (child == 0) {
-        // --- child process ---
-        platform->ptraceTraceMe();
-
-        std::vector<const char*> argv;
-        argv.push_back(path.c_str());
-        for (auto& a : args) argv.push_back(a.c_str());
-        argv.push_back(nullptr);
-
-        execvp(path.c_str(), const_cast<char* const*>(argv.data()));
-        _exit(127);
-    }
-
-    // --- parent process ---
     targetPid = child;
-
-    // Child stops at exec (SIGTRAP) due to trace-me
-    int status = 0;
-    if (waitpid(targetPid, &status, 0) < 0 || !WIFSTOPPED(status)) {
-        if (log) log("(ptrace) child did not stop after launch");
-        kill(targetPid, SIGKILL);
-        waitpid(targetPid, nullptr, 0);
-        return Status::Error;
-    }
 
     // Acquire platform-specific process handle
     if (platform->acquireProcess(targetPid) != Status::Ok) {

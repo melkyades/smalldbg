@@ -29,6 +29,13 @@ public:
     virtual int ptraceStep(int pid) = 0;
     virtual void ptraceKill(int pid) = 0;
 
+    // -- Process spawning --
+    // Spawn `path`/`args` and return with the child STOPPED (ready for register
+    // reads), or -1 on failure. Default: fork + PT_TRACE_ME + execvp; platforms
+    // that can't stop the child that way override it.
+    virtual int spawnStopped(const std::string& path,
+                             const std::vector<std::string>& args);
+
     // Acquire platform-specific process handle (e.g. Mach task port on macOS).
     // Must be called after the target is stopped.
     virtual Status acquireProcess(int pid) = 0;

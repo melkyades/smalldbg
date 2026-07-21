@@ -53,6 +53,7 @@ if(WIN32)
 else()
     target_sources(smalldbg PRIVATE
         src/backends/PtraceBackend.cpp
+        src/backends/PtracePlatform.cpp
         src/platform/posix/Platform.cpp
     )
     if(APPLE)
