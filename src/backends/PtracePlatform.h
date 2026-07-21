@@ -54,6 +54,23 @@ public:
     // -- Thread enumeration --
     virtual std::vector<ThreadId> enumerateThreads() = 0;
 
+    // -- Async exception polling --
+    // Exceptions a platform catches out-of-band (not via waitpid) surface
+    // through here; the backend polls it between waitpid calls. Default: none.
+    struct AsyncException {
+        bool present{false};
+        ThreadId thread{0};
+        int exception{0};
+        long code{0};
+        long subcode{0};
+    };
+    virtual AsyncException pollAsyncException() { return AsyncException{}; }
+
+    // HW watchpoint (write-only, 8 bytes) controls. addr=0 clears.
+    // Default: no-op for platforms without HW watchpoint support.
+    virtual void setWatchpoint(uint64_t /*addr*/, uint64_t /*matchValue*/,
+                                uint64_t /*matchMask*/) {}
+
     // -- Module enumeration --
     virtual std::vector<ModuleInfo> enumerateModules() const = 0;
 

@@ -245,6 +245,11 @@ Status PtraceBackend::suspend() {
 // Breakpoints
 // ---------------------------------------------------------------------------
 
+Status PtraceBackend::setWatchpoint(Address addr, uint64_t match, uint64_t mask) {
+    platform->setWatchpoint(addr, match, mask);
+    return Status::Ok;
+}
+
 Status PtraceBackend::setBreakpoint(Address addr, const std::string &name) {
     if (!attached) return Status::NotAttached;
     if (bpOriginalBytes.find(addr) != bpOriginalBytes.end()) return Status::Error;
@@ -371,6 +376,7 @@ int PtraceBackend::waitForChildStop(int timeout_ms) {
         int status = 0;
         pid_t r = waitpid(targetPid, &status, WNOHANG);
         if (r <= 0) return -1;
+        lastChildStatus = status;
         if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
         if (WIFSTOPPED(status)) return WSTOPSIG(status);
         return -1;
@@ -380,6 +386,7 @@ int PtraceBackend::waitForChildStop(int timeout_ms) {
         int status = 0;
         pid_t r = waitpid(targetPid, &status, 0);
         if (r < 0) return -1;
+        lastChildStatus = status;
         if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
         if (WIFSTOPPED(status)) return WSTOPSIG(status);
         return -1;
@@ -391,6 +398,7 @@ int PtraceBackend::waitForChildStop(int timeout_ms) {
         int status = 0;
         pid_t r = waitpid(targetPid, &status, WNOHANG);
         if (r > 0) {
+            lastChildStatus = status;
             if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
             if (WIFSTOPPED(status)) return WSTOPSIG(status);
         }
@@ -412,6 +420,37 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
         return stopReason;
 
     while (true) {
+        // Platforms may catch exceptions out-of-band (not via waitpid); check
+        // that queue first and synthesize an Exception stop for the offending
+        // thread.
+        auto async = platform->pollAsyncException();
+        if (async.present) {
+            stopped = true;
+            stopReason = StopReason::Exception;
+            stopAddress = 0;
+            if (log) {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "(ptrace) async exception=%d code=0x%lx subcode=0x%lx thread=0x%lx",
+                    async.exception, async.code, async.subcode,
+                    (unsigned long)async.thread);
+                log(buf);
+            }
+            enumerateAndRegisterThreads();
+            // Pick the faulting thread as current; fall back to primary if
+            // we can't find it.
+            auto threadOpt = process->getThread(async.thread);
+            if (threadOpt) {
+                debugger->setCurrentThread(*threadOpt);
+                Registers regs{};
+                if (getRegisters(threadOpt->get(), regs) == Status::Ok)
+                    stopAddress = regs.ip();
+            } else {
+                selectPrimaryThread();
+            }
+            if (eventCallback) eventCallback(stopReason, stopAddress);
+            return stopReason;
+        }
         int sig = waitForChildStop(timeout_ms);
         if (sig == -1) return StopReason::None;
 
@@ -421,7 +460,18 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
             stopAddress = 0;
             attached = false;
             platform->releaseProcess();
-            if (log) log("(ptrace) process exited");
+            if (log) {
+                std::string msg = "(ptrace) process exited";
+                if (lastChildStatus != 0) {
+                    if (WIFSIGNALED(lastChildStatus))
+                        msg += " (killed by signal " +
+                               std::to_string(WTERMSIG(lastChildStatus)) + ")";
+                    else if (WIFEXITED(lastChildStatus))
+                        msg += " (exit code " +
+                               std::to_string(WEXITSTATUS(lastChildStatus)) + ")";
+                }
+                log(msg);
+            }
             if (eventCallback) eventCallback(stopReason, stopAddress);
             return stopReason;
         }

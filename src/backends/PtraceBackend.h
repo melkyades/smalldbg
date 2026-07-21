@@ -26,6 +26,7 @@ public:
     Status setBreakpoint(Address addr, const std::string &name) override;
     Status clearBreakpoint(Address addr) override;
     std::vector<Breakpoint> listBreakpoints() const override;
+    Status setWatchpoint(Address addr, uint64_t match, uint64_t mask) override;
 
     Status readMemory(Address address, void *outBuf, size_t size) const override;
     Status writeMemory(Address address, const void *data, size_t size) override;
@@ -34,6 +35,10 @@ public:
 
     std::vector<ModuleInfo> enumerateModules() const override;
     
+    // Access the platform for facilities not on the generic Backend interface
+    // (HW watchpoints, VM region scan).
+    PtracePlatform* getPlatform() const { return platform.get(); }
+
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
     Address getStopAddress() const override { return stopAddress; }
@@ -47,6 +52,7 @@ private:
     bool stopped{false};
     StopReason stopReason{StopReason::None};
     Address stopAddress{0};
+    int lastChildStatus{0};
     std::vector<Breakpoint> bps;
 
     // Breakpoint tracking: address -> original bytes that were overwritten
