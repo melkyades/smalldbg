@@ -11,6 +11,14 @@ namespace smalldbg {
 class Thread;  // Forward declaration
 class StackFrameProcessor;  // Forward declaration
 
+/// Processor-specific metadata attached to a frame.
+/// Each processor subtype defines its own derived struct
+/// (e.g. SmalltalkFrameMetadata).  Clients cast based on
+/// the processor pointer.
+struct FrameMetadata {
+    virtual ~FrameMetadata() = default;
+};
+
 // Represents a single frame in a stack trace
 struct StackFrame {
     // Register context at this frame (for local variable access)
@@ -24,7 +32,10 @@ struct StackFrame {
     
     // The processor that handled this frame
     StackFrameProcessor* processor{nullptr};
-    
+
+    // Processor-specific metadata (null for processors that don't set it)
+    std::unique_ptr<FrameMetadata> metadata;
+
     // Previous frame in the trace (towards the top of the stack / most recent call)
     StackFrame* prev{nullptr};
     
