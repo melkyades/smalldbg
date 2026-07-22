@@ -1,0 +1,2 @@
+# Shell scripts must keep LF endings or the shebang breaks when executed.
+*.sh text eol=lf

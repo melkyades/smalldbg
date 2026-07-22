@@ -17,8 +17,10 @@
 #include "../symbols/DbgEngSymbolBackend.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <windows.h>
 
@@ -52,37 +54,73 @@ static bool ensureDbgEngLoaded() {
     return false;
 }
 
-// Load WinDbg Preview's dbgeng.dll for TTD support
+// dbgeng loads in-process, so match this executable's arch.
+#if defined(_M_ARM64)
+static const wchar_t* kDbgEngArchSub = L"arm64";
+#elif defined(_M_X64) || defined(_M_AMD64)
+static const wchar_t* kDbgEngArchSub = L"amd64";
+#elif defined(_M_IX86)
+static const wchar_t* kDbgEngArchSub = L"x86";
+#else
+static const wchar_t* kDbgEngArchSub = L"amd64";
+#endif
+
+// Load dbgeng.dll from `dir`; the engine finds its siblings and ttd\ relative
+// to itself. Sets the globals and returns true on success.
+static bool tryLoadDbgEngFrom(const std::wstring& dir) {
+    if (dir.empty()) return false;
+    std::wstring dll = dir + L"\\dbgeng.dll";
+    if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+
+    SetDllDirectoryW(dir.c_str());
+    HMODULE hMod = LoadLibraryExW(dll.c_str(), NULL,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    SetDllDirectoryW(NULL);
+    if (!hMod) return false;
+
+    PFN_DebugCreate pfn = (PFN_DebugCreate)GetProcAddress(hMod, "DebugCreate");
+    if (!pfn) { FreeLibrary(hMod); return false; }
+
+    // Drop any previously-loaded system dbgeng before swapping in the TTD one.
+    if (g_dbgengModule && !g_usingWinDbgPreview) FreeLibrary(g_dbgengModule);
+    g_dbgengModule = hMod;
+    g_pfnDebugCreate = pfn;
+    g_usingWinDbgPreview = true;
+    return true;
+}
+
+static std::wstring executableDir() {
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, buf, MAX_PATH);
+    if (n == 0 || n == MAX_PATH) return L"";  // 0 = error, MAX_PATH = truncated
+    return std::filesystem::path(buf, buf + n).parent_path().wstring();
+}
+
+// Where tools/pack_windbg_dlls.sh installs the DLLs for the current user.
+static std::wstring userDbgEngDir() {
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return L"";
+    return std::wstring(buf) + L"\\smalldbg\\windbg_dlls\\" + kDbgEngArchSub;
+}
+
+// Load a TTD-capable dbgeng.dll from the first location that has one. The DLLs
+// are placed out-of-band by tools/pack_windbg_dlls.sh; this never copies them
+// (loading in-process from the MSIX WinDbg package is ACL-blocked).
 static bool loadWinDbgPreviewDbgEng() {
-    // If we're already using WinDbg Preview, we're done
     if (g_usingWinDbgPreview && g_pfnDebugCreate) return true;
-    
-    // Known WinDbg Preview installation paths
-    const char* windbgPaths[] = {
-        "C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_1.2601.12001.0_arm64__8wekyb3d8bbwe\\arm64",
-        "C:\\Program Files\\WindowsApps\\Microsoft.WinDbg_1.2601.12001.0_x64__8wekyb3d8bbwe\\amd64",
-    };
-    
-    for (const char* basePath : windbgPaths) {
-        // Set DLL directory so dependencies can be found
-        SetDllDirectoryA(basePath);
-        
-        std::string dbgengPath = std::string(basePath) + "\\dbgeng.dll";
-        HMODULE hMod = LoadLibraryExA(dbgengPath.c_str(), NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-        if (hMod) {
-            PFN_DebugCreate pfn = (PFN_DebugCreate)GetProcAddress(hMod, "DebugCreate");
-            if (pfn) {
-                g_dbgengModule = hMod;
-                g_pfnDebugCreate = pfn;
-                g_usingWinDbgPreview = true;
-                SetDllDirectoryA(NULL);
-                return true;
-            }
-            FreeLibrary(hMod);
-        }
-        SetDllDirectoryA(NULL);
+
+    wchar_t envDir[MAX_PATH];
+    DWORD envLen = GetEnvironmentVariableW(L"SMALLDBG_DBGENG_DIR", envDir, MAX_PATH);
+    if (envLen > 0 && envLen < MAX_PATH && tryLoadDbgEngFrom(envDir)) return true;
+
+    std::wstring exeDir = executableDir();
+    if (!exeDir.empty()) {
+        if (tryLoadDbgEngFrom(exeDir + L"\\windbg_dlls\\" + kDbgEngArchSub)) return true;
+        if (tryLoadDbgEngFrom(exeDir + L"\\windbg_dlls")) return true;
     }
-    return false;
+
+    return tryLoadDbgEngFrom(userDbgEngDir());
 }
 
 // Helper: format a value as a hex string ("0x1234ABCD").
@@ -523,7 +561,10 @@ Status DbgEngBackend::openTrace(const std::string& path) {
     // support (symbols, stack traces, registers, memory, breakpoints,
     // reverse stepping) through standard COM APIs.
     if (!loadWinDbgPreviewDbgEng()) {
-        if (log) log("(dbgeng) openTrace: failed to open trace");
+        if (log) log("(dbgeng) openTrace: no TTD-capable dbgeng.dll found. Install it "
+                     "with tools/pack_windbg_dlls.sh (needs WinDbg installed), or unzip "
+                     "a bundle from tools/pack_windbg_dlls.sh --zip next to the exe, or "
+                     "set SMALLDBG_DBGENG_DIR.");
         return Status::Error;
     }
 
