@@ -6,9 +6,12 @@
 
 namespace smalldbg {
     class Debugger;
+    struct StackFrame;
 }
 
 namespace webside {
+
+class Json;  // forward declaration
 
 /// Abstract interface for all Webside debug sessions.
 ///
@@ -44,6 +47,20 @@ public:
 
     // ---- underlying debugger ----
     virtual smalldbg::Debugger* getDebugger() const = 0;
+
+protected:
+    // ---- virtual hooks for frame formatting ----
+    // Dialects override these; the base builds generic native JSON.
+
+    /// Display label for a frame (used by listFrames).
+    virtual std::string buildFrameLabel(const smalldbg::StackFrame& frame) const;
+
+    /// JSON detail for one frame; dispatches to the smalltalk/native hook
+    /// based on whether the frame carries processor metadata.
+    virtual std::string buildFrameDetailJson(const smalldbg::StackFrame& frame,
+                                             int index) const;
+    virtual void addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
+    virtual void addNativeFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
 };
 
 } // namespace webside
