@@ -58,12 +58,21 @@ if(WIN32)
     add_executable(live_tests
         unit/doctest_main.cpp
         live/test_backend_live.cpp
+        live/test_ttd_live.cpp
         ${LIVE_UTIL_SRC}
     )
     target_include_directories(live_tests PRIVATE live)
-    target_link_libraries(live_tests PRIVATE smalldbg doctest::doctest)
+    target_link_libraries(live_tests PRIVATE smalldbg doctest::doctest shell32)
     add_dependencies(live_tests test_target)
     add_test(NAME live-tests COMMAND live_tests)
+
+    # Standalone elevated TTD recorder used by the TTD live test. It carries a
+    # requireAdministrator manifest so launching it raises a UAC prompt, keeping
+    # the tests themselves unelevated. The test only invokes it when its cached
+    # trace is missing or stale.
+    add_executable(ttd_recorder live/ttd_recorder.cpp)
+    target_link_options(ttd_recorder PRIVATE /MANIFESTUAC:level='requireAdministrator')
+    add_dependencies(live_tests ttd_recorder)
 endif()
 
 # Include DbgEng register tests (Windows only, separate diagnostic tools)
