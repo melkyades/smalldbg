@@ -15,6 +15,20 @@ public:
     void detach() override {}
     bool isActive() const override { return false; }
     std::optional<int> getPid() const override { return std::nullopt; }
+
+    bool resume() override { return false; }
+    bool suspend() override { return false; }
+    bool step() override { return false; }
+    bool stepOver() override { return false; }
+    bool stepOver(int) override { return false; }
+    bool stepOut() override { return false; }
+    bool stepBack() override { return false; }
+    bool reverseStepOver() override { return false; }
+    bool reverseStepOut() override { return false; }
+
+    std::string getStopReason() const override { return ""; }
+    std::string getRegisters() const override { return "{}"; }
+
     smalldbg::Debugger* getDebugger() const override { return nullptr; }
 };
 
