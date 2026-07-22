@@ -3,9 +3,12 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace smalldbg {
     class Debugger;
+    class Thread;
+    class StackTrace;
     struct StackFrame;
 }
 
@@ -45,8 +48,24 @@ public:
     virtual std::string getStopReason() const = 0;
     virtual std::string getRegisters() const = 0;
 
+    // ---- frame API ----
+    // These take real debugger objects; the WebsideServer layer resolves the
+    // thread and frame from the request, then calls these. A frame is a VM
+    // (Smalltalk) frame when frame.metadata != nullptr, native otherwise.
+    std::string listFrames(smalldbg::Thread& thread, size_t maxFrames = 256) const;
+    std::string getFrameDetail(smalldbg::StackTrace& trace,
+                               const smalldbg::StackFrame& frame, int index) const;
+    std::string getFrameBindings(smalldbg::StackTrace& trace,
+                                 const smalldbg::StackFrame& frame, int index) const;
+    std::string getFrameRegisters(const smalldbg::StackFrame& frame) const;
+    std::string getFrameStack(const smalldbg::StackTrace& trace, int index) const;
+
     // ---- underlying debugger ----
     virtual smalldbg::Debugger* getDebugger() const = 0;
+
+    // ---- thread helpers ----
+    std::shared_ptr<smalldbg::Thread> resolveThread(uint64_t threadId) const;
+    std::shared_ptr<smalldbg::Thread> primaryThread() const;
 
 protected:
     // ---- virtual hooks for frame formatting ----
@@ -70,6 +89,11 @@ protected:
 
     /// JSON register dump for one frame (arch-aware).
     virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
+
+    /// JSON view of the raw stack memory around a frame (reads target memory).
+    virtual std::string buildFrameStackJson(smalldbg::Debugger* dbg,
+                                            const smalldbg::StackTrace& trace,
+                                            int rawIndex) const;
 };
 
 } // namespace webside

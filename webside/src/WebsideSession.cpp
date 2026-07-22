@@ -2,8 +2,76 @@
 #include "Json.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Arch.h"
+#include "smalldbg/Debugger.h"
+#include "smalldbg/Process.h"
+#include "smalldbg/Thread.h"
+
+#include <algorithm>
+#include <cstring>
 
 namespace webside {
+
+// =========================================================================
+// Thread helpers
+// =========================================================================
+
+std::shared_ptr<smalldbg::Thread> WebsideSession::primaryThread() const {
+    auto* dbg = getDebugger();
+    if (!dbg) return nullptr;
+    auto proc = dbg->getProcess();
+    return proc ? proc->primaryThread() : nullptr;
+}
+
+std::shared_ptr<smalldbg::Thread> WebsideSession::resolveThread(uint64_t threadId) const {
+    auto* dbg = getDebugger();
+    if (!dbg) return nullptr;
+    auto proc = dbg->getProcess();
+    if (!proc) return nullptr;
+    auto opt = proc->getThread(threadId);
+    return opt ? *opt : nullptr;
+}
+
+static bool unwindThread(smalldbg::Thread*, smalldbg::StackTrace& trace, size_t maxFrames) {
+    return trace.unwind(std::max(maxFrames, size_t(64))) == smalldbg::Status::Ok;
+}
+
+// =========================================================================
+// Public frame API — takes real debugger objects, delegates formatting to hooks
+// =========================================================================
+
+std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrames) const {
+    smalldbg::StackTrace trace(&thread);
+    if (!unwindThread(&thread, trace, maxFrames)) return "[]";
+
+    const auto& frames = trace.getFrames();
+    auto arr = Json::array();
+    for (size_t i = 0; i < frames.size(); i++) {
+        arr.add(Json::object()
+            .set("index", static_cast<int>(i + 1))
+            .set("label", buildFrameLabel(*frames[i])));
+    }
+    return arr.dump();
+}
+
+std::string WebsideSession::getFrameDetail(smalldbg::StackTrace& trace,
+                                           const smalldbg::StackFrame& frame, int index) const {
+    trace.resolveFrameDetails(index - 1, getDebugger());
+    return buildFrameDetailJson(frame, index);
+}
+
+std::string WebsideSession::getFrameBindings(smalldbg::StackTrace& trace,
+                                             const smalldbg::StackFrame& frame, int index) const {
+    trace.resolveFrameDetails(index - 1, getDebugger());
+    return buildFrameBindingsJson(frame, index);
+}
+
+std::string WebsideSession::getFrameRegisters(const smalldbg::StackFrame& frame) const {
+    return buildFrameRegistersJson(frame);
+}
+
+std::string WebsideSession::getFrameStack(const smalldbg::StackTrace& trace, int index) const {
+    return buildFrameStackJson(getDebugger(), trace, index - 1);
+}
 
 // =========================================================================
 // Virtual frame-formatting hooks — generic native behavior. Dialect sessions
@@ -115,6 +183,39 @@ std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& 
         add("rflags", r.rflags);
     } else {
         add("ip", regs.ip()); add("fp", regs.fp()); add("sp", regs.sp());
+    }
+    return arr.dump();
+}
+
+std::string WebsideSession::buildFrameStackJson(smalldbg::Debugger* dbg,
+                                                const smalldbg::StackTrace& trace,
+                                                int rawIndex) const {
+    const auto& rawFrames = trace.getFrames();
+    int first = std::max(0, rawIndex - 1);
+    int last = std::min(static_cast<int>(rawFrames.size()) - 1, rawIndex + 1);
+    size_t ptrSize = rawFrames[0]->registers.pointerSize();
+
+    uint64_t lo = rawFrames[first]->sp();
+    uint64_t hi = rawFrames[last]->fp() + ptrSize * 2;
+    if (hi <= lo || (hi - lo) > 4096) {
+        lo = rawFrames[rawIndex]->sp();
+        hi = rawFrames[rawIndex]->fp() + ptrSize * 2;
+        if (hi <= lo || (hi - lo) > 4096) return "[]";
+    }
+
+    size_t byteCount = static_cast<size_t>(hi - lo);
+    std::vector<uint8_t> buf(byteCount);
+    if (dbg->readMemory(lo, buf.data(), byteCount) != smalldbg::Status::Ok)
+        return "[]";
+
+    auto arr = Json::array();
+    for (uint64_t addr = lo; addr < hi; addr += ptrSize) {
+        uint64_t val = 0;
+        size_t off = static_cast<size_t>(addr - lo);
+        std::memcpy(&val, &buf[off], std::min(ptrSize, byteCount - off));
+        arr.add(Json::object()
+            .set("address", Json::hex(ptrSize == 4 ? static_cast<uint32_t>(addr) : addr))
+            .set("value", Json::hex(ptrSize == 4 ? static_cast<uint32_t>(val) : val)));
     }
     return arr.dump();
 }

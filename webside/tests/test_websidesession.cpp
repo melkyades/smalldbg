@@ -4,6 +4,8 @@
 #include "WebsideSession.h"
 #include "DisconnectedSession.h"
 #include "smalldbg/StackTrace.h"
+#include "smalldbg/Debugger.h"
+#include "smalldbg/Thread.h"
 
 #include <memory>
 
@@ -107,4 +109,51 @@ TEST_CASE("frame registers JSON reflects the x64 register set") {
     CHECK(json.find("\"rip\"") != std::string::npos);
     CHECK(json.find("\"rax\"") != std::string::npos);
     CHECK(json.find("dead") != std::string::npos);
+}
+
+// Minimal concrete session backed by a real Debugger, for the live frame-API
+// test. Only the members the frame API needs are meaningful; the rest are
+// interface stubs.
+namespace {
+struct LiveSession : WebsideSession {
+    std::unique_ptr<smalldbg::Debugger> dbg;
+
+    bool launch(const std::string& target, const std::vector<std::string>& = {}) override {
+        dbg = std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External, smalldbg::X64::instance());
+        return dbg->launch(target) == smalldbg::Status::Ok;
+    }
+    bool isActive() const override { return dbg && dbg->isAttached(); }
+    smalldbg::Debugger* getDebugger() const override { return dbg.get(); }
+
+    bool attach(int) override { return false; }
+    void detach() override { if (dbg) dbg->detach(); }
+    std::optional<int> getPid() const override { return std::nullopt; }
+    bool resume() override { return false; }
+    bool suspend() override { return false; }
+    bool step() override { return false; }
+    bool stepOver() override { return false; }
+    bool stepOver(int) override { return false; }
+    bool stepOut() override { return false; }
+    bool stepBack() override { return false; }
+    bool reverseStepOver() override { return false; }
+    bool reverseStepOut() override { return false; }
+    std::string getStopReason() const override { return ""; }
+    std::string getRegisters() const override { return "{}"; }
+};
+}
+
+TEST_CASE("listFrames returns real frames for a launched target") {
+    LiveSession s;
+    REQUIRE(s.launch(WEBSIDE_TEST_TARGET));
+    REQUIRE(s.getDebugger()->waitForEvent(smalldbg::StopReason::None, 5000) != smalldbg::StopReason::None);
+
+    auto thread = s.primaryThread();
+    REQUIRE(thread);
+
+    const std::string json = s.listFrames(*thread);
+    CHECK(json != "[]");
+    CHECK(json.find("\"index\"") != std::string::npos);
+    CHECK(json.find("\"label\"") != std::string::npos);
+
+    s.getDebugger()->detach();
 }

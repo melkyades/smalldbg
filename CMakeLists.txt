@@ -110,7 +110,8 @@ enable_testing()
 # Examples
 add_subdirectory(examples)
 
+# Tests first, so webside/tests can depend on the test_target executable.
+add_subdirectory(tests)
+
 # Webside debugger servers (Egg, Bee, etc)
 add_subdirectory(webside)
-
-add_subdirectory(tests)
