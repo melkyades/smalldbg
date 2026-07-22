@@ -14,6 +14,8 @@ namespace {
 struct HookProbe : DisconnectedSession {
     using WebsideSession::buildFrameLabel;
     using WebsideSession::buildFrameDetailJson;
+    using WebsideSession::buildFrameBindingsJson;
+    using WebsideSession::buildFrameRegistersJson;
 };
 }
 
@@ -82,4 +84,27 @@ TEST_CASE("frame detail JSON distinguishes native and VM frames") {
     vmFrame.metadata = std::make_unique<smalldbg::FrameMetadata>();
     const std::string vmJson = s.buildFrameDetailJson(vmFrame, 2);
     CHECK(vmJson.find("vm") != std::string::npos);
+}
+
+TEST_CASE("native frame bindings expose IP/FP/SP") {
+    HookProbe s;
+    smalldbg::StackFrame f;
+    f.registers.x64.rip = 0x1000;
+
+    const std::string json = s.buildFrameBindingsJson(f, 0);
+    CHECK(json.find("\"IP\"") != std::string::npos);
+    CHECK(json.find("\"FP\"") != std::string::npos);
+    CHECK(json.find("\"SP\"") != std::string::npos);
+    CHECK(json.find("1000") != std::string::npos);  // IP value
+}
+
+TEST_CASE("frame registers JSON reflects the x64 register set") {
+    HookProbe s;
+    smalldbg::StackFrame f;  // arch defaults to x64
+    f.registers.x64.rax = 0xdead;
+
+    const std::string json = s.buildFrameRegistersJson(f);
+    CHECK(json.find("\"rip\"") != std::string::npos);
+    CHECK(json.find("\"rax\"") != std::string::npos);
+    CHECK(json.find("dead") != std::string::npos);
 }

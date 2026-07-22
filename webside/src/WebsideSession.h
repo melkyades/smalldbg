@@ -61,6 +61,15 @@ protected:
                                              int index) const;
     virtual void addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
     virtual void addNativeFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
+
+    /// JSON bindings (locals + IP/FP/SP) for one frame; dispatches on metadata.
+    virtual std::string buildFrameBindingsJson(const smalldbg::StackFrame& frame,
+                                               int index) const;
+    virtual std::string addSmalltalkFrameBindings(const smalldbg::StackFrame& frame) const;
+    virtual std::string addNativeFrameBindings(const smalldbg::StackFrame& frame) const;
+
+    /// JSON register dump for one frame (arch-aware).
+    virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
 };
 
 } // namespace webside
