@@ -103,13 +103,14 @@ if(SMALLDBG_USE_DBGENG)
     target_compile_definitions(smalldbg PRIVATE SMALLDBG_USE_DBGENG=1)
 endif()
 
+# enable_testing() must be called at the top level, before any subdirectory that
+# registers tests (webside/tests, tests/), so `ctest` from the build root finds them.
+enable_testing()
+
 # Examples
 add_subdirectory(examples)
 
 # Webside debugger servers (Egg, Bee, etc)
 add_subdirectory(webside)
 
-# Tests — enable_testing() must be called at the top level so `ctest` run from the
-# build root discovers tests registered in the tests/ subdirectory.
-enable_testing()
 add_subdirectory(tests)

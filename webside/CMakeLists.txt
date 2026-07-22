@@ -15,3 +15,5 @@ foreach(child ${children})
         add_subdirectory(src/${child})
     endif()
 endforeach()
+
+add_subdirectory(tests)
