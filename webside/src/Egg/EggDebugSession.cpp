@@ -427,7 +427,8 @@ std::string EggDebugSession::determinePackage(const ClassEntry& entry) const {
 }
 
 std::string EggDebugSession::listClasses(const std::string& root,
-                                          bool namesOnly) const {
+                                          bool namesOnly,
+                                          bool /*tree*/, int /*depth*/) const {
     auto& cache = inspector->getClassCache();
     if (cache.empty()) return "[]";
 
@@ -1070,5 +1071,15 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
 
     return arr.dump();
 }
+
+// ---- Interface stubs (not yet wired; low-level ops go through the routes) ----
+bool EggDebugSession::stepOver(int /*frameIndex*/) { return stepOver(); }
+std::string EggDebugSession::getRegisters() const { return "{}"; }
+bool EggDebugSession::setBreakpoint(uint64_t, const std::string&) { return false; }
+bool EggDebugSession::clearBreakpoint(uint64_t) { return false; }
+std::string EggDebugSession::listBreakpoints() const { return "[]"; }
+std::string EggDebugSession::readMemory(uint64_t, size_t) const { return "{}"; }
+std::string EggDebugSession::waitForEvent(int) { return "{}"; }
+std::string EggDebugSession::describeObject(uint64_t, size_t) const { return "{}"; }
 
 } // namespace webside

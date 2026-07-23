@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../WebsideSession.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
@@ -23,41 +24,51 @@ namespace webside {
 ///
 /// VM introspection (object model, class discovery, evaluator stack
 /// walking) is delegated to `egg::EggInspector`.
-class EggDebugSession {
+class EggDebugSession : public WebsideSession {
 public:
     EggDebugSession();
-    ~EggDebugSession();
+    ~EggDebugSession() override;
 
     /// Launch the egg executable and attach the debugger.
     bool launch(const std::string& eggPath,
-                const std::vector<std::string>& args = {});
+                const std::vector<std::string>& args = {}) override;
 
     /// Attach to an already-running egg process.
-    bool attach(int pid);
+    bool attach(int pid) override;
 
     /// Detach from the target process.
-    void detach();
+    void detach() override;
 
-    bool isActive() const;
-    std::optional<int> getPid() const;
+    bool isActive() const override;
+    std::optional<int> getPid() const override;
 
     // ---- Debug control ----
-    bool resume();
-    bool suspend();
-    bool step();          // single-step (step into)
-    bool stepOver();      // step over (run to next line in same frame)
-    bool stepOut();       // step out (run until current frame returns)
+    bool resume() override;
+    bool suspend() override;
+    bool step() override;
+    bool stepOver() override;
+    bool stepOver(int frameIndex) override;
+    bool stepOut() override;
 
     // ---- Reverse debug control (TTD) ----
-    bool stepBack();          // reverse single-step
-    bool reverseStepOver();   // reverse step over
-    bool reverseStepOut();    // reverse step out
+    bool stepBack() override;
+    bool reverseStepOver() override;
+    bool reverseStepOut() override;
 
     // ---- State queries ----
-    std::string getStopReason() const;
+    std::string getStopReason() const override;
+    std::string getRegisters() const override;
     std::string listFrames(size_t maxFrames = 256) const;
     std::string getFrameDetail(int index) const;
     std::string getFrameBindings(int index) const;
+
+    // ---- Breakpoints / memory / events / objects (interface stubs) ----
+    bool setBreakpoint(uint64_t address, const std::string& name = "") override;
+    bool clearBreakpoint(uint64_t address) override;
+    std::string listBreakpoints() const override;
+    std::string readMemory(uint64_t address, size_t size) const override;
+    std::string waitForEvent(int timeoutMs = 5000) override;
+    std::string describeObject(uint64_t handle, size_t maxDepth = 1) const override;
 
     // ---- Smalltalk-level debugging (green threads) ----
 
@@ -75,45 +86,47 @@ public:
     };
 
     /// Refresh the list of green threads by reading the evaluator state.
-    void refreshGreenThreads();
+    void refreshGreenThreads() override;
 
     /// Number of available green threads.
-    int greenThreadCount() const;
+    int greenThreadCount() const override;
 
     /// Get the name of a green thread by index (0-based).
-    std::string getGreenThreadName(int threadIndex) const;
+    std::string getGreenThreadName(int threadIndex) const override;
 
     /// Smalltalk-level frame listing for a green thread (JSON array).
-    std::string listSmalltalkFrames(int threadIndex) const;
+    std::string listSmalltalkFrames(int threadIndex) const override;
 
     /// Smalltalk-level frame detail for a green thread (JSON object).
-    std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const;
+    std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const override;
 
     /// Smalltalk-level frame bindings for a green thread (JSON array).
-    std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const;
+    std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const override;
 
     // ---- Class browsing (delegates to inspector + JSON formatting) ----
-    bool discoverClasses() { return inspector->discoverClasses(); }
+    bool discoverClasses() override { return inspector->discoverClasses(); }
     std::string listClasses(const std::string& root = "",
-                            bool namesOnly = false) const;
-    std::string getClass(const std::string& name) const;
-    std::string getSubclasses(const std::string& name) const;
-    std::string getSuperclasses(const std::string& name) const;
-    std::string getVariables(const std::string& name) const;
-    std::string getInstanceVariables(const std::string& name) const;
-    std::string getClassVariables(const std::string& name) const;
-    std::string getCategories(const std::string& name) const;
-    std::string getUsedCategories(const std::string& name) const;
-    std::string getSelectors(const std::string& name) const;
-    std::string getMethods(const std::string& name) const;
+                            bool namesOnly = false,
+                            bool tree = false,
+                            int depth = -1) const override;
+    std::string getClass(const std::string& name) const override;
+    std::string getSubclasses(const std::string& name) const override;
+    std::string getSuperclasses(const std::string& name) const override;
+    std::string getVariables(const std::string& name) const override;
+    std::string getInstanceVariables(const std::string& name) const override;
+    std::string getClassVariables(const std::string& name) const override;
+    std::string getCategories(const std::string& name) const override;
+    std::string getUsedCategories(const std::string& name) const override;
+    std::string getSelectors(const std::string& name) const override;
+    std::string getMethods(const std::string& name) const override;
     std::string getMethod(const std::string& className,
-                          const std::string& selector) const;
+                          const std::string& selector) const override;
     std::string search(const std::string& text, bool ignoreCase,
                        const std::string& condition,
-                       const std::string& type) const;
+                       const std::string& type) const override;
 
     /// Underlying debugger (for low-level access).
-    smalldbg::Debugger* getDebugger() const { return debugger.get(); }
+    smalldbg::Debugger* getDebugger() const override { return debugger.get(); }
 
     /// Access the Egg VM inspector.
     egg::EggInspector* getInspector() const { return inspector.get(); }
