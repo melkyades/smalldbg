@@ -4,6 +4,8 @@
 #include <vector>
 #include <optional>
 #include <memory>
+#include <cstdint>
+#include <cstddef>
 
 namespace smalldbg {
     class Debugger;
@@ -89,6 +91,20 @@ public:
     virtual std::string search(const std::string& text, bool ignoreCase,
                                const std::string& condition,
                                const std::string& type) const = 0;
+
+    // ---- breakpoints ----
+    virtual bool setBreakpoint(uint64_t address, const std::string& name = "") = 0;
+    virtual bool clearBreakpoint(uint64_t address) = 0;
+    virtual std::string listBreakpoints() const = 0;
+
+    // ---- memory ----
+    virtual std::string readMemory(uint64_t address, size_t size) const = 0;
+
+    // ---- events ----
+    virtual std::string waitForEvent(int timeoutMs = 5000) = 0;
+
+    // ---- object description ----
+    virtual std::string describeObject(uint64_t handle, size_t maxDepth = 1) const = 0;
 
     // ---- underlying debugger ----
     virtual smalldbg::Debugger* getDebugger() const = 0;

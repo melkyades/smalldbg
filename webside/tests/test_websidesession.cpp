@@ -75,6 +75,17 @@ TEST_CASE("a disconnected session exposes no classes") {
     CHECK(session.search("x", false, "", "") == "[]");
 }
 
+TEST_CASE("a disconnected session has no breakpoints, memory, or events") {
+    DisconnectedSession session;
+
+    CHECK_FALSE(session.setBreakpoint(0x1000, ""));
+    CHECK_FALSE(session.clearBreakpoint(0x1000));
+    CHECK(session.listBreakpoints() == "[]");
+    CHECK(session.readMemory(0x1000, 16) == "{}");
+    CHECK(session.waitForEvent(0) == "{}");
+    CHECK(session.describeObject(0x1000, 1) == "{}");
+}
+
 TEST_CASE("frame label combines module and function") {
     HookProbe s;
 
@@ -180,6 +191,12 @@ struct LiveSession : WebsideSession {
     std::string getMethods(const std::string&) const override { return "[]"; }
     std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
     std::string search(const std::string&, bool, const std::string&, const std::string&) const override { return "[]"; }
+    bool setBreakpoint(uint64_t, const std::string&) override { return false; }
+    bool clearBreakpoint(uint64_t) override { return false; }
+    std::string listBreakpoints() const override { return "[]"; }
+    std::string readMemory(uint64_t, size_t) const override { return "{}"; }
+    std::string waitForEvent(int) override { return "{}"; }
+    std::string describeObject(uint64_t, size_t) const override { return "{}"; }
 };
 }
 

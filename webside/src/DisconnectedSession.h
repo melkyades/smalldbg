@@ -51,6 +51,13 @@ public:
     std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
     std::string search(const std::string&, bool, const std::string&, const std::string&) const override { return "[]"; }
 
+    bool setBreakpoint(uint64_t, const std::string&) override { return false; }
+    bool clearBreakpoint(uint64_t) override { return false; }
+    std::string listBreakpoints() const override { return "[]"; }
+    std::string readMemory(uint64_t, size_t) const override { return "{}"; }
+    std::string waitForEvent(int) override { return "{}"; }
+    std::string describeObject(uint64_t, size_t) const override { return "{}"; }
+
     smalldbg::Debugger* getDebugger() const override { return nullptr; }
 };
 
