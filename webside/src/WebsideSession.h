@@ -60,6 +60,14 @@ public:
     std::string getFrameRegisters(const smalldbg::StackFrame& frame) const;
     std::string getFrameStack(const smalldbg::StackTrace& trace, int index) const;
 
+    // ---- green threads (Smalltalk-level) ----
+    virtual void refreshGreenThreads() = 0;
+    virtual int greenThreadCount() const = 0;
+    virtual std::string getGreenThreadName(int threadIndex) const = 0;
+    virtual std::string listSmalltalkFrames(int threadIndex) const = 0;
+    virtual std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const = 0;
+    virtual std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const = 0;
+
     // ---- underlying debugger ----
     virtual smalldbg::Debugger* getDebugger() const = 0;
 

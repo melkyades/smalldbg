@@ -54,6 +54,17 @@ TEST_CASE("a disconnected session refuses run control and reports empty state") 
     CHECK(session.getRegisters() == "{}");
 }
 
+TEST_CASE("a disconnected session has no green threads") {
+    DisconnectedSession session;
+
+    session.refreshGreenThreads();  // no-op — must not crash
+    CHECK(session.greenThreadCount() == 0);
+    CHECK(session.getGreenThreadName(0).empty());
+    CHECK(session.listSmalltalkFrames(0) == "[]");
+    CHECK(session.getSmalltalkFrameDetail(0, 0) == "{}");
+    CHECK(session.getSmalltalkFrameBindings(0, 0) == "[]");
+}
+
 TEST_CASE("frame label combines module and function") {
     HookProbe s;
 
@@ -139,6 +150,12 @@ struct LiveSession : WebsideSession {
     bool reverseStepOut() override { return false; }
     std::string getStopReason() const override { return ""; }
     std::string getRegisters() const override { return "{}"; }
+    void refreshGreenThreads() override {}
+    int greenThreadCount() const override { return 0; }
+    std::string getGreenThreadName(int) const override { return ""; }
+    std::string listSmalltalkFrames(int) const override { return "[]"; }
+    std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
+    std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
 };
 }
 

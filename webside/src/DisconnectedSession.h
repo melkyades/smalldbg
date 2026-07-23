@@ -29,6 +29,13 @@ public:
     std::string getStopReason() const override { return ""; }
     std::string getRegisters() const override { return "{}"; }
 
+    void refreshGreenThreads() override {}
+    int greenThreadCount() const override { return 0; }
+    std::string getGreenThreadName(int) const override { return ""; }
+    std::string listSmalltalkFrames(int) const override { return "[]"; }
+    std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
+    std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
+
     smalldbg::Debugger* getDebugger() const override { return nullptr; }
 };
 
