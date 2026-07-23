@@ -14,41 +14,23 @@ namespace webside {
 
 EggWebsideServer::EggWebsideServer(int port) : WebsideServer(port) {}
 
-bool EggWebsideServer::launch(const std::string& eggPath,
-                               const std::vector<std::string>& args) {
-    session = std::make_unique<EggDebugSession>();
-    return session->launch(eggPath, args);
-}
-
 std::string EggWebsideServer::dialect() const     { return "Egg"; }
 std::string EggWebsideServer::description() const { return "Egg Smalltalk"; }
 
-bool        EggWebsideServer::isActive() const    { return session && session->isActive(); }
-std::string EggWebsideServer::stopReason() const  { return session ? session->getStopReason() : ""; }
-
-std::optional<int> EggWebsideServer::pid() const {
-    return session ? session->getPid() : std::nullopt;
-}
-
-bool EggWebsideServer::resume()  { return session && session->resume(); }
-
-bool EggWebsideServer::suspend() {
-    if (!session || !session->suspend()) return false;
-    session->discoverClasses();
-    session->refreshGreenThreads();
-    return true;
+std::unique_ptr<WebsideSession> EggWebsideServer::createSession() {
+    return std::make_unique<EggDebugSession>();
 }
 
 std::string EggWebsideServer::listFrames() const {
-    return session ? session->listFrames(256) : "[]";
+    return isActive() ? eggSession()->listFrames(256) : "[]";
 }
 
 std::string EggWebsideServer::getFrameDetail(int index) const {
-    return session ? session->getFrameDetail(index) : "{}";
+    return isActive() ? eggSession()->getFrameDetail(index) : "{}";
 }
 
 std::string EggWebsideServer::getFrameBindings(int index) const {
-    return session ? session->getFrameBindings(index) : "[]";
+    return isActive() ? eggSession()->getFrameBindings(index) : "[]";
 }
 
 // ---- Routes ----
@@ -157,66 +139,6 @@ void EggWebsideServer::setupRoutes() {
     server.route("GET", "/disassemble", [this](const HttpRequest& req) {
         return handleDisassemble(req);
     });
-}
-
-// =========================================================================
-// Data methods — delegate to session
-// =========================================================================
-
-std::string EggWebsideServer::classListData(const std::string& root,
-                                             bool namesOnly) const {
-    return session->listClasses(root, namesOnly);
-}
-
-std::string EggWebsideServer::classDetailData(const std::string& name) const {
-    return session->getClass(name);
-}
-
-std::string EggWebsideServer::searchData(const std::string& text, bool ignoreCase,
-                                          const std::string& condition,
-                                          const std::string& type) const {
-    return session->search(text, ignoreCase, condition, type);
-}
-
-std::string EggWebsideServer::subclassesData(const std::string& name) const {
-    return session->getSubclasses(name);
-}
-
-std::string EggWebsideServer::superclassesData(const std::string& name) const {
-    return session->getSuperclasses(name);
-}
-
-std::string EggWebsideServer::variablesData(const std::string& name) const {
-    return session->getVariables(name);
-}
-
-std::string EggWebsideServer::instanceVariablesData(const std::string& name) const {
-    return session->getInstanceVariables(name);
-}
-
-std::string EggWebsideServer::classVariablesData(const std::string& name) const {
-    return session->getClassVariables(name);
-}
-
-std::string EggWebsideServer::categoriesData(const std::string& name) const {
-    return session->getCategories(name);
-}
-
-std::string EggWebsideServer::usedCategoriesData(const std::string& name) const {
-    return session->getUsedCategories(name);
-}
-
-std::string EggWebsideServer::selectorsData(const std::string& name) const {
-    return session->getSelectors(name);
-}
-
-std::string EggWebsideServer::methodsData(const std::string& name) const {
-    return session->getMethods(name);
-}
-
-std::string EggWebsideServer::methodDetailData(const std::string& className,
-                                                const std::string& selector) const {
-    return session->getMethod(className, selector);
 }
 
 // =========================================================================
@@ -543,7 +465,7 @@ HttpResponse EggWebsideServer::handleRegions(const HttpRequest&) const {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
 
-    auto* inspector = session->getInspector();
+    auto* inspector = eggSession()->getInspector();
     auto* provider = session->getDebugger()->getSymbolProvider();
     auto result = Json::object();
 
@@ -593,7 +515,7 @@ HttpResponse EggWebsideServer::handleClassify(const HttpRequest& req) const {
 
     uint64_t addr = parseHexParam(addrIt->second);
     auto* provider = session->getDebugger()->getSymbolProvider();
-    auto* inspector = session->getInspector();
+    auto* inspector = eggSession()->getInspector();
 
     auto result = Json::object();
     result.set("address", Json::hex(addr));
@@ -656,7 +578,7 @@ HttpResponse EggWebsideServer::handleInspect(const HttpRequest& req) const {
     }
     maxSlots = std::clamp(maxSlots, 0, 1024);
 
-    auto* inspector = session->getInspector();
+    auto* inspector = eggSession()->getInspector();
     auto obj = inspector->objectAt(addr);
     auto result = Json::object();
     result.set("oop", Json::hex(addr));

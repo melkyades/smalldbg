@@ -14,6 +14,47 @@ void WebsideServer::run() {
 
 std::string WebsideServer::version() const { return "0.1.0"; }
 
+bool WebsideServer::launch(const std::string& target, const std::vector<std::string>& args) {
+    session = createSession();
+    return session->launch(target, args);
+}
+
+// ---- run control / session state / class browsing: delegate to the session ----
+bool WebsideServer::resume()  { return session->resume(); }
+
+bool WebsideServer::suspend() {
+    if (!session->suspend()) return false;
+    session->discoverClasses();
+    session->refreshGreenThreads();
+    return true;
+}
+
+bool WebsideServer::isActive() const          { return session->isActive(); }
+std::string WebsideServer::stopReason() const { return session->getStopReason(); }
+std::optional<int> WebsideServer::pid() const { return session->getPid(); }
+
+std::string WebsideServer::classListData(const std::string& root, bool namesOnly) const {
+    return session->listClasses(root, namesOnly);
+}
+std::string WebsideServer::classDetailData(const std::string& name) const { return session->getClass(name); }
+std::string WebsideServer::searchData(const std::string& text, bool ignoreCase,
+                                      const std::string& condition, const std::string& type) const {
+    return session->search(text, ignoreCase, condition, type);
+}
+std::string WebsideServer::subclassesData(const std::string& name) const { return session->getSubclasses(name); }
+std::string WebsideServer::superclassesData(const std::string& name) const { return session->getSuperclasses(name); }
+std::string WebsideServer::variablesData(const std::string& name) const { return session->getVariables(name); }
+std::string WebsideServer::instanceVariablesData(const std::string& name) const { return session->getInstanceVariables(name); }
+std::string WebsideServer::classVariablesData(const std::string& name) const { return session->getClassVariables(name); }
+std::string WebsideServer::categoriesData(const std::string& name) const { return session->getCategories(name); }
+std::string WebsideServer::usedCategoriesData(const std::string& name) const { return session->getUsedCategories(name); }
+std::string WebsideServer::selectorsData(const std::string& name) const { return session->getSelectors(name); }
+std::string WebsideServer::methodsData(const std::string& name) const { return session->getMethods(name); }
+std::string WebsideServer::methodDetailData(const std::string& className,
+                                            const std::string& selector) const {
+    return session->getMethod(className, selector);
+}
+
 std::string WebsideServer::getFrameDetail(int /*index*/) const { return "{}"; }
 std::string WebsideServer::getFrameBindings(int /*index*/) const { return "[]"; }
 

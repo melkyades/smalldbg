@@ -1,69 +1,77 @@
 #pragma once
 
 #include "HttpServer.h"
+#include "WebsideSession.h"
+#include "DisconnectedSession.h"
 #include <string>
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace webside {
 
 /// Base class for Webside-compatible HTTP servers.
 ///
-/// Sets up all standard Webside API routes (/dialect, /version, /debuggers,
-/// /search, /classes, …) and delegates dialect-specific behavior to virtual
-/// methods that subclasses override.
-///
-/// Subclasses provide data through the pure-virtual *Data() methods and may
-/// add their own routes (e.g. /inspect, /debuggers) by overriding
-/// setupRoutes() and calling the base implementation.
+/// Owns a WebsideSession (a DisconnectedSession null-object until a target is
+/// attached) and delegates the Webside API to it. Subclasses supply the session
+/// type via createSession() and override only dialect-specific behavior (VM
+/// inspector routes, native symbols, …).
 class WebsideServer {
 public:
     explicit WebsideServer(int port);
     virtual ~WebsideServer() = default;
+
+    /// Create the session, launch the target, then serve.
+    virtual bool launch(const std::string& target,
+                        const std::vector<std::string>& args = {});
 
     /// Set up all routes and enter the accept loop (blocks).
     void run();
 
 protected:
     HttpServer server;
+    std::unique_ptr<WebsideSession> session{std::make_unique<DisconnectedSession>()};
 
     // ---- identity (subclass must implement) ----
     virtual std::string dialect() const = 0;
     virtual std::string version() const;
     virtual std::string description() const = 0;
 
-    // ---- session state ----
-    virtual bool isActive() const = 0;
-    virtual std::string stopReason() const = 0;
-    virtual std::optional<int> pid() const = 0;
+    /// Factory — subclass returns the session type for its dialect.
+    virtual std::unique_ptr<WebsideSession> createSession() = 0;
 
-    // ---- debug control ----
-    virtual bool resume() = 0;
-    virtual bool suspend() = 0;
+    // ---- session state (delegate to the session) ----
+    virtual bool isActive() const;
+    virtual std::string stopReason() const;
+    virtual std::optional<int> pid() const;
+
+    // ---- debug control (delegate to the session) ----
+    virtual bool resume();
+    virtual bool suspend();
 
     // ---- frame API ----
     virtual std::string listFrames() const = 0;
     virtual std::string getFrameDetail(int index) const;
     virtual std::string getFrameBindings(int index) const;
 
-    // ---- class / search data (subclass must implement) ----
+    // ---- class / search data (delegate to the session) ----
     virtual std::string classListData(const std::string& root = "",
-                                      bool namesOnly = false) const = 0;
-    virtual std::string classDetailData(const std::string& name) const = 0;
+                                      bool namesOnly = false) const;
+    virtual std::string classDetailData(const std::string& name) const;
     virtual std::string searchData(const std::string& text, bool ignoreCase,
                                    const std::string& condition,
-                                   const std::string& type) const = 0;
-    virtual std::string subclassesData(const std::string& name) const = 0;
-    virtual std::string superclassesData(const std::string& name) const = 0;
-    virtual std::string variablesData(const std::string& name) const = 0;
-    virtual std::string instanceVariablesData(const std::string& name) const = 0;
-    virtual std::string classVariablesData(const std::string& name) const = 0;
-    virtual std::string categoriesData(const std::string& name) const = 0;
-    virtual std::string usedCategoriesData(const std::string& name) const = 0;
-    virtual std::string selectorsData(const std::string& name) const = 0;
-    virtual std::string methodsData(const std::string& name) const = 0;
+                                   const std::string& type) const;
+    virtual std::string subclassesData(const std::string& name) const;
+    virtual std::string superclassesData(const std::string& name) const;
+    virtual std::string variablesData(const std::string& name) const;
+    virtual std::string instanceVariablesData(const std::string& name) const;
+    virtual std::string classVariablesData(const std::string& name) const;
+    virtual std::string categoriesData(const std::string& name) const;
+    virtual std::string usedCategoriesData(const std::string& name) const;
+    virtual std::string selectorsData(const std::string& name) const;
+    virtual std::string methodsData(const std::string& name) const;
     virtual std::string methodDetailData(const std::string& className,
-                                         const std::string& selector) const = 0;
+                                         const std::string& selector) const;
 
     // ---- native symbol data (optional — defaults return empty JSON) ----
     virtual std::string nativeSymbolsData(const std::string& filter) const;
