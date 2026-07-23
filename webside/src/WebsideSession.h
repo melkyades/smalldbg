@@ -68,6 +68,28 @@ public:
     virtual std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const = 0;
     virtual std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const = 0;
 
+    // ---- class browsing ----
+    virtual bool discoverClasses() = 0;
+    virtual std::string listClasses(const std::string& root = "",
+                                    bool namesOnly = false,
+                                    bool tree = false,
+                                    int depth = -1) const = 0;
+    virtual std::string getClass(const std::string& name) const = 0;
+    virtual std::string getSubclasses(const std::string& name) const = 0;
+    virtual std::string getSuperclasses(const std::string& name) const = 0;
+    virtual std::string getVariables(const std::string& name) const = 0;
+    virtual std::string getInstanceVariables(const std::string& name) const = 0;
+    virtual std::string getClassVariables(const std::string& name) const = 0;
+    virtual std::string getCategories(const std::string& name) const = 0;
+    virtual std::string getUsedCategories(const std::string& name) const = 0;
+    virtual std::string getSelectors(const std::string& name) const = 0;
+    virtual std::string getMethods(const std::string& name) const = 0;
+    virtual std::string getMethod(const std::string& className,
+                                  const std::string& selector) const = 0;
+    virtual std::string search(const std::string& text, bool ignoreCase,
+                               const std::string& condition,
+                               const std::string& type) const = 0;
+
     // ---- underlying debugger ----
     virtual smalldbg::Debugger* getDebugger() const = 0;
 

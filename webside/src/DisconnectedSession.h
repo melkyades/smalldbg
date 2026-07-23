@@ -36,6 +36,21 @@ public:
     std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
     std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
 
+    bool discoverClasses() override { return false; }
+    std::string listClasses(const std::string&, bool, bool, int) const override { return "[]"; }
+    std::string getClass(const std::string&) const override { return "{}"; }
+    std::string getSubclasses(const std::string&) const override { return "[]"; }
+    std::string getSuperclasses(const std::string&) const override { return "[]"; }
+    std::string getVariables(const std::string&) const override { return "[]"; }
+    std::string getInstanceVariables(const std::string&) const override { return "[]"; }
+    std::string getClassVariables(const std::string&) const override { return "[]"; }
+    std::string getCategories(const std::string&) const override { return "[]"; }
+    std::string getUsedCategories(const std::string&) const override { return "[]"; }
+    std::string getSelectors(const std::string&) const override { return "[]"; }
+    std::string getMethods(const std::string&) const override { return "[]"; }
+    std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
+    std::string search(const std::string&, bool, const std::string&, const std::string&) const override { return "[]"; }
+
     smalldbg::Debugger* getDebugger() const override { return nullptr; }
 };
 
