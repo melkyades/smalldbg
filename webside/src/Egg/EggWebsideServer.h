@@ -28,12 +28,6 @@ protected:
 
     void setupRoutes() override;
 
-    // ---- native symbol data ----
-    std::string nativeSymbolsData(const std::string& filter) const override;
-    std::string nativeModulesData() const override;
-    std::string nativeSymbolDetailData(const std::string& name) const override;
-    std::string nativeInspectData(const std::string& expression) const override;
-
 private:
     EggDebugSession* eggSession() const { return static_cast<EggDebugSession*>(session.get()); }
 
@@ -49,7 +43,6 @@ private:
     HttpResponse handleClassify(const HttpRequest& req) const;
     HttpResponse handleInspect(const HttpRequest& req) const;
     HttpResponse handleMemory(const HttpRequest& req) const;
-    HttpResponse handleSymbol(const HttpRequest& req) const;
     HttpResponse handleDisassemble(const HttpRequest& req);
 };
 

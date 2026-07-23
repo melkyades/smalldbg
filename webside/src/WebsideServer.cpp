@@ -1,6 +1,11 @@
 #include "WebsideServer.h"
 #include "Json.h"
+#include "smalldbg/Debugger.h"
+#include "smalldbg/Process.h"
+#include "smalldbg/SymbolProvider.h"
 #include <sstream>
+#include <vector>
+#include <cstdint>
 
 namespace webside {
 
@@ -58,10 +63,263 @@ std::string WebsideServer::methodDetailData(const std::string& className,
 std::string WebsideServer::getFrameDetail(int /*index*/) const { return "{}"; }
 std::string WebsideServer::getFrameBindings(int /*index*/) const { return "[]"; }
 
-std::string WebsideServer::nativeSymbolsData(const std::string& /*filter*/) const { return "[]"; }
-std::string WebsideServer::nativeModulesData() const { return "[]"; }
-std::string WebsideServer::nativeSymbolDetailData(const std::string& /*name*/) const { return "{}"; }
-std::string WebsideServer::nativeInspectData(const std::string& /*expression*/) const { return "{}"; }
+// =========================================================================
+// Native symbol data
+// =========================================================================
+
+static const char* symbolTypeString(smalldbg::SymbolType type) {
+    switch (type) {
+        case smalldbg::SymbolType::Function:  return "function";
+        case smalldbg::SymbolType::Variable:  return "variable";
+        case smalldbg::SymbolType::Parameter: return "parameter";
+        case smalldbg::SymbolType::Type:      return "type";
+        default:                              return "unknown";
+    }
+}
+
+static Json symbolToJson(const smalldbg::Symbol& sym) {
+    return Json::object()
+        .set("name", sym.name)
+        .set("address", Json::hex(sym.address))
+        .set("size", static_cast<int64_t>(sym.size))
+        .set("type", symbolTypeString(sym.type))
+        .set("module", sym.moduleName);
+}
+
+std::string WebsideServer::nativeSymbolsData(const std::string& filter) const {
+    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto symbols = provider->findSymbols(filter);
+    auto arr = Json::array();
+    for (auto& sym : symbols)
+        arr.add(symbolToJson(sym));
+    return arr.dump();
+}
+
+std::string WebsideServer::nativeModulesData() const {
+    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto modules = provider->getModules();
+    auto arr = Json::array();
+    for (auto& mod : modules) {
+        arr.add(Json::object()
+            .set("path", mod.path)
+            .set("name", mod.shortName)
+            .set("loadAddress", Json::hex(mod.loadAddress))
+            .set("endAddress", Json::hex(mod.endAddress))
+            .set("symbolCount", static_cast<int64_t>(mod.symbolCount)));
+    }
+    return arr.dump();
+}
+
+std::string WebsideServer::nativeSymbolDetailData(const std::string& name) const {
+    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto sym = provider->getSymbolByName(name);
+    if (!sym) return "{}";
+    return symbolToJson(*sym).dump();
+}
+
+// ---- Expression parser for native struct traversal ----
+
+struct PathStep {
+    bool dereference; // true for ->, false for .
+    std::string fieldName;
+};
+
+struct ParsedExpression {
+    std::string rootSymbol;
+    std::vector<PathStep> steps;
+};
+
+static ParsedExpression parseNativeExpression(const std::string& expr) {
+    ParsedExpression result;
+    size_t pos = 0;
+
+    // Find the first -> or . (these never appear in C++ qualified names)
+    while (pos < expr.size()) {
+        if (expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>')
+            break;
+        if (expr[pos] == '.')
+            break;
+        pos++;
+    }
+
+    result.rootSymbol = expr.substr(0, pos);
+
+    while (pos < expr.size()) {
+        PathStep step;
+        if (expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>') {
+            step.dereference = true;
+            pos += 2;
+        } else if (expr[pos] == '.') {
+            step.dereference = false;
+            pos += 1;
+        } else {
+            break;
+        }
+
+        size_t start = pos;
+        while (pos < expr.size() && expr[pos] != '.' &&
+               !(expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>'))
+            pos++;
+
+        step.fieldName = expr.substr(start, pos - start);
+        result.steps.push_back(std::move(step));
+    }
+
+    return result;
+}
+
+static const char* typeKindString(smalldbg::NativeTypeKind kind) {
+    switch (kind) {
+    case smalldbg::NativeTypeKind::Void:      return "void";
+    case smalldbg::NativeTypeKind::Bool:      return "bool";
+    case smalldbg::NativeTypeKind::Int:       return "int";
+    case smalldbg::NativeTypeKind::UInt:      return "uint";
+    case smalldbg::NativeTypeKind::Float:     return "float";
+    case smalldbg::NativeTypeKind::Char:      return "char";
+    case smalldbg::NativeTypeKind::Pointer:   return "pointer";
+    case smalldbg::NativeTypeKind::Reference: return "reference";
+    case smalldbg::NativeTypeKind::Struct:    return "struct";
+    case smalldbg::NativeTypeKind::Class:     return "class";
+    case smalldbg::NativeTypeKind::Union:     return "union";
+    case smalldbg::NativeTypeKind::Enum:      return "enum";
+    case smalldbg::NativeTypeKind::Array:     return "array";
+    case smalldbg::NativeTypeKind::Typedef:   return "typedef";
+    case smalldbg::NativeTypeKind::Const:     return "const";
+    case smalldbg::NativeTypeKind::Volatile:  return "volatile";
+    default:                                   return "unknown";
+    }
+}
+
+static Json fieldsToJson(const std::vector<smalldbg::NativeField>& fields) {
+    auto arr = Json::array();
+    for (auto& f : fields) {
+        arr.add(Json::object()
+            .set("name", f.name)
+            .set("type", f.typeName)
+            .set("kind", typeKindString(f.typeKind))
+            .set("offset", static_cast<int64_t>(f.offset))
+            .set("size", static_cast<int64_t>(f.size)));
+    }
+    return arr;
+}
+
+// Resolve a type through pointer/typedef/const/volatile wrappers
+// to find the underlying struct/class type with fields.
+static const smalldbg::NativeTypeInfo* resolveToStruct(
+    const std::string& typeName, smalldbg::SymbolProvider* provider) {
+    auto* info = provider->getTypeByName(typeName);
+    if (!info) return nullptr;
+
+    int depth = 0;
+    while (info && depth < 20) {
+        if (info->kind == smalldbg::NativeTypeKind::Struct ||
+            info->kind == smalldbg::NativeTypeKind::Class ||
+            info->kind == smalldbg::NativeTypeKind::Union) {
+            return info;
+        }
+        if (info->targetTypeName.empty()) return nullptr;
+        info = provider->getTypeByName(info->targetTypeName);
+        depth++;
+    }
+    return nullptr;
+}
+
+std::string WebsideServer::nativeInspectData(const std::string& expression) const {
+    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto process = session->getDebugger()->getProcess();
+    if (!provider || !process) return "{}";
+
+    auto parsed = parseNativeExpression(expression);
+    if (parsed.rootSymbol.empty()) return "{}";
+
+    auto rootSym = provider->getSymbolByName(parsed.rootSymbol);
+    if (!rootSym) return "{}";
+
+    auto rootTypeName = provider->getVariableTypeName(parsed.rootSymbol);
+    if (!rootTypeName) return "{}";
+
+    uint64_t currentAddr = rootSym->address;
+    std::string currentTypeName = *rootTypeName;
+
+    for (auto& step : parsed.steps) {
+        if (step.dereference) {
+            uint64_t ptrVal = 0;
+            if (process->readMemory(currentAddr, &ptrVal, 8) != smalldbg::Status::Ok)
+                return "{}";
+            currentAddr = ptrVal;
+        }
+
+        auto* structInfo = resolveToStruct(currentTypeName, provider);
+        if (!structInfo) return "{}";
+
+        const smalldbg::NativeField* field = nullptr;
+        for (auto& f : structInfo->fields) {
+            if (f.name == step.fieldName) {
+                field = &f;
+                break;
+            }
+        }
+        if (!field) return "{}";
+
+        currentAddr += field->offset;
+        currentTypeName = field->typeName;
+    }
+
+    uint64_t rawValue = 0;
+    auto* typeInfo = provider->getTypeByName(currentTypeName);
+    size_t readSize = 8;
+    if (typeInfo && typeInfo->size > 0 && typeInfo->size <= 8)
+        readSize = static_cast<size_t>(typeInfo->size);
+    process->readMemory(currentAddr, &rawValue, readSize);
+
+    std::vector<smalldbg::NativeField> visibleFields;
+    auto* structInfo = resolveToStruct(currentTypeName, provider);
+    if (structInfo)
+        visibleFields = structInfo->fields;
+
+    auto result = Json::object()
+        .set("expression", expression)
+        .set("address", Json::hex(currentAddr))
+        .set("value", Json::hex(rawValue))
+        .set("type", currentTypeName)
+        .set("kind", typeKindString(typeInfo ? typeInfo->kind : smalldbg::NativeTypeKind::Unknown))
+        .set("size", static_cast<int64_t>(typeInfo ? typeInfo->size : 0))
+        .set("fields", fieldsToJson(visibleFields));
+
+    return result.dump();
+}
+
+HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
+    HttpResponse res;
+    if (!isActive()) { res.body = "{}"; return res; }
+
+    auto nameIt = req.params.find("name");
+    if (nameIt == req.params.end()) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Missing name parameter").dump();
+        return res;
+    }
+
+    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto sym = provider->getSymbolByName(nameIt->second);
+    if (!sym) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Symbol not found").dump();
+        return res;
+    }
+
+    auto result = symbolToJson(*sym);
+
+    uint64_t value = 0;
+    auto process = session->getDebugger()->getProcess();
+    if (process->readMemory(sym->address, &value, 8) == smalldbg::Status::Ok)
+        result.set("value", Json::hex(value));
+    else
+        result.set("value", nullptr);
+
+    res.body = result.dump();
+    return res;
+}
 
 void WebsideServer::setupRoutes() {
     // ---- Search ----
@@ -130,6 +388,10 @@ void WebsideServer::setupRoutes() {
         HttpResponse res;
         res.body = nativeModulesData();
         return res;
+    });
+
+    server.route("GET", "/symbol", [this](const HttpRequest& req) {
+        return handleSymbol(req);
     });
 
     server.route("GET", "/native-inspect", [this](const HttpRequest& req) {

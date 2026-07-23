@@ -73,11 +73,12 @@ protected:
     virtual std::string methodDetailData(const std::string& className,
                                          const std::string& selector) const;
 
-    // ---- native symbol data (optional — defaults return empty JSON) ----
+    // ---- native symbol data ----
     virtual std::string nativeSymbolsData(const std::string& filter) const;
     virtual std::string nativeModulesData() const;
     virtual std::string nativeSymbolDetailData(const std::string& name) const;
     virtual std::string nativeInspectData(const std::string& expression) const;
+    HttpResponse handleSymbol(const HttpRequest& req) const;
 
     // ---- class name parsing ----
     struct ClassIdent {
