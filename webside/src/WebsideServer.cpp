@@ -5,9 +5,13 @@
 #include "smalldbg/Thread.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/SymbolProvider.h"
+#include "smalldbg/Disassembler.h"
 #include <sstream>
 #include <vector>
 #include <cstdint>
+#include <cstring>
+#include <cstdio>
+#include <algorithm>
 
 namespace webside {
 
@@ -316,6 +320,177 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
     return result.dump();
 }
 
+// =========================================================================
+// Memory / disassembly
+// =========================================================================
+
+uint64_t WebsideServer::parseHexParam(const std::string& s) {
+    if (s.empty()) return 0;
+    try {
+        return std::stoull(s, nullptr, 0);
+    } catch (...) {
+        return 0;
+    }
+}
+
+static size_t typeUnitSize(const std::string& type) {
+    if (type == "uint16" || type == "int16") return 2;
+    if (type == "uint32" || type == "int32") return 4;
+    if (type == "uint64" || type == "int64") return 8;
+    return 1;
+}
+
+static int64_t readTypedValue(const uint8_t* buf, size_t unitSize, bool isSigned) {
+    uint64_t raw = 0;
+    std::memcpy(&raw, buf, unitSize);
+    if (isSigned) {
+        switch (unitSize) {
+        case 1: return static_cast<int8_t>(raw);
+        case 2: return static_cast<int16_t>(raw);
+        case 4: return static_cast<int32_t>(raw);
+        case 8: return static_cast<int64_t>(raw);
+        }
+    }
+    return static_cast<int64_t>(raw);
+}
+
+static std::string formatHexDump(const std::vector<uint8_t>& buf) {
+    std::string hex;
+    for (size_t i = 0; i < buf.size(); i++) {
+        if (i > 0) hex += ' ';
+        char h[4];
+        snprintf(h, sizeof(h), "%02X", buf[i]);
+        hex += h;
+    }
+    return hex;
+}
+
+static std::string formatAsciiDump(const std::vector<uint8_t>& buf) {
+    std::string ascii;
+    for (uint8_t b : buf)
+        ascii += (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
+    return ascii;
+}
+
+HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
+    HttpResponse res;
+    if (!isActive()) { res.body = "{}"; return res; }
+
+    auto addrIt = req.params.find("address");
+    if (addrIt == req.params.end()) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Missing address parameter").dump();
+        return res;
+    }
+
+    uint64_t addr = parseHexParam(addrIt->second);
+
+    std::string type = "bytes";
+    auto typeIt = req.params.find("type");
+    if (typeIt != req.params.end()) type = typeIt->second;
+
+    int count = 256;
+    auto countIt = req.params.find("count");
+    if (countIt != req.params.end()) {
+        try { count = std::stoi(countIt->second); } catch (...) {}
+    }
+    count = std::clamp(count, 1, 4096);
+
+    auto process = session->getDebugger()->getProcess();
+    auto result = Json::object();
+    result.set("address", Json::hex(addr));
+
+    if (type == "bytes") {
+        std::vector<uint8_t> buf(count);
+        if (process->readMemory(addr, buf.data(), count) != smalldbg::Status::Ok) {
+            res.statusCode = 400;
+            res.body = Json::object().set("error", "Failed to read memory").dump();
+            return res;
+        }
+        result.set("hex", formatHexDump(buf));
+        result.set("ascii", formatAsciiDump(buf));
+        result.set("size", count);
+    } else if (type == "string") {
+        std::vector<uint8_t> buf(count);
+        process->readMemory(addr, buf.data(), count);
+        std::string str;
+        for (int i = 0; i < count && buf[i] != 0; i++)
+            str += static_cast<char>(buf[i]);
+        result.set("type", "string");
+        result.set("value", str);
+        result.set("size", static_cast<int64_t>(str.size()));
+    } else {
+        size_t unitSize = typeUnitSize(type);
+        bool isSigned = !type.empty() && type[0] == 'i';
+        size_t totalBytes = unitSize * count;
+        totalBytes = std::min(totalBytes, static_cast<size_t>(32768));
+
+        std::vector<uint8_t> buf(totalBytes, 0);
+        process->readMemory(addr, buf.data(), totalBytes);
+
+        auto values = Json::array();
+        int actualCount = static_cast<int>(totalBytes / unitSize);
+        for (int i = 0; i < actualCount; i++)
+            values.add(readTypedValue(buf.data() + i * unitSize, unitSize, isSigned));
+
+        result.set("type", type);
+        result.set("values", values);
+    }
+
+    res.body = result.dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) {
+    HttpResponse res;
+    if (!isActive()) { res.body = "{}"; return res; }
+
+    auto addrIt = req.params.find("address");
+    if (addrIt == req.params.end()) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Missing address parameter").dump();
+        return res;
+    }
+
+    uint64_t addr = parseHexParam(addrIt->second);
+
+    int byteCount = 64;
+    auto countIt = req.params.find("count");
+    if (countIt != req.params.end()) {
+        try { byteCount = std::stoi(countIt->second); } catch (...) {}
+    }
+    byteCount = std::clamp(byteCount, 1, 4096);
+
+    auto process = session->getDebugger()->getProcess();
+    std::vector<uint8_t> buf(byteCount);
+    if (process->readMemory(addr, buf.data(), byteCount) != smalldbg::Status::Ok) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Failed to read memory").dump();
+        return res;
+    }
+
+    smalldbg::Disassembler* dis = session->getDebugger()->getDisassembler();
+    auto insns = dis->disassemble(buf.data(), buf.size(), addr);
+
+    auto instructions = Json::array();
+    for (const auto& ins : insns) {
+        instructions.add(Json::object()
+            .set("address", Json::hex(ins.address))
+            .set("size", ins.size)
+            .set("bytes", ins.bytes)
+            .set("text", ins.text));
+    }
+
+    auto result = Json::object()
+        .set("address", Json::hex(addr))
+        .set("size", byteCount)
+        .set("hex", formatHexDump(buf))
+        .set("instructions", instructions);
+
+    res.body = result.dump();
+    return res;
+}
+
 HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
@@ -419,6 +594,14 @@ void WebsideServer::setupRoutes() {
 
     server.route("GET", "/symbol", [this](const HttpRequest& req) {
         return handleSymbol(req);
+    });
+
+    server.route("GET", "/memory", [this](const HttpRequest& req) {
+        return handleMemory(req);
+    });
+
+    server.route("GET", "/disassemble", [this](const HttpRequest& req) {
+        return handleDisassemble(req);
     });
 
     server.route("GET", "/native-inspect", [this](const HttpRequest& req) {

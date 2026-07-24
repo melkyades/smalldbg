@@ -39,8 +39,6 @@ private:
     HttpResponse handleRegions(const HttpRequest& req) const;
     HttpResponse handleClassify(const HttpRequest& req) const;
     HttpResponse handleInspect(const HttpRequest& req) const;
-    HttpResponse handleMemory(const HttpRequest& req) const;
-    HttpResponse handleDisassemble(const HttpRequest& req);
 };
 
 } // namespace webside

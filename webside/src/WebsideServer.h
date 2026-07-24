@@ -80,6 +80,10 @@ protected:
     virtual std::string nativeInspectData(const std::string& expression) const;
     HttpResponse handleSymbol(const HttpRequest& req) const;
 
+    // ---- memory / disassembly routes ----
+    HttpResponse handleMemory(const HttpRequest& req) const;
+    HttpResponse handleDisassemble(const HttpRequest& req);
+
     // ---- class name parsing ----
     struct ClassIdent {
         std::string className;
@@ -102,6 +106,7 @@ protected:
     // ---- URL utilities ----
     static std::string urlDecode(const std::string& encoded);
     static std::vector<std::string> splitPath(const std::string& path);
+    static uint64_t parseHexParam(const std::string& s);
 
 private:
     void setupBaseRoutes();
