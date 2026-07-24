@@ -68,6 +68,8 @@ public:
         uint64_t stackBase{0};   // pointer to _stack array
         uint64_t regBP{0};       // frame pointer register
         uint64_t regSP{0};       // stack pointer register
+        uint64_t stackSize{0};   // total stack capacity (slots)
+        uint64_t regR{0};        // result / current-receiver register (_regR)
         bool valid{false};
     };
 

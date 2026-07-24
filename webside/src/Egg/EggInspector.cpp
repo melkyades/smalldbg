@@ -21,7 +21,13 @@ static constexpr int RUNTIME_EVALUATOR_OFFSET = 16;
 //   offset 0:  vtable ptr
 //   offset 8:  Runtime*
 //   offset 16: EvaluationContext*
+//   offset 24: SExpressionLinearizer*
+//   offset 32: HeapObject* _falseObj
+//   offset 40: HeapObject* _trueObj
+//   offset 48: HeapObject* _nilObj
+//   offset 56: Object*     _regR
 static constexpr int EVALUATOR_CONTEXT_OFFSET = 16;
+static constexpr int EVALUATOR_REGR_OFFSET    = 56;
 
 // EvaluationContext (no vtable):
 //   offset 0:  HeapObject* _regM   (compiled code)
@@ -31,16 +37,22 @@ static constexpr int EVALUATOR_CONTEXT_OFFSET = 16;
 //   offset 32: uintptr_t   _regPC
 //   offset 40: Object*     _regS   (receiver / self)
 //   offset 48: Object**    _stack
-//   offset 56: Runtime*    _runtime
+//   offset 56: uintptr_t   _stackSize
+//   offset 64: Runtime*    _runtime
 static constexpr int EVALCTX_REGSP_OFFSET = 16;
 static constexpr int EVALCTX_REGBP_OFFSET = 24;
 static constexpr int EVALCTX_STACK_OFFSET = 48;
+static constexpr int EVALCTX_STACKSIZE_OFFSET = 56;
 
 // Evaluator frame constants (from EvaluationContext.h)
 static constexpr int FRAME_TO_RECEIVER_DELTA = 1;
 static constexpr int FRAME_TO_CODE_DELTA = 2;
 static constexpr int FRAME_TO_FIRST_ARG_DELTA = 2;
 static constexpr int FRAME_TO_FIRST_TEMP_DELTA = 5;
+
+// A CompiledBlock keeps its home CompiledMethod in slot 2; it has no
+// class/selector slots of its own.
+static constexpr int BLOCK_METHOD_SLOT = 2;
 
 // ---- tag checking for raw address scanning ----
 
@@ -273,16 +285,22 @@ EggInspector::EvaluatorState EggInspector::readEvaluatorState() const {
         return st;
 
     // Read the EvaluationContext fields
-    uint64_t regSP = 0, regBP = 0, stackPtr = 0;
+    uint64_t regSP = 0, regBP = 0, stackPtr = 0, stackSize = 0;
     if (!readPtr(contextAddr + EVALCTX_REGBP_OFFSET, regBP)) return st;
     if (!readPtr(contextAddr + EVALCTX_REGSP_OFFSET, regSP)) return st;
     if (!readPtr(contextAddr + EVALCTX_STACK_OFFSET, stackPtr)) return st;
+    if (!readPtr(contextAddr + EVALCTX_STACKSIZE_OFFSET, stackSize)) return st;
+
+    uint64_t regR = 0;
+    readPtr(evaluatorAddr + EVALUATOR_REGR_OFFSET, regR);
 
     if (stackPtr == 0 || regBP == 0) return st;
 
     st.stackBase = stackPtr;
     st.regBP = regBP;
     st.regSP = regSP;
+    st.stackSize = stackSize;
+    st.regR = regR;
     st.valid = true;
     return st;
 }
@@ -319,18 +337,25 @@ EggInspector::walkSmalltalkFrames(const EvaluatorState& st,
         frame.receiver = objectAt(recvAddr);
 
         if (codeObj) {
-            auto cm = codeObj.as<EggCompiledMethod>();
-            frame.method = cm;
-            frame.selector = cm.selector();
-
-            auto classBind = cm.classBinding();
-            if (classBind) {
-                auto species = classBind.as<EggSpecies>();
-                frame.className = species.name();
+            // For a block frame the code object is a CompiledBlock, whose
+            // class/selector live on its home method (slot 2), not on itself.
+            EggHeapObject methodObj = codeObj;
+            if (codeObj.className() == "CompiledBlock") {
+                frame.isBlock = true;
+                methodObj = codeObj.slotAt(BLOCK_METHOD_SLOT);
             }
 
-            // Blocks have no selector
-            frame.isBlock = frame.selector.empty();
+            if (methodObj) {
+                auto cm = methodObj.as<EggCompiledMethod>();
+                frame.method = cm;
+                frame.selector = cm.selector();
+
+                auto classBind = cm.classBinding();
+                if (classBind) {
+                    auto species = classBind.as<EggSpecies>();
+                    frame.className = species.name();
+                }
+            }
         }
 
         result.push_back(std::move(frame));
