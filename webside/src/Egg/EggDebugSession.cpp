@@ -206,7 +206,12 @@ void EggDebugSession::detach() {
 }
 
 bool EggDebugSession::isActive() const {
-    return debugger && debugger->isAttached();
+    if (!debugger) return false;
+    // Drain pending kernel events (non-blocking) so a just-exited child reads
+    // as detached rather than stale-attached.
+    if (debugger->isAttached())
+        debugger->waitForEvent(smalldbg::StopReason::None, 0);
+    return debugger->isAttached();
 }
 
 std::optional<int> EggDebugSession::getPid() const {
@@ -343,6 +348,9 @@ std::string EggDebugSession::stopReasonStr(smalldbg::StopReason r) const {
 }
 
 std::string EggDebugSession::getStopReason() const {
+    // Drain pending kernel events (non-blocking) so the reported state is live.
+    if (debugger && debugger->isAttached())
+        debugger->waitForEvent(smalldbg::StopReason::None, 0);
     return stopReasonStr(debugger->getStopReason());
 }
 
