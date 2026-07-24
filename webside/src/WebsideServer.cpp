@@ -321,6 +321,133 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
 }
 
 // =========================================================================
+// /debuggers routes
+// =========================================================================
+
+HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
+    HttpResponse res;
+    auto segments = splitPath(req.path);
+    // segments: ["debuggers", "<id>", ...]
+    if (segments.size() < 2) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Missing debugger id").dump();
+        return res;
+    }
+
+    int debuggerId = 0;
+    try { debuggerId = std::stoi(segments[1]); } catch (...) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Invalid debugger id").dump();
+        return res;
+    }
+
+    if (!isActive()) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Debugger not active").dump();
+        return res;
+    }
+
+    if (debuggerId == 1)
+        return handleNativeDebuggerRoute(segments);
+
+    // Debugger 2+: green threads (0-based index = debuggerId - 2)
+    int threadIndex = debuggerId - 2;
+    if (threadIndex < 0 || threadIndex >= session->greenThreadCount()) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Debugger not found").dump();
+        return res;
+    }
+
+    return handleSmalltalkDebuggerRoute(segments, threadIndex);
+}
+
+HttpResponse WebsideServer::handleNativeDebuggerRoute(
+    const std::vector<std::string>& segments) const {
+    HttpResponse res;
+
+    if (segments.size() == 2) {
+        res.body = Json::object()
+            .set("id", 1)
+            .set("description", "Native stack")
+            .set("status", stopReason())
+            .dump();
+        return res;
+    }
+
+    if (segments[2] == "frames") {
+        if (segments.size() == 3) {
+            res.body = listFrames();
+            return res;
+        }
+        std::string tail = segments[3];
+        bool wantsBindings = (segments.size() > 4 && segments[4] == "bindings");
+        int index = 0;
+        try { index = std::stoi(tail); } catch (...) {
+            res.statusCode = 400;
+            res.body = Json::object().set("error", "Invalid frame index").dump();
+            return res;
+        }
+        if (wantsBindings) {
+            res.body = getFrameBindings(index);
+        } else {
+            res.body = getFrameDetail(index);
+            if (res.body == "{}") {
+                res.statusCode = 404;
+                res.body = Json::object().set("error", "Frame not found").dump();
+            }
+        }
+        return res;
+    }
+
+    res.statusCode = 404;
+    res.body = Json::object().set("error", "Unknown sub-route").dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
+    const std::vector<std::string>& segments, int threadIndex) const {
+    HttpResponse res;
+
+    if (segments.size() == 2) {
+        res.body = Json::object()
+            .set("id", threadIndex + 2)
+            .set("description", "Smalltalk: " +
+                session->getGreenThreadName(threadIndex))
+            .set("status", stopReason())
+            .dump();
+        return res;
+    }
+
+    if (segments[2] == "frames") {
+        if (segments.size() == 3) {
+            res.body = session->listSmalltalkFrames(threadIndex);
+            return res;
+        }
+        int index = 0;
+        try { index = std::stoi(segments[3]); } catch (...) {
+            res.statusCode = 400;
+            res.body = Json::object().set("error", "Invalid frame index").dump();
+            return res;
+        }
+        bool wantsBindings = (segments.size() > 4 && segments[4] == "bindings");
+        if (wantsBindings) {
+            res.body = session->getSmalltalkFrameBindings(threadIndex, index);
+        } else {
+            res.body = session->getSmalltalkFrameDetail(threadIndex, index);
+            if (res.body == "{}") {
+                res.statusCode = 404;
+                res.body = Json::object().set("error", "Frame not found").dump();
+            }
+        }
+        return res;
+    }
+
+    res.statusCode = 404;
+    res.body = Json::object().set("error", "Unknown sub-route").dump();
+    return res;
+}
+
+// =========================================================================
 // Memory / disassembly
 // =========================================================================
 
@@ -602,6 +729,78 @@ void WebsideServer::setupRoutes() {
 
     server.route("GET", "/disassemble", [this](const HttpRequest& req) {
         return handleDisassemble(req);
+    });
+
+    // ---- Debuggers: 1 = native stack, 2+ = green threads ----
+    server.route("GET", "/debuggers", [this](const HttpRequest&) {
+        HttpResponse res;
+        if (!isActive()) {
+            res.body = "[]";
+            return res;
+        }
+        auto arr = Json::array();
+        arr.add(Json::object()
+            .set("id", 1)
+            .set("description", "Native stack")
+            .set("status", stopReason()));
+        for (int i = 0; i < session->greenThreadCount(); i++) {
+            arr.add(Json::object()
+                .set("id", i + 2)
+                .set("description", "Smalltalk: " + session->getGreenThreadName(i))
+                .set("status", stopReason()));
+        }
+        res.body = arr.dump();
+        return res;
+    });
+
+    server.routePrefix("GET", "/debuggers", [this](const HttpRequest& req) {
+        return handleDebuggerRoute(req);
+    });
+
+    // POST actions for any debugger (resume, stepping, suspend, terminate)
+    server.routePrefix("POST", "/debuggers", [this](const HttpRequest& req) {
+        HttpResponse res;
+        auto segments = splitPath(req.path);
+
+        if (segments.size() >= 3 && segments[2] == "resume") {
+            res.body = Json::object().set("success", resume()).dump();
+            return res;
+        }
+
+        if (segments.size() >= 3 && segments[2] == "suspend") {
+            res.body = Json::object().set("success", suspend()).dump();
+            return res;
+        }
+
+        if (segments.size() >= 3 && segments[2] == "terminate") {
+            session->detach();
+            res.body = Json::object().set("success", true).dump();
+            return res;
+        }
+
+        if (segments.size() >= 5 && segments[2] == "frames") {
+            std::string action = segments[4];
+            bool success = false;
+
+            if (action == "stepinto")              success = session->step();
+            else if (action == "stepover")         success = session->stepOver();
+            else if (action == "stepout")          success = session->stepOut();
+            else if (action == "reversestepinto")  success = session->stepBack();
+            else if (action == "reversestepover")  success = session->reverseStepOver();
+            else if (action == "reversestepout")   success = session->reverseStepOut();
+            else {
+                res.statusCode = 404;
+                res.body = Json::object().set("error", "Unknown action: " + action).dump();
+                return res;
+            }
+
+            res.body = Json::object().set("success", success).dump();
+            return res;
+        }
+
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Unknown action").dump();
+        return res;
     });
 
     server.route("GET", "/native-inspect", [this](const HttpRequest& req) {

@@ -29,11 +29,6 @@ private:
     EggDebugSession* eggSession() const { return static_cast<EggDebugSession*>(session.get()); }
 
     // ---- Multi-debugger helpers ----
-    HttpResponse handleDebuggerRoute(const HttpRequest& req) const;
-    HttpResponse handleNativeDebuggerRoute(
-        const std::vector<std::string>& segments) const;
-    HttpResponse handleSmalltalkDebuggerRoute(
-        const std::vector<std::string>& segments, int threadIndex) const;
 
     // ---- VM Inspector handlers ----
     HttpResponse handleRegions(const HttpRequest& req) const;

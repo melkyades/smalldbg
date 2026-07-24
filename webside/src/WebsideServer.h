@@ -84,6 +84,13 @@ protected:
     HttpResponse handleMemory(const HttpRequest& req) const;
     HttpResponse handleDisassemble(const HttpRequest& req);
 
+    // ---- /debuggers routes (debugger 1 = native stack, 2+ = green threads) ----
+    HttpResponse handleDebuggerRoute(const HttpRequest& req) const;
+    HttpResponse handleNativeDebuggerRoute(
+        const std::vector<std::string>& segments) const;
+    HttpResponse handleSmalltalkDebuggerRoute(
+        const std::vector<std::string>& segments, int threadIndex) const;
+
     // ---- class name parsing ----
     struct ClassIdent {
         std::string className;
