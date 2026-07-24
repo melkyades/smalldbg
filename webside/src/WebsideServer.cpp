@@ -2,6 +2,8 @@
 #include "Json.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
+#include "smalldbg/Thread.h"
+#include "smalldbg/StackTrace.h"
 #include "smalldbg/SymbolProvider.h"
 #include <sstream>
 #include <vector>
@@ -60,8 +62,33 @@ std::string WebsideServer::methodDetailData(const std::string& className,
     return session->getMethod(className, selector);
 }
 
-std::string WebsideServer::getFrameDetail(int /*index*/) const { return "{}"; }
-std::string WebsideServer::getFrameBindings(int /*index*/) const { return "[]"; }
+// ---- frame API: resolve the current thread/frame, then let the session format ----
+
+std::string WebsideServer::listFrames() const {
+    auto thread = session->primaryThread();
+    if (!thread) return "[]";
+    return session->listFrames(*thread);
+}
+
+std::string WebsideServer::getFrameDetail(int index) const {
+    auto thread = session->primaryThread();
+    if (!thread) return "{}";
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(256) != smalldbg::Status::Ok) return "{}";
+    const auto& frames = trace.getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size())) return "{}";
+    return session->getFrameDetail(trace, *frames[index - 1], index);
+}
+
+std::string WebsideServer::getFrameBindings(int index) const {
+    auto thread = session->primaryThread();
+    if (!thread) return "[]";
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
+    const auto& frames = trace.getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
+    return session->getFrameBindings(trace, *frames[index - 1], index);
+}
 
 // =========================================================================
 // Native symbol data

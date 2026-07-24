@@ -218,31 +218,11 @@ std::optional<int> EggDebugSession::getPid() const {
 
 // ---- Debug control ----
 
-bool EggDebugSession::ensureTrace(size_t maxFrames) const {
-    if (cachedTrace)
-        return true;
-
-    auto process = debugger->getProcess();
-    if (!process) return false;
-
-    auto mainThread = process->primaryThread();
-    if (!mainThread) return false;
-
-    cachedTrace = std::make_unique<smalldbg::StackTrace>(mainThread.get());
-    if (cachedTrace->unwind(maxFrames) != smalldbg::Status::Ok) {
-        cachedTrace.reset();
-        return false;
-    }
-    return true;
-}
-
 bool EggDebugSession::resume() {
-    cachedTrace.reset();
     return debugger->resume() == smalldbg::Status::Ok;
 }
 
 bool EggDebugSession::suspend() {
-    cachedTrace.reset();
     if (debugger->isStopped())
         return true;
 
@@ -257,12 +237,10 @@ bool EggDebugSession::suspend() {
 }
 
 bool EggDebugSession::step() {
-    cachedTrace.reset();
     return debugger->step() == smalldbg::Status::Ok;
 }
 
 bool EggDebugSession::stepOver() {
-    cachedTrace.reset();
     // Step over: set a temporary breakpoint at the next instruction in the
     // current frame (i.e. the return address of the callee if stepping into
     // a call, or the very next instruction otherwise).  We approximate this
@@ -287,7 +265,6 @@ bool EggDebugSession::stepOver() {
 }
 
 bool EggDebugSession::stepOut() {
-    cachedTrace.reset();
     // Step out: set a temporary breakpoint at the caller's return address
     // (frame 1 IP) and resume execution.
     auto thread = debugger->getCurrentThread();
@@ -308,12 +285,10 @@ bool EggDebugSession::stepOut() {
 }
 
 bool EggDebugSession::stepBack() {
-    cachedTrace.reset();
     return debugger->stepBack() == smalldbg::Status::Ok;
 }
 
 bool EggDebugSession::reverseStepOver() {
-    cachedTrace.reset();
     // Reverse step over: step backwards, skipping over calls.
     // Use the caller's IP as a reverse breakpoint target.
     auto thread = debugger->getCurrentThread();
@@ -334,7 +309,6 @@ bool EggDebugSession::reverseStepOver() {
 }
 
 bool EggDebugSession::reverseStepOut() {
-    cachedTrace.reset();
     // Reverse step out: run backwards until we re-enter the current frame.
     auto thread = debugger->getCurrentThread();
     if (!thread) return false;
@@ -690,31 +664,6 @@ std::string EggDebugSession::search(const std::string& text, bool ignoreCase,
     return arr.dump();
 }
 
-// ---- Frame listing (native C++ stack) ----
-
-std::string EggDebugSession::listFrames(size_t maxFrames) const {
-    if (!ensureTrace(maxFrames))
-        return "[]";
-
-    const auto& frames = cachedTrace->getFrames();
-    auto arr = Json::array();
-    for (size_t i = 0; i < frames.size(); i++) {
-        const auto& f = *frames[i];
-        std::string label;
-        if (!f.moduleName.empty() && !f.functionName.empty())
-            label = f.moduleName + "!" + f.functionName;
-        else if (!f.functionName.empty())
-            label = f.functionName;
-        else
-            label = "<unknown>";
-
-        arr.add(Json::object()
-            .set("index", static_cast<int>(i + 1))
-            .set("label", label)
-            .set("ip", Json::hex(f.ip())));
-    }
-    return arr.dump();
-}
 
 // ---- C++ function source extraction from file ----
 
@@ -807,26 +756,8 @@ static ExtractedSource extractFunctionSource(const std::string& filePath,
     return result;
 }
 
-std::string EggDebugSession::getFrameDetail(int index) const {
-    if (!ensureTrace())
-        return "{}";
-
-    const auto& frames = cachedTrace->getFrames();
-    if (index < 1 || index > static_cast<int>(frames.size()))
-        return "{}";
-
-    // Lazily resolve source location for this frame
-    cachedTrace->resolveFrameDetails(index - 1, debugger.get());
-
-    const auto& f = *frames[index - 1];
-    std::string label;
-    if (!f.moduleName.empty() && !f.functionName.empty())
-        label = f.moduleName + "!" + f.functionName;
-    else if (!f.functionName.empty())
-        label = f.functionName;
-    else
-        label = "<unknown>";
-
+std::string EggDebugSession::buildFrameDetailJson(const smalldbg::StackFrame& f,
+                                                  int index) const {
     std::string modName = f.moduleName.empty() ? "<native>" : f.moduleName;
 
     std::string source;
@@ -849,7 +780,7 @@ std::string EggDebugSession::getFrameDetail(int index) const {
 
     auto j = Json::object()
         .set("index", index)
-        .set("label", label)
+        .set("label", buildFrameLabel(f))
         .set("ip", Json::hex(f.ip()))
         .set("functionAddress", Json::hex(f.ip() - f.functionOffset))
         .set("class", Json::object()
@@ -875,51 +806,6 @@ std::string EggDebugSession::getFrameDetail(int index) const {
     return j.dump();
 }
 
-std::string EggDebugSession::getFrameBindings(int index) const {
-    if (!ensureTrace())
-        return "[]";
-
-    const auto& frames = cachedTrace->getFrames();
-    if (index < 1 || index > static_cast<int>(frames.size()))
-        return "[]";
-
-    // Lazily resolve locals for this frame
-    cachedTrace->resolveFrameDetails(index - 1, debugger.get());
-
-    const auto& f = *frames[index - 1];
-    auto arr = Json::array();
-
-    // Frame registers: IP, FP, SP
-    arr.add(Json::object()
-        .set("name", "IP")
-        .set("value", Json::hex(f.ip())));
-    arr.add(Json::object()
-        .set("name", "FP")
-        .set("value", Json::hex(f.fp())));
-    arr.add(Json::object()
-        .set("name", "SP")
-        .set("value", Json::hex(f.sp())));
-
-    // Local variables (from DWARF debug info)
-    for (const auto& lv : f.localVariables) {
-        // Skip compiler-generated internal variables (e.g. __begin1, __end1,
-        // __range1 from range-based for loops)
-        if (lv.name.size() >= 2 && lv.name[0] == '_' && lv.name[1] == '_')
-            continue;
-        auto binding = Json::object()
-            .set("name", lv.name)
-            .set("type", lv.typeName)
-            .set("location", lv.getLocationString());
-        auto val = lv.getValue();
-        if (val.has_value())
-            binding.set("value", Json::hex(val.value()));
-        else
-            binding.set("value", "?");
-        arr.add(binding);
-    }
-
-    return arr.dump();
-}
 
 // ---- Green thread management ----
 

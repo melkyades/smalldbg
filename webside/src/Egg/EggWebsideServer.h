@@ -22,9 +22,6 @@ protected:
     std::string description() const override;
     std::unique_ptr<WebsideSession> createSession() override;
 
-    std::string listFrames() const override;
-    std::string getFrameDetail(int index) const override;
-    std::string getFrameBindings(int index) const override;
 
     void setupRoutes() override;
 

@@ -58,9 +58,6 @@ public:
     // ---- State queries ----
     std::string getStopReason() const override;
     std::string getRegisters() const override;
-    std::string listFrames(size_t maxFrames = 256) const;
-    std::string getFrameDetail(int index) const;
-    std::string getFrameBindings(int index) const;
 
     // ---- Breakpoints / memory / events / objects (interface stubs) ----
     bool setBreakpoint(uint64_t address, const std::string& name = "") override;
@@ -131,13 +128,14 @@ public:
     /// Access the Egg VM inspector.
     egg::EggInspector* getInspector() const { return inspector.get(); }
 
+protected:
+    /// Native frame detail enriched with source text and the IP interval.
+    std::string buildFrameDetailJson(const smalldbg::StackFrame& frame,
+                                     int index) const override;
+
 private:
     std::unique_ptr<smalldbg::Debugger> debugger;
     std::unique_ptr<egg::EggInspector> inspector;
-
-    // Cached native stack trace (lazily populated, invalidated on resume/step)
-    mutable std::unique_ptr<smalldbg::StackTrace> cachedTrace;
-    bool ensureTrace(size_t maxFrames = 256) const;
 
     // ---- Green thread list ----
     std::vector<GreenThread> greenThreads;

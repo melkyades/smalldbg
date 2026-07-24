@@ -21,18 +21,6 @@ std::unique_ptr<WebsideSession> EggWebsideServer::createSession() {
     return std::make_unique<EggDebugSession>();
 }
 
-std::string EggWebsideServer::listFrames() const {
-    return isActive() ? eggSession()->listFrames(256) : "[]";
-}
-
-std::string EggWebsideServer::getFrameDetail(int index) const {
-    return isActive() ? eggSession()->getFrameDetail(index) : "{}";
-}
-
-std::string EggWebsideServer::getFrameBindings(int index) const {
-    return isActive() ? eggSession()->getFrameBindings(index) : "[]";
-}
-
 // ---- Routes ----
 
 void EggWebsideServer::setupRoutes() {

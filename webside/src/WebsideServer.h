@@ -49,8 +49,8 @@ protected:
     virtual bool resume();
     virtual bool suspend();
 
-    // ---- frame API ----
-    virtual std::string listFrames() const = 0;
+    // ---- frame API (resolve the thread/frame, then delegate to the session) ----
+    virtual std::string listFrames() const;
     virtual std::string getFrameDetail(int index) const;
     virtual std::string getFrameBindings(int index) const;
 

@@ -48,7 +48,8 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
     for (size_t i = 0; i < frames.size(); i++) {
         arr.add(Json::object()
             .set("index", static_cast<int>(i + 1))
-            .set("label", buildFrameLabel(*frames[i])));
+            .set("label", buildFrameLabel(*frames[i]))
+            .set("ip", Json::hex(frames[i]->ip())));
     }
     return arr.dump();
 }
@@ -149,7 +150,8 @@ std::string WebsideSession::addNativeFrameBindings(const smalldbg::StackFrame& f
             continue;
         auto binding = Json::object()
             .set("name", lv.name)
-            .set("type", lv.typeName);
+            .set("type", lv.typeName)
+            .set("location", lv.getLocationString());
         auto val = lv.getValue();
         if (val.has_value())
             binding.set("value", Json::hex(val.value()));
