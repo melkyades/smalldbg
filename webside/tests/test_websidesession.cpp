@@ -178,6 +178,7 @@ struct LiveSession : WebsideSession {
     std::string listSmalltalkFrames(int) const override { return "[]"; }
     std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
     std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
+    std::string getSmalltalkStackContents(int) const override { return "[]"; }
     bool discoverClasses() override { return false; }
     std::string listClasses(const std::string&, bool, bool, int) const override { return "[]"; }
     std::string getClass(const std::string&) const override { return "{}"; }

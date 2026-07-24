@@ -377,6 +377,29 @@ std::string EggInspector::describeRemoteObject(const EggObject& obj) const {
     return obj.printString();
 }
 
+std::string EggInspector::getStackContents(const EvaluatorState& st) const {
+    if (!st.valid || st.stackBase == 0 || st.stackSize == 0)
+        return "[]";
+
+    // Used slots run from regSP (top, inclusive) down to the stack bottom.
+    uint64_t from = st.regSP;
+    uint64_t to   = st.stackSize;
+    if (from > to) return "[]";
+
+    auto arr = webside::Json::array();
+    for (uint64_t i = from; i <= to; i++) {
+        uint64_t raw = readStackSlot(st, i);
+        arr.add(webside::Json::object()
+            .set("index",   static_cast<int64_t>(i))
+            .set("address", webside::Json::hex(st.stackBase + (i - 1) * PTR_SIZE))
+            .set("oop",     webside::Json::hex(raw))
+            .set("desc",    describeRemoteObject(objectAt(raw)))
+            .set("isBP",    i == st.regBP)
+            .set("isSP",    i == st.regSP));
+    }
+    return arr.dump();
+}
+
 // =========================================================================
 // WebsideInspector — VM introspection rendered as JSON for the server
 // =========================================================================

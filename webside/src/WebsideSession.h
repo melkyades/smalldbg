@@ -70,6 +70,7 @@ public:
     virtual std::string listSmalltalkFrames(int threadIndex) const = 0;
     virtual std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const = 0;
     virtual std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const = 0;
+    virtual std::string getSmalltalkStackContents(int threadIndex) const = 0;
 
     // ---- class browsing ----
     virtual bool discoverClasses() = 0;

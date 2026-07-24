@@ -100,6 +100,9 @@ public:
     /// Smalltalk-level frame bindings for a green thread (JSON array).
     std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const override;
 
+    /// Raw stack contents (used slots) for a green thread (JSON array).
+    std::string getSmalltalkStackContents(int threadIndex) const override;
+
     // ---- Class browsing (delegates to inspector + JSON formatting) ----
     bool discoverClasses() override { return inspector->discoverClasses(); }
     std::string listClasses(const std::string& root = "",

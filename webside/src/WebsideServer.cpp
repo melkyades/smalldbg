@@ -544,6 +544,11 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
         return res;
     }
 
+    if (segments[2] == "stack") {
+        res.body = session->getSmalltalkStackContents(threadIndex);
+        return res;
+    }
+
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
             res.body = session->listSmalltalkFrames(threadIndex);

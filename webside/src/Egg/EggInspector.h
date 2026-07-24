@@ -79,6 +79,9 @@ public:
     /// Read a single slot from the evaluator stack (1-based index).
     uint64_t readStackSlot(const EvaluatorState& st, uint64_t index) const;
 
+    /// JSON array of all used stack slots (from SP to the bottom of the stack).
+    std::string getStackContents(const EvaluatorState& st) const;
+
     /// A single Smalltalk evaluation frame.
     struct SmalltalkFrame {
         int index{0};                  // 1-based frame number
