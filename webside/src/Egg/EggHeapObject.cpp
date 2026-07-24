@@ -1,4 +1,5 @@
 #include "EggHeapObject.h"
+#include "EggKnownObjects.h"
 #include <sstream>
 #include <iomanip>
 #include <cstring>
@@ -138,11 +139,19 @@ std::string EggHeapObject::className() const {
     EggHeapObject cls = classFromBehavior();
     if (!cls) return "";
 
-    // Species slot 5 = name (a String/Symbol)
-    EggHeapObject nameObj = cls.slotAt(5);
-    if (!nameObj) return "";
+    EggHeapObject nameObj = cls.slotAt(EggSpecies::Slot::NAME);
+    if (nameObj && nameObj.isBytes())
+        return nameObj.bytesAsString();
 
-    return nameObj.bytesAsString();
+    // Metaclass: slot 5 is the instance-side class, not a name string.
+    // Render "InstanceClassName class" so callers can detect class objects.
+    if (nameObj) {
+        EggHeapObject instanceName = nameObj.slotAt(EggSpecies::Slot::NAME);
+        if (instanceName && instanceName.isBytes())
+            return instanceName.bytesAsString() + " class";
+    }
+
+    return "";
 }
 
 // ---- convenience -----------------------------------------------
@@ -153,17 +162,53 @@ std::string EggHeapObject::printString() const {
     std::string cls = className();
 
     if (isBytes()) {
-        if (cls == "String" || cls == "Symbol") {
+        if (cls == "String") {
             std::string s = bytesAsString();
             if (s.size() > 50) s = s.substr(0, 50) + "...";
-            if (cls == "Symbol") return "#" + s;
             return "'" + s + "'";
         }
+        if (cls == "Symbol")
+            return "#" + bytesAsString();
     }
 
     if (cls == "UndefinedObject") return "nil";
-    if (cls == "True") return "true";
+    if (cls == "True")  return "true";
     if (cls == "False") return "false";
+
+    if (cls == "CompiledMethod" || cls == "FFIMethod") {
+        EggObject selRaw = objectSlotAt(EggCompiledMethod::Slot::SELECTOR);
+        std::string sel = (selRaw.isHeapObject() && selRaw.asHeapObject())
+            ? selRaw.asHeapObject().bytesAsString() : "";
+        EggHeapObject binding = as<EggCompiledMethod>().classBinding();
+        std::string bindingStr = binding ? binding.printString() : "";
+        if (sel.empty() && bindingStr.empty())
+            return "<unnamed CompiledMethod>";
+        return (bindingStr.empty() ? "nil" : bindingStr) + ">>#" +
+               (sel.empty() ? "nil" : sel);
+    }
+
+    if (cls == "CompiledBlock") {
+        EggObject fmt = objectSlotAt(0);
+        int blockNum = fmt.isSmallInteger()
+            ? static_cast<int>((fmt.asSmallInteger().value() & 0x3FC000) >> 14) : 0;
+        EggHeapObject methodObj = slotAt(2);
+        std::string methodStr = methodObj ? methodObj.printString() : "<unknown method>";
+        return "block " + std::to_string(blockNum) + " of " + methodStr;
+    }
+
+    if (cls == "Behavior") {
+        EggHeapObject classRef = as<EggBehavior>().classRef();
+        return (classRef ? EggSpecies(classRef).name() : "") + " behavior";
+    }
+
+    if (cls == "Metaclass") {
+        EggHeapObject instanceClass = slotAt(EggSpecies::Slot::METACLASS_CLASS);
+        return (instanceClass ? EggSpecies(instanceClass).name() : "") + " class";
+    }
+
+    // A class object: its species is a metaclass, so className() ended in " class".
+    if (cls.size() > 6 && cls.compare(cls.size() - 6, 6, " class") == 0)
+        return cls.substr(0, cls.size() - 6);
 
     if (!cls.empty()) {
         bool startsWithVowel = cls.find_first_of("AEIOUaeiou") == 0;
