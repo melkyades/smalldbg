@@ -99,6 +99,8 @@ target_include_directories(smalldbg PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+install(DIRECTORY include/smalldbg/ DESTINATION include/smalldbg FILES_MATCHING PATTERN "*.h")
+
 if(SMALLDBG_USE_DBGENG)
     target_compile_definitions(smalldbg PRIVATE SMALLDBG_USE_DBGENG=1)
 endif()
