@@ -835,13 +835,13 @@ std::string EggDebugSession::getGreenThreadName(int threadIndex) const {
 }
 
 static std::string frameLabel(const EggDebugSession::SmalltalkFrame& f) {
-    if (f.isBlock)
-        return "[] in " + f.className + ">>" + f.selector;
     if (!f.className.empty() && !f.selector.empty())
-        return f.className + ">>" + f.selector;
+        return (f.isBlock ? "[] in " : "") + f.className + ">>" + f.selector;
     if (!f.selector.empty())
         return f.selector;
-    return "<unknown>";
+    if (f.isBlock)
+        return "[] in " + f.className + ">>" + f.selector;
+    return "<launch frame>";
 }
 
 std::string EggDebugSession::listSmalltalkFrames(int threadIndex) const {
@@ -855,6 +855,15 @@ std::string EggDebugSession::listSmalltalkFrames(int threadIndex) const {
             .set("index", f.index)
             .set("label", frameLabel(f)));
     }
+
+    // Expose the Evaluator's result/receiver register at the suspend point.
+    if (gt.state.regR != 0) {
+        auto regRObj = inspector->objectAt(gt.state.regR);
+        arr.add(Json::object()
+            .set("index", static_cast<int>(gt.frames.size()) + 1)
+            .set("label", "<regR: " + inspector->describeRemoteObject(regRObj) + ">"));
+    }
+
     return arr.dump();
 }
 
@@ -910,11 +919,17 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
     const auto& f = gt.frames[frameIndex - 1];
     auto arr = Json::array();
 
-    // self binding
+    // For the topmost frame use _regR as the receiver: it reflects the actual
+    // receiver at the suspend point, which may differ from the frame slot
+    // (e.g. during a doesNotUnderstand or an undermessage).
+    auto selfObj = f.receiver;
+    if (frameIndex == 1 && gt.state.regR != 0)
+        selfObj = inspector->objectAt(gt.state.regR);
+
     arr.add(Json::object()
         .set("name", "self")
-        .set("value", inspector->describeRemoteObject(f.receiver))
-        .set("oop", Json::hex(f.receiver.oop()))
+        .set("value", inspector->describeRemoteObject(selfObj))
+        .set("oop", Json::hex(selfObj ? selfObj.oop() : 0))
         .set("type", "special"));
 
     if (!f.method)
