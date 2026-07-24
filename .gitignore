@@ -25,3 +25,6 @@ deactivate_conanrun.sh
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Local agent instructions (kept out of git intentionally)
+AGENTS.md
