@@ -1,5 +1,6 @@
 #include "WebsideServer.h"
 #include "Json.h"
+#include "WebsideInspector.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
@@ -318,6 +319,131 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
         .set("fields", fieldsToJson(visibleFields));
 
     return result.dump();
+}
+
+// =========================================================================
+// VM inspector routes — delegate VM specifics to session->getInspector()
+// =========================================================================
+
+static Json moduleToCodeZone(const smalldbg::ModuleInfo& mod) {
+    return Json::object()
+        .set("start", Json::hex(mod.loadAddress))
+        .set("end", Json::hex(mod.endAddress))
+        .set("size", static_cast<int64_t>(mod.endAddress - mod.loadAddress));
+}
+
+HttpResponse WebsideServer::handleRegions(const HttpRequest&) const {
+    HttpResponse res;
+    auto* inspector = session->getInspector();
+    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+
+    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto result = Json::object();
+
+    auto codeZones = Json::object();
+    auto modules = provider->getModules();
+    for (auto& mod : modules)
+        codeZones.set(mod.shortName, moduleToCodeZone(mod));
+    result.set("codeZones", codeZones);
+
+    auto stack = inspector->evaluatorStack();
+    if (stack.valid) {
+        result.set("stack", Json::object()
+            .set("base", Json::hex(stack.base))
+            .set("sp", Json::hex(stack.sp))
+            .set("bp", Json::hex(stack.bp)));
+    } else {
+        result.set("stack", Json::null());
+    }
+
+    auto moduleList = Json::array();
+    for (auto& mod : modules) {
+        moduleList.add(Json::object()
+            .set("name", mod.shortName)
+            .set("path", mod.path)
+            .set("start", Json::hex(mod.loadAddress))
+            .set("end", Json::hex(mod.endAddress)));
+    }
+    result.set("modules", moduleList);
+
+    res.body = result.dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
+    HttpResponse res;
+    auto* inspector = session->getInspector();
+    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+
+    auto addrIt = req.params.find("address");
+    if (addrIt == req.params.end()) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Missing address parameter").dump();
+        return res;
+    }
+
+    uint64_t addr = parseHexParam(addrIt->second);
+    auto* provider = session->getDebugger()->getSymbolProvider();
+
+    auto result = Json::object();
+    result.set("address", Json::hex(addr));
+
+    std::string moduleName;
+    auto modules = provider->getModules();
+    for (auto& mod : modules) {
+        if (addr >= mod.loadAddress && addr < mod.endAddress) {
+            moduleName = mod.shortName;
+            break;
+        }
+    }
+    result.set("module", moduleName.empty() ? Json::null() : Json::string(moduleName));
+
+    auto stack = inspector->evaluatorStack();
+    bool inStack = false;
+    if (stack.valid && stack.base != 0 && stack.sp > 0) {
+        uint64_t stackStart = stack.base;
+        uint64_t stackEnd = stack.base + stack.sp * 8;
+        inStack = (addr >= stackStart && addr < stackEnd);
+    }
+    result.set("stack", inStack);
+
+    auto sym = provider->getSymbolByAddress(addr);
+    if (sym) {
+        result.set("symbol", sym->name);
+        result.set("offset", static_cast<int64_t>(addr - sym->address));
+    } else {
+        result.set("symbol", nullptr);
+        result.set("offset", nullptr);
+    }
+
+    result.set("space", nullptr);
+    result.set("codeZone", moduleName.empty() ? Json::null() : Json::string(moduleName));
+
+    res.body = result.dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
+    HttpResponse res;
+    auto* inspector = session->getInspector();
+    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+
+    auto oopIt = req.params.find("oop");
+    if (oopIt == req.params.end()) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Missing oop parameter").dump();
+        return res;
+    }
+
+    uint64_t addr = parseHexParam(oopIt->second);
+    int maxSlots = 20;
+    auto maxIt = req.params.find("maxSlots");
+    if (maxIt != req.params.end()) {
+        try { maxSlots = std::stoi(maxIt->second); } catch (...) {}
+    }
+
+    res.body = inspector->inspectObject(addr, maxSlots);
+    return res;
 }
 
 // =========================================================================
@@ -729,6 +855,17 @@ void WebsideServer::setupRoutes() {
 
     server.route("GET", "/disassemble", [this](const HttpRequest& req) {
         return handleDisassemble(req);
+    });
+
+    // ---- VM inspector ----
+    server.route("GET", "/regions", [this](const HttpRequest& req) {
+        return handleRegions(req);
+    });
+    server.route("GET", "/classify", [this](const HttpRequest& req) {
+        return handleClassify(req);
+    });
+    server.route("GET", "/inspect", [this](const HttpRequest& req) {
+        return handleInspect(req);
     });
 
     // ---- Debuggers: 1 = native stack, 2+ = green threads ----

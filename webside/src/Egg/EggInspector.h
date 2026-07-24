@@ -1,6 +1,7 @@
 #pragma once
 
 #include <smalldbg/Debugger.h>
+#include "../WebsideInspector.h"
 #include "EggObject.h"
 #include "EggHeapObject.h"
 #include "EggKnownObjects.h"
@@ -16,9 +17,13 @@ namespace egg {
 ///
 /// An inspector for the Egg interpreter VM
 /// (no JIT, ARM64 only, 64-bit pointers).
-class EggInspector {
+class EggInspector : public webside::WebsideInspector {
 public:
     explicit EggInspector(smalldbg::Debugger* dbg);
+
+    // ---- WebsideInspector ----
+    StackRegion evaluatorStack() const override;
+    std::string inspectObject(uint64_t oop, int maxSlots) const override;
 
     // ---- Factory: wrap a raw address as a typed object ---------------
     EggHeapObject heapObjectAt(uint64_t addr) const;

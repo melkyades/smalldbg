@@ -59,6 +59,7 @@ public:
     std::string describeObject(uint64_t, size_t) const override { return "{}"; }
 
     smalldbg::Debugger* getDebugger() const override { return nullptr; }
+    WebsideInspector* getInspector() const override { return nullptr; }
 };
 
 } // namespace webside

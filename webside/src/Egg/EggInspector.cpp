@@ -1,6 +1,8 @@
 #include "EggInspector.h"
+#include "../Json.h"
 #include <iostream>
 #include <functional>
+#include <algorithm>
 
 namespace egg {
 
@@ -348,6 +350,115 @@ std::string EggInspector::describeRemoteObject(const EggObject& obj) const {
     if (!obj)
         return "badaddr (nullptr)";
     return obj.printString();
+}
+
+// =========================================================================
+// WebsideInspector — VM introspection rendered as JSON for the server
+// =========================================================================
+
+using webside::Json;
+
+EggInspector::StackRegion EggInspector::evaluatorStack() const {
+    auto st = readEvaluatorState();
+    StackRegion region;
+    region.valid = st.valid;
+    region.base  = st.stackBase;
+    region.sp    = st.regSP;
+    region.bp    = st.regBP;
+    return region;
+}
+
+static Json slotToJson(int index, const EggObject& slotObj) {
+    auto slot = Json::object();
+    slot.set("index", index);
+    slot.set("raw", Json::hex(slotObj.oop()));
+
+    if (slotObj.isSmallInteger()) {
+        auto smi = slotObj.asSmallInteger();
+        slot.set("type", "SmallInteger");
+        slot.set("class", "SmallInteger");
+        slot.set("value", smi.value());
+    } else if (slotObj.isHeapObject()) {
+        auto slotHeap = slotObj.asHeapObject();
+        slot.set("type", "object");
+        slot.set("class", slotHeap.className());
+        slot.set("value", slotHeap.printString());
+    } else {
+        slot.set("type", "nil");
+        slot.set("class", "UndefinedObject");
+        slot.set("value", "nil");
+    }
+    return slot;
+}
+
+std::string EggInspector::inspectObject(uint64_t oop, int maxSlots) const {
+    maxSlots = std::clamp(maxSlots, 0, 1024);
+
+    auto obj = objectAt(oop);
+    auto result = Json::object();
+    result.set("oop", Json::hex(oop));
+
+    if (obj.isSmallInteger()) {
+        auto smi = obj.asSmallInteger();
+        result.set("class", "SmallInteger");
+        result.set("size", 0);
+        result.set("hash", 0);
+        result.set("flags", "0x00");
+        result.set("isBits", false);
+        result.set("isIndexed", false);
+        result.set("isNamed", false);
+        result.set("isExtended", false);
+        result.set("value", smi.value());
+        result.set("string", std::to_string(smi.value()));
+        result.set("slots", Json::array());
+        result.set("totalSlots", 0);
+        result.set("truncated", false);
+    } else if (obj.isHeapObject()) {
+        auto heap = obj.asHeapObject();
+        uint32_t totalSlots = heap.size();
+
+        result.set("class", heap.className());
+        result.set("size", static_cast<int64_t>(totalSlots));
+        result.set("hash", static_cast<int64_t>(heap.hash()));
+        result.set("flags", Json::hex(static_cast<uint32_t>(heap.flags())));
+        result.set("isBits", heap.isBytes());
+        result.set("isIndexed", heap.isArrayed());
+        result.set("isNamed", heap.isNamed());
+        result.set("isExtended", !heap.isSmallHeader());
+
+        if (heap.isBytes()) {
+            result.set("string", heap.bytesAsString());
+            result.set("value", heap.printString());
+        } else {
+            result.set("string", nullptr);
+            result.set("value", heap.printString());
+        }
+
+        int readCount = std::min(static_cast<int>(totalSlots), maxSlots);
+        auto slotsArr = Json::array();
+        for (int i = 0; i < readCount; i++)
+            slotsArr.add(slotToJson(i, heap.objectSlotAt(i)));
+
+        result.set("slots", slotsArr);
+        result.set("totalSlots", static_cast<int64_t>(totalSlots));
+        result.set("truncated", readCount < static_cast<int>(totalSlots));
+    } else {
+        result.set("class", "UndefinedObject");
+        result.set("size", 0);
+        result.set("hash", 0);
+        result.set("flags", "0x00");
+        result.set("isBits", false);
+        result.set("isIndexed", false);
+        result.set("isNamed", false);
+        result.set("isExtended", false);
+        result.set("value", nullptr);
+        result.set("string", "nil");
+        result.set("slots", Json::array());
+        result.set("totalSlots", 0);
+        result.set("truncated", false);
+    }
+
+    return result.dump();
 }
 
 } // namespace egg

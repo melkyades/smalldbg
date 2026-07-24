@@ -125,8 +125,8 @@ public:
     /// Underlying debugger (for low-level access).
     smalldbg::Debugger* getDebugger() const override { return debugger.get(); }
 
-    /// Access the Egg VM inspector.
-    egg::EggInspector* getInspector() const { return inspector.get(); }
+    /// Access the Egg VM inspector (covariant override of WebsideSession).
+    egg::EggInspector* getInspector() const override { return inspector.get(); }
 
 protected:
     /// Native frame detail enriched with source text and the IP interval.

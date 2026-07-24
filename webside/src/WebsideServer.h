@@ -91,6 +91,11 @@ protected:
     HttpResponse handleSmalltalkDebuggerRoute(
         const std::vector<std::string>& segments, int threadIndex) const;
 
+    // ---- VM inspector routes (delegate to session->getInspector()) ----
+    HttpResponse handleRegions(const HttpRequest& req) const;
+    HttpResponse handleClassify(const HttpRequest& req) const;
+    HttpResponse handleInspect(const HttpRequest& req) const;
+
     // ---- class name parsing ----
     struct ClassIdent {
         std::string className;

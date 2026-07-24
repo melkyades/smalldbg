@@ -156,6 +156,7 @@ struct LiveSession : WebsideSession {
     }
     bool isActive() const override { return dbg && dbg->isAttached(); }
     smalldbg::Debugger* getDebugger() const override { return dbg.get(); }
+    WebsideInspector* getInspector() const override { return nullptr; }
 
     bool attach(int) override { return false; }
     void detach() override { if (dbg) dbg->detach(); }
