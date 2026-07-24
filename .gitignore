@@ -24,3 +24,4 @@ deactivate_conanrun.sh
 # OS
 Thumbs.db
 desktop.ini
+.DS_Store
