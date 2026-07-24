@@ -1,7 +1,5 @@
 #include "EggDebugSession.h"
 #include "../Json.h"
-#include <chrono>
-#include <thread>
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -169,24 +167,6 @@ bool EggDebugSession::launch(const std::string& eggPath,
         return false;
     }
     std::cerr << "[egg] launched, pid=" << debugger->attachedPid().value_or(0) << std::endl;
-
-    // Let the VM run for a while to initialize, then suspend.
-    std::cerr << "[egg] resuming for 3s..." << std::endl;
-    debugger->resume();
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-
-    std::cerr << "[egg] suspending..." << std::endl;
-    if (!suspend()) {
-        std::cerr << "[egg] suspend failed" << std::endl;
-        return false;
-    }
-    std::cerr << "[egg] suspended" << std::endl;
-
-    std::cerr << "[egg] locating runtime..." << std::endl;
-    inspector->locateRuntime();
-    std::cerr << "[egg] discovering classes..." << std::endl;
-    inspector->discoverClasses();
-    std::cerr << "[egg] launch complete" << std::endl;
     return true;
 }
 
@@ -195,8 +175,7 @@ bool EggDebugSession::attach(int pid) {
     if (status != smalldbg::Status::Ok)
         return false;
 
-    inspector->locateRuntime();
-    inspector->discoverClasses();
+    discoverClasses();
     return true;
 }
 

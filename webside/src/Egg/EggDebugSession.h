@@ -104,7 +104,10 @@ public:
     std::string getSmalltalkStackContents(int threadIndex) const override;
 
     // ---- Class browsing (delegates to inspector + JSON formatting) ----
-    bool discoverClasses() override { return inspector->discoverClasses(); }
+    bool discoverClasses() override {
+        inspector->locateRuntime();
+        return inspector->discoverClasses();
+    }
     std::string listClasses(const std::string& root = "",
                             bool namesOnly = false,
                             bool tree = false,

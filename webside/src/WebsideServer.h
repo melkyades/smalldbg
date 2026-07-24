@@ -25,6 +25,10 @@ public:
     virtual bool launch(const std::string& target,
                         const std::vector<std::string>& args = {});
 
+    /// Resume / suspend the target (also drive startup from main()).
+    virtual bool resume();
+    virtual bool suspend();
+
     /// Set up all routes and enter the accept loop (blocks).
     void run();
 
@@ -44,10 +48,6 @@ protected:
     virtual bool isActive() const;
     virtual std::string stopReason() const;
     virtual std::optional<int> pid() const;
-
-    // ---- debug control (delegate to the session) ----
-    virtual bool resume();
-    virtual bool suspend();
 
     // ---- frame API (resolve the thread/frame, then delegate to the session) ----
     virtual std::string listFrames() const;
