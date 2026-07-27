@@ -32,12 +32,24 @@ bool WebsideServer::launch(const std::string& target, const std::vector<std::str
 }
 
 // ---- run control / session state / class browsing: delegate to the session ----
-bool WebsideServer::resume()  { return session->resume(); }
+bool WebsideServer::openTrace(const std::string&, const std::string&) {
+    return false;  // dialects with time-travel support override this
+}
+
+bool WebsideServer::openDump(const std::string&) {
+    return false;  // dialects with dump support override this
+}
+
+bool WebsideServer::resume() {
+    onPreResume();
+    return session->resume();
+}
 
 bool WebsideServer::suspend() {
     if (!session->suspend()) return false;
     session->discoverClasses();
     session->refreshGreenThreads();
+    onPostSuspend();
     return true;
 }
 

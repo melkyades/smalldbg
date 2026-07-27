@@ -29,6 +29,15 @@ public:
     virtual bool resume();
     virtual bool suspend();
 
+    /// Open a replayable trace (e.g. a TTD .run) instead of launching.
+    /// Base default: unsupported. Dialects that support time-travel override it.
+    virtual bool openTrace(const std::string& tracePath,
+                           const std::string& sourcePath = {});
+
+    /// Open a crash/WER dump (.dmp) as a frozen snapshot instead of launching.
+    /// Base default: unsupported. Dialects that support dumps override it.
+    virtual bool openDump(const std::string& dumpPath);
+
     /// Set up all routes and enter the accept loop (blocks).
     void run();
 
@@ -82,7 +91,11 @@ protected:
 
     // ---- memory / disassembly routes ----
     HttpResponse handleMemory(const HttpRequest& req) const;
-    HttpResponse handleDisassemble(const HttpRequest& req);
+    virtual HttpResponse handleDisassemble(const HttpRequest& req);
+
+    // ---- suspend/resume hooks (dialects may set up / tear down VM state) ----
+    virtual void onPostSuspend() {}
+    virtual void onPreResume() {}
 
     // ---- /debuggers routes (debugger 1 = native stack, 2+ = green threads) ----
     HttpResponse handleDebuggerRoute(const HttpRequest& req) const;
@@ -92,9 +105,9 @@ protected:
         const std::vector<std::string>& segments, int threadIndex) const;
 
     // ---- VM inspector routes (delegate to session->getInspector()) ----
-    HttpResponse handleRegions(const HttpRequest& req) const;
-    HttpResponse handleClassify(const HttpRequest& req) const;
-    HttpResponse handleInspect(const HttpRequest& req) const;
+    virtual HttpResponse handleRegions(const HttpRequest& req) const;
+    virtual HttpResponse handleClassify(const HttpRequest& req) const;
+    virtual HttpResponse handleInspect(const HttpRequest& req) const;
 
     // ---- class name parsing ----
     struct ClassIdent {
