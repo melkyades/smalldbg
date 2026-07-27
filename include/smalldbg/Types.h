@@ -35,7 +35,8 @@ enum class StopReason {
     Breakpoint,        // Hit a user breakpoint
     SingleStep,        // Single-step completed
     Exception,         // Exception/signal
-    ProcessExit        // Process terminated
+    ProcessExit,       // Process terminated
+    EndOfTrace         // TTD trace reached beginning or end
 };
 
 using Address = uint64_t;

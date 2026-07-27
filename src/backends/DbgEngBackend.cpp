@@ -1419,7 +1419,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
         {
             std::lock_guard<std::mutex> lock(mutex);
             stopAddress = static_cast<Address>(pc);
-            stopReason = StopReason::ProcessExit;
+            stopReason = StopReason::EndOfTrace;
             stopped = true;
             stepPending = false;
         }

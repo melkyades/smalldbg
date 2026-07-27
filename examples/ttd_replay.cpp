@@ -105,7 +105,7 @@ static void testForwardAtEnd(Debugger& dbg, Thread* thread) {
         }
         auto reason = dbg.waitForEvent(StopReason::None, 5000);
         std::cout << "  reason=" << static_cast<int>(reason) << std::endl;
-        if (reason == StopReason::ProcessExit) {
+        if (reason == StopReason::ProcessExit || reason == StopReason::EndOfTrace) {
             std::cout << "  End of trace reached." << std::endl;
             break;
         }
@@ -168,7 +168,7 @@ static void testReverseWatchpoint(Debugger& dbg, Thread* thread) {
             return;
         }
 
-        if (reason == StopReason::ProcessExit) {
+        if (reason == StopReason::ProcessExit || reason == StopReason::EndOfTrace) {
             std::cout << "  Start of trace reached at iteration " << i << std::endl;
             break;
         }

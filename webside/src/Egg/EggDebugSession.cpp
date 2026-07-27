@@ -322,6 +322,7 @@ std::string EggDebugSession::stopReasonStr(smalldbg::StopReason r) const {
         case smalldbg::StopReason::SingleStep:        return "single_step";
         case smalldbg::StopReason::Exception:         return "exception";
         case smalldbg::StopReason::ProcessExit:       return "process_exit";
+        case smalldbg::StopReason::EndOfTrace:        return "end_of_trace";
         default: return "unknown";
     }
 }
