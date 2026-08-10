@@ -105,25 +105,6 @@ static std::wstring userDbgEngDir() {
     return std::wstring(buf) + L"\\smalldbg\\windbg_dlls\\" + kDbgEngArchSub;
 }
 
-// Load a TTD-capable dbgeng.dll from the first location that has one. The DLLs
-// are placed out-of-band by tools/pack_windbg_dlls.sh; this never copies them
-// (loading in-process from the MSIX WinDbg package is ACL-blocked).
-static bool loadWinDbgPreviewDbgEng() {
-    if (g_usingWinDbgPreview && g_pfnDebugCreate) return true;
-
-    wchar_t envDir[MAX_PATH];
-    DWORD envLen = GetEnvironmentVariableW(L"SMALLDBG_DBGENG_DIR", envDir, MAX_PATH);
-    if (envLen > 0 && envLen < MAX_PATH && tryLoadDbgEngFrom(envDir)) return true;
-
-    std::wstring exeDir = executableDir();
-    if (!exeDir.empty()) {
-        if (tryLoadDbgEngFrom(exeDir + L"\\windbg_dlls\\" + kDbgEngArchSub)) return true;
-        if (tryLoadDbgEngFrom(exeDir + L"\\windbg_dlls")) return true;
-    }
-
-    return tryLoadDbgEngFrom(userDbgEngDir());
-}
-
 // Helper: format a value as a hex string ("0x1234ABCD").
 static std::string toHex(uint64_t val) {
     std::ostringstream oss;
@@ -141,6 +122,25 @@ static bool isWow64Process(ULONG pid) {
 }
 
 namespace smalldbg {
+
+// Load a TTD-capable dbgeng.dll from the first location that has one. The DLLs
+// are placed out-of-band by tools/pack_windbg_dlls.sh; this never copies them
+// (loading in-process from the MSIX WinDbg package is ACL-blocked).
+bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
+    if (g_usingWinDbgPreview && g_pfnDebugCreate) return true;
+
+    wchar_t envDir[MAX_PATH];
+    DWORD envLen = GetEnvironmentVariableW(L"SMALLDBG_DBGENG_DIR", envDir, MAX_PATH);
+    if (envLen > 0 && envLen < MAX_PATH && tryLoadDbgEngFrom(envDir)) return true;
+
+    std::wstring exeDir = executableDir();
+    if (!exeDir.empty()) {
+        if (tryLoadDbgEngFrom(exeDir + L"\\windbg_dlls\\" + kDbgEngArchSub)) return true;
+        if (tryLoadDbgEngFrom(exeDir + L"\\windbg_dlls")) return true;
+    }
+
+    return tryLoadDbgEngFrom(userDbgEngDir());
+}
 
 // ---------------------------------------------------------------------------
 // Simple output capture for Execute() commands
@@ -564,43 +564,6 @@ Status DbgEngBackend::suspend() {
     return Status::Ok;
 }
 
-// ---------------------------------------------------------------------------
-// TTD (Time Travel Debugging)
-// ---------------------------------------------------------------------------
-
-Status DbgEngBackend::openTrace(const std::string& path) {
-    if (attached) {
-        if (log) log("(dbgeng) openTrace: already attached, detach first");
-        return Status::Error;
-    }
-
-    if (log) log("(dbgeng) openTrace: opening " + path);
-
-    // Load WinDbg Preview's dbgeng.dll which has built-in TTD support.
-    // It opens .run traces via OpenDumpFile and loads the TTD engine from
-    // a TTD/ subdirectory next to dbgeng.dll.  This gives us full DbgEng
-    // support (symbols, stack traces, registers, memory, breakpoints,
-    // reverse stepping) through standard COM APIs.
-    if (!loadWinDbgPreviewDbgEng()) {
-        if (log) log("(dbgeng) openTrace: no TTD-capable dbgeng.dll found. Install it "
-                     "with tools/pack_windbg_dlls.sh (needs WinDbg installed), or unzip "
-                     "a bundle from tools/pack_windbg_dlls.sh --zip next to the exe, or "
-                     "set SMALLDBG_DBGENG_DIR.");
-        return Status::Error;
-    }
-
-    if (log) log("(dbgeng) openTrace: using WinDbg Preview dbgeng.dll via OpenDumpFile");
-
-    if (startSession(InitMode::OpenTrace, path) != Status::Ok) {
-        if (log) log("(dbgeng) openTrace: DbgEng OpenDumpFile failed");
-        return Status::Error;
-    }
-
-    isTTD = true;
-    if (log) log("(dbgeng) TTD trace opened via DbgEng: " + tracePath);
-    return Status::Ok;
-}
-
 // Start the event loop in `mode` and block until it has opened the target.
 Status DbgEngBackend::startSession(InitMode mode, const std::string& target) {
     tracePath = target;
@@ -643,45 +606,6 @@ Status DbgEngBackend::openDump(const std::string& path) {
 
     isDump = true;
     if (log) log("(dbgeng) crash dump opened via DbgEng: " + tracePath);
-    return Status::Ok;
-}
-
-Status DbgEngBackend::stepBack(Thread* thread) {
-    if (!attached) return Status::NotAttached;
-    if (!isTTD) {
-        if (log) log("(dbgeng) stepBack: not a TTD trace");
-        return Status::NotSupported;
-    }
-
-    requestStep(DEBUG_STATUS_REVERSE_STEP_INTO, *thread);
-
-    if (log) log("(dbgeng) stepBack requested");
-    return Status::Ok;
-}
-
-Status DbgEngBackend::reverseStepOver(Thread* thread) {
-    if (!attached) return Status::NotAttached;
-    if (!isTTD) {
-        if (log) log("(dbgeng) reverseStepOver: not a TTD trace");
-        return Status::NotSupported;
-    }
-
-    requestStep(DEBUG_STATUS_REVERSE_STEP_OVER, *thread);
-
-    if (log) log("(dbgeng) reverseStepOver requested");
-    return Status::Ok;
-}
-
-Status DbgEngBackend::reverseResume() {
-    if (!attached) return Status::NotAttached;
-    if (!isTTD) {
-        if (log) log("(dbgeng) reverseResume: not a TTD trace");
-        return Status::NotSupported;
-    }
-
-    requestResume(DEBUG_STATUS_REVERSE_GO);
-
-    if (log) log("(dbgeng) reverseResume requested");
     return Status::Ok;
 }
 
@@ -865,7 +789,6 @@ Status DbgEngBackend::readRegisters(Registers& out) const {
     return Status::Ok;
 }
 
-// A null thread means "whichever one the engine already has selected".
 Status DbgEngBackend::getRegisters(Thread* thread, Registers& out) const {
     if (!attached) return Status::NotAttached;
 
@@ -1175,7 +1098,6 @@ bool DbgEngBackend::initOpenTrace() {
     ULONG sysPid = 0;
     if (sysObjects) sysObjects->GetCurrentProcessSystemId(&sysPid);
     attached = true;
-    isTTD = true;
     initProcess(static_cast<uintptr_t>(sysPid));
     return true;
 }
@@ -1427,7 +1349,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
     }
 
     // TTD: forward step at same PC → end of trace.
-    if (isTTD && execStatus == DEBUG_STATUS_STEP_INTO &&
+    if (isTTDTrace() && execStatus == DEBUG_STATUS_STEP_INTO &&
         pc == static_cast<ULONG64>(lastStepPC)) {
         if (log) log("(dbgeng) TTD forward step at same PC — end of trace");
         {

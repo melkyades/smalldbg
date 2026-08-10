@@ -11,27 +11,25 @@
 #ifdef _WIN32
 #include "backends/WindowsBackend.h"
 #include "backends/DbgEngBackend.h"
+#include "backends/TTDBackend.h"
 #else
 #include "backends/PtraceBackend.h"
 #endif
 
 namespace smalldbg {
 
-Debugger::Debugger(Mode m, const Arch* arch) : backend(nullptr), symbolProvider(nullptr) {
-    // Platform selection for backend
-    const Arch* initialArch = arch ? arch : X64::instance();
+Debugger::Debugger(Mode m, const Arch* arch)
+    : backend(nullptr), symbolProvider(nullptr), mode(m),
+      initialArch(arch ? arch : X64::instance()) {
 #ifdef _WIN32
   #ifdef SMALLDBG_USE_DBGENG
-    backend = new DbgEngBackend(this, m, initialArch);
+    useBackend(new DbgEngBackend(this, mode, initialArch));
   #else
-    backend = new WindowsBackend(this, m, initialArch);
+    useBackend(new WindowsBackend(this, mode, initialArch));
   #endif
 #else
-    backend = new PtraceBackend(this, m, initialArch);
+    useBackend(new PtraceBackend(this, mode, initialArch));
 #endif
-
-    // Create symbol provider (backends will register their symbol backends)
-    symbolProvider = std::make_unique<SymbolProvider>(backend);
 
     disassembler = std::make_unique<Disassembler>(initialArch);
 
@@ -40,6 +38,14 @@ Debugger::Debugger(Mode m, const Arch* arch) : backend(nullptr), symbolProvider(
 }
 
 Debugger::~Debugger(){ delete backend; }
+
+// Symbol resolution is tied to the backend, so it is rebuilt alongside it.
+// Backends register their own symbol backends during session init.
+void Debugger::useBackend(Backend* newBackend) {
+    delete backend;
+    backend = newBackend;
+    symbolProvider = std::make_unique<SymbolProvider>(backend);
+}
 
 void Debugger::updateArch(const Arch* arch) {
     disassembler = std::make_unique<Disassembler>(arch);
@@ -80,7 +86,12 @@ Status Debugger::suspend() {
 }
 
 // --- TTD (Time Travel Debugging) ---
+// Replay is a different backend, not a mode of the live one, and which it is
+// only becomes known here — the constructor has no target to look at yet.
 Status Debugger::openTrace(const std::string& tracePath) {
+#if defined(_WIN32) && defined(SMALLDBG_USE_DBGENG)
+    useBackend(new TTDBackend(this, mode, initialArch));
+#endif
     return backend->openTrace(tracePath);
 }
 

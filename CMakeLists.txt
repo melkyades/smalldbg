@@ -49,6 +49,7 @@ if(WIN32)
     target_sources(smalldbg PRIVATE
         src/backends/WindowsBackend.cpp
         src/backends/DbgEngBackend.cpp
+        src/backends/TTDBackend.cpp
     )
 else()
     target_sources(smalldbg PRIVATE

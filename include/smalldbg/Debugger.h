@@ -111,11 +111,16 @@ public:
     void updateArch(const Arch* arch);
 
 private:
+    /// Install a backend, taking ownership and discarding the previous one.
+    void useBackend(Backend* newBackend);
+
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
     std::vector<std::unique_ptr<StackFrameProcessor>> frameProcessors; // registered processors (checked in order)
     std::unique_ptr<Disassembler> disassembler; // disassembler instance
+    Mode mode;                  // kept to build a replacement backend
+    const Arch* initialArch;
 };
 
 } // namespace smalldbg

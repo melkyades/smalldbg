@@ -75,13 +75,6 @@ public:
     Status resume() override;
     Status step(Thread* thread) override;
     Status suspend() override;
-    
-    // --- TTD (Time Travel Debugging) ---
-    Status openTrace(const std::string& tracePath) override;
-    Status stepBack(Thread* thread) override;
-    Status reverseStepOver(Thread* thread) override;
-    Status reverseResume() override;
-    bool isTTDTrace() const override { return isTTD; }
 
     // --- Post-mortem crash-dump loading ---
     Status openDump(const std::string& dumpPath) override;
@@ -125,9 +118,13 @@ public:
     bool onModuleLoaded(ULONG64 base, ULONG size, const char* moduleName, const char* imageName);
     void onModuleUnloaded(ULONG64 base, const char* imageName);
 
-private:
+protected:
     // What the event loop should open when it starts.
     enum class InitMode { None, Launch, Attach, OpenTrace, OpenDump };
+
+    // Load a TTD-capable dbgeng.dll in place of the system one. Only replay
+    // needs it, but the loader is shared with the rest of the engine startup.
+    static bool loadWinDbgPreviewDbgEng();
 
     // Start the event loop in `mode` and block until the target is open.
     Status startSession(InitMode mode, const std::string& target);
@@ -139,7 +136,7 @@ private:
 
     // Make `thread` the engine's current thread. Must run on the engine thread;
     // selectThreadOnEngine() is the version callable from anywhere.
-    void selectThread(Thread& thread) const;
+    virtual void selectThread(Thread& thread) const;
     void selectThreadOnEngine(Thread& thread) const;
 
     ULONG engineThreadId(Thread& thread) const;
@@ -206,7 +203,6 @@ private:
 
     // --- Process state ---
     bool attached = false;
-    bool isTTD = false;  // True if replaying a TTD trace
     bool isDump = false; // True if inspecting a static crash/WER dump
 
     const EffectiveTypeSync* effectiveTypeSync = nullptr;  // set in initLaunch()/initAttach()
