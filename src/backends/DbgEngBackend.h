@@ -126,11 +126,26 @@ public:
     void onModuleUnloaded(ULONG64 base, const char* imageName);
 
 private:
+    // Ask the event loop to continue the target with a DbgEng execution status.
+    // requestStep pins the thread it applies to; requestResume runs them all.
+    void requestStep(ULONG execStatus, Thread& thread);
+    void requestResume(ULONG execStatus);
+
+    // Make `thread` the engine's current thread. Must run on the engine thread;
+    // selectThreadOnEngine() is the version callable from anywhere.
+    void selectThread(Thread& thread) const;
+    void selectThreadOnEngine(Thread& thread) const;
+
+    ULONG engineThreadId(Thread& thread) const;
+
     // Run a closure on the event-loop thread and block until it finishes.
     // DbgEng is owned by that thread: a context switch requested from another
     // one does not take effect, and reads can land on the wrong thread. A call
     // already on the engine thread runs inline.
     void runOnEngineThread(const std::function<void()>& fn) const;
+
+    // Reads the engine's registers for whatever thread is selected on it.
+    Status readRegisters(Registers& out) const;
 
     std::string captureCommandOutput(const std::string& cmd) const;
 

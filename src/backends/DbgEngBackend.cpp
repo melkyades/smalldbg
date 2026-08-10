@@ -502,19 +502,39 @@ Status DbgEngBackend::step(Thread* thread) {
         return Status::NotSupported;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        stepRequested = true;
-        stepThreadId = thread ? static_cast<DWORD>(thread->getThreadId()) : 0;
-        stopped = false;
-        stopReason = StopReason::None;
-        pendingExecStatus = DEBUG_STATUS_STEP_INTO;
-        continueRequested = true;
-    }
-    cv.notify_all();
+    requestStep(DEBUG_STATUS_STEP_INTO, *thread);
 
     if (log) log("(dbgeng) step requested");
     return Status::Ok;
+}
+
+// The engine must be sitting on the thread being stepped, or it steps whichever
+// one it last had selected.
+void DbgEngBackend::requestStep(ULONG execStatus, Thread& thread) {
+    selectThreadOnEngine(thread);
+
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stepRequested = true;
+        stepThreadId = static_cast<DWORD>(thread.getThreadId());
+        stopped = false;
+        stopReason = StopReason::None;
+        pendingExecStatus = execStatus;
+        continueRequested = true;
+    }
+    cv.notify_all();
+}
+
+void DbgEngBackend::requestResume(ULONG execStatus) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stepRequested = false;
+        stopped = false;
+        stopReason = StopReason::None;
+        pendingExecStatus = execStatus;
+        continueRequested = true;
+    }
+    cv.notify_all();
 }
 
 Status DbgEngBackend::suspend() {
@@ -647,25 +667,7 @@ Status DbgEngBackend::stepBack(Thread* thread) {
         return Status::NotSupported;
     }
 
-    // DbgEng-based reverse step
-    if (thread && sysObjects) {
-        ULONG engineId = 0;
-        HRESULT hr = sysObjects->GetThreadIdBySystemId(
-            static_cast<ULONG>(thread->getThreadId()), &engineId);
-        if (SUCCEEDED(hr)) {
-            sysObjects->SetCurrentThreadId(engineId);
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> g(mutex);
-        stepRequested = true;
-        stepThreadId = thread ? static_cast<DWORD>(thread->getThreadId()) : 0;
-        pendingExecStatus = DEBUG_STATUS_REVERSE_STEP_INTO;
-        continueRequested = true;
-        stopped = false;
-    }
-    cv.notify_all();
+    requestStep(DEBUG_STATUS_REVERSE_STEP_INTO, *thread);
 
     if (log) log("(dbgeng) stepBack requested");
     return Status::Ok;
@@ -678,24 +680,7 @@ Status DbgEngBackend::reverseStepOver(Thread* thread) {
         return Status::NotSupported;
     }
 
-    if (thread && sysObjects) {
-        ULONG engineId = 0;
-        HRESULT hr = sysObjects->GetThreadIdBySystemId(
-            static_cast<ULONG>(thread->getThreadId()), &engineId);
-        if (SUCCEEDED(hr)) {
-            sysObjects->SetCurrentThreadId(engineId);
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> g(mutex);
-        stepRequested = true;
-        stepThreadId = thread ? static_cast<DWORD>(thread->getThreadId()) : 0;
-        pendingExecStatus = DEBUG_STATUS_REVERSE_STEP_OVER;
-        continueRequested = true;
-        stopped = false;
-    }
-    cv.notify_all();
+    requestStep(DEBUG_STATUS_REVERSE_STEP_OVER, *thread);
 
     if (log) log("(dbgeng) reverseStepOver requested");
     return Status::Ok;
@@ -708,14 +693,7 @@ Status DbgEngBackend::reverseResume() {
         return Status::NotSupported;
     }
 
-    {
-        std::lock_guard<std::mutex> g(mutex);
-        stepRequested = false;
-        pendingExecStatus = DEBUG_STATUS_REVERSE_GO;
-        continueRequested = true;
-        stopped = false;
-    }
-    cv.notify_all();
+    requestResume(DEBUG_STATUS_REVERSE_GO);
 
     if (log) log("(dbgeng) reverseResume requested");
     return Status::Ok;
@@ -890,32 +868,27 @@ void DbgEngBackend::RegIndices::readARM64Regs(ARM64Registers& r) const {
         (&r.x0)[i] = readReg(x[i]);
 }
 
-Status DbgEngBackend::getRegisters(Thread* thread, Registers& out) const {
-    if (!attached) return Status::NotAttached;
-
-    // Switch engine context to the requested thread.
-    if (thread) {
-        DWORD tid = static_cast<DWORD>(thread->getThreadId());
-        ULONG engineId = 0;
-        HRESULT hr = sysObjects->GetThreadIdBySystemId(tid, &engineId);
-        if (SUCCEEDED(hr)) {
-            sysObjects->SetCurrentThreadId(engineId);
-        } else if (log) {
-            log("(dbgeng) getRegisters: thread " + std::to_string(tid)
-                + " not found, hr=" + toHex((unsigned long)hr));
-        }
-    }
-
+Status DbgEngBackend::readRegisters(Registers& out) const {
     if (!arch) {
         if (log) log("(dbgeng) getRegisters: no architecture detected");
         return Status::Error;
     }
-
     effectiveTypeSync->sync(control, log);
-
     arch->readRegisters(ri, out);
     if (log) log("(dbgeng) getRegisters: ip=" + toHex(out.ip()) + " sp=" + toHex(out.sp()));
     return Status::Ok;
+}
+
+// A null thread means "whichever one the engine already has selected".
+Status DbgEngBackend::getRegisters(Thread* thread, Registers& out) const {
+    if (!attached) return Status::NotAttached;
+
+    Status result = Status::Ok;
+    runOnEngineThread([&]{
+        if (thread) selectThread(*thread);
+        result = readRegisters(out);
+    });
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1362,6 +1335,21 @@ void DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     }
     cv.notify_all();
     future.wait();
+}
+
+ULONG DbgEngBackend::engineThreadId(Thread& thread) const {
+    ULONG engineId = 0;
+    sysObjects->GetThreadIdBySystemId(
+        static_cast<ULONG>(thread.getThreadId()), &engineId);
+    return engineId;
+}
+
+void DbgEngBackend::selectThread(Thread& thread) const {
+    sysObjects->SetCurrentThreadId(engineThreadId(thread));
+}
+
+void DbgEngBackend::selectThreadOnEngine(Thread& thread) const {
+    runOnEngineThread([&]{ selectThread(thread); });
 }
 
 void DbgEngBackend::beginExecution(ULONG& execStatus) {
