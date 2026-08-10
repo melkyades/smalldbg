@@ -85,6 +85,10 @@ Json Json::hex(uint64_t v) {
 // =========================================================================
 
 Json& Json::set(const std::string& key, const Json& val) {
+    // Replace in place so overriding hooks don't emit duplicate keys.
+    for (auto& f : fields) {
+        if (f.first == key) { f.second = val; return *this; }
+    }
     fields.emplace_back(key, val);
     return *this;
 }
