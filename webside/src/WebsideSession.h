@@ -61,7 +61,10 @@ public:
     std::string getFrameBindings(smalldbg::StackTrace& trace,
                                  const smalldbg::StackFrame& frame, int index) const;
     std::string getFrameRegisters(const smalldbg::StackFrame& frame) const;
-    std::string getFrameStack(const smalldbg::StackTrace& trace, int index) const;
+    /// Raw stack slots around frame `index`. `rangeStart`/`rangeEnd` page an
+    /// explicit address window (for scrolling); 0/0 picks the default window.
+    std::string getFrameStack(const smalldbg::StackTrace& trace, int index,
+                              uint64_t rangeStart = 0, uint64_t rangeEnd = 0) const;
 
     // ---- green threads (Smalltalk-level) ----
     virtual void refreshGreenThreads() = 0;
@@ -142,7 +145,9 @@ protected:
     /// JSON view of the raw stack memory around a frame (reads target memory).
     virtual std::string buildFrameStackJson(smalldbg::Debugger* dbg,
                                             const smalldbg::StackTrace& trace,
-                                            int rawIndex) const;
+                                            int rawIndex,
+                                            uint64_t rangeStart,
+                                            uint64_t rangeEnd) const;
 };
 
 } // namespace webside

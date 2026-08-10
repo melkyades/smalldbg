@@ -22,6 +22,25 @@ static std::string threadIdHex(uint64_t tid) {
     return buf;
 }
 
+static bool isKnownFrameSubRoute(const std::string& sub) {
+    return sub.empty() || sub == "bindings" || sub == "registers" || sub == "stack";
+}
+
+static uint64_t param64(const HttpRequest& req, const char* key, uint64_t dflt = 0) {
+    auto it = req.params.find(key);
+    if (it == req.params.end()) return dflt;
+    try { return std::stoull(it->second, nullptr, 0); } catch (...) { return dflt; }
+}
+
+// Optional address window so a client can scroll the stack: from/to, or from
+// plus a slot count. Zeroes mean "use the window around the frame itself".
+static std::pair<uint64_t, uint64_t> stackWindow(const HttpRequest& req) {
+    uint64_t from = param64(req, "from");
+    uint64_t to = param64(req, "to");
+    if (from != 0 && to == 0) to = from + param64(req, "count", 256);
+    return {from, to};
+}
+
 // A human-readable name for a thread: the symbol its PC sits in, which reads
 // as what the thread is currently doing.
 static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread& thread) {
@@ -121,6 +140,26 @@ std::string WebsideServer::getFrameBindings(int index) const {
     const auto& frames = trace.getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
     return session->getFrameBindings(trace, *frames[index - 1], index);
+}
+
+std::string WebsideServer::getFrameRegisters(int index) const {
+    auto thread = session->primaryThread();
+    if (!thread) return "[]";
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
+    const auto& frames = trace.getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
+    return session->getFrameRegisters(*frames[index - 1]);
+}
+
+std::string WebsideServer::getFrameStack(int index) const {
+    auto thread = session->primaryThread();
+    if (!thread) return "[]";
+    smalldbg::StackTrace trace(thread.get());
+    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
+    const auto& frames = trace.getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
+    return session->getFrameStack(trace, index);
 }
 
 // =========================================================================
@@ -524,7 +563,7 @@ HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
     auto threads = nativeThreads();
     int nativeCount = static_cast<int>(threads.size());
     if (debuggerId >= 1 && debuggerId <= nativeCount)
-        return handleNativeDebuggerRoute(segments, *threads[debuggerId - 1], debuggerId);
+        return handleNativeDebuggerRoute(segments, req, *threads[debuggerId - 1], debuggerId);
 
     int threadIndex = debuggerId - nativeCount - 1;  // 0-based green index
     if (threadIndex < 0 || threadIndex >= session->greenThreadCount()) {
@@ -537,8 +576,8 @@ HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
 }
 
 HttpResponse WebsideServer::handleNativeDebuggerRoute(
-    const std::vector<std::string>& segments, smalldbg::Thread& thread,
-    int debuggerId) const {
+    const std::vector<std::string>& segments, const HttpRequest& req,
+    smalldbg::Thread& thread, int debuggerId) const {
     HttpResponse res;
 
     if (segments.size() == 2) {
@@ -556,7 +595,12 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
             res.body = session->listFrames(thread);
             return res;
         }
-        bool wantsBindings = (segments.size() > 4 && segments[4] == "bindings");
+        std::string sub = segments.size() > 4 ? segments[4] : "";
+        if (!isKnownFrameSubRoute(sub)) {
+            res.statusCode = 404;
+            res.body = Json::object().set("error", "Unknown sub-route").dump();
+            return res;
+        }
         int index = 0;
         try { index = std::stoi(segments[3]); } catch (...) {
             res.statusCode = 400;
@@ -565,7 +609,7 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
         }
         smalldbg::StackTrace trace(&thread);
         if (trace.unwind(256) != smalldbg::Status::Ok) {
-            res.body = wantsBindings ? "[]" : "{}";
+            res.body = sub.empty() ? "{}" : "[]";
             return res;
         }
         const auto& frames = trace.getFrames();
@@ -574,9 +618,16 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
             res.body = Json::object().set("error", "Frame not found").dump();
             return res;
         }
-        res.body = wantsBindings
-            ? session->getFrameBindings(trace, *frames[index - 1], index)
-            : session->getFrameDetail(trace, *frames[index - 1], index);
+        if (sub == "bindings")
+            res.body = session->getFrameBindings(trace, *frames[index - 1], index);
+        else if (sub == "registers")
+            res.body = session->getFrameRegisters(*frames[index - 1]);
+        else if (sub == "stack") {
+            auto window = stackWindow(req);
+            res.body = session->getFrameStack(trace, index, window.first, window.second);
+        }
+        else
+            res.body = session->getFrameDetail(trace, *frames[index - 1], index);
         return res;
     }
 
@@ -616,9 +667,13 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
             res.body = Json::object().set("error", "Invalid frame index").dump();
             return res;
         }
-        bool wantsBindings = (segments.size() > 4 && segments[4] == "bindings");
-        if (wantsBindings) {
+        std::string sub = segments.size() > 4 ? segments[4] : "";
+        if (sub == "bindings") {
             res.body = session->getSmalltalkFrameBindings(threadIndex, index);
+        } else if (!sub.empty()) {
+            // No per-frame registers or stack for green threads yet.
+            res.statusCode = 404;
+            res.body = Json::object().set("error", "Unknown sub-route").dump();
         } else {
             res.body = session->getSmalltalkFrameDetail(threadIndex, index);
             if (res.body == "{}") {
@@ -1302,11 +1357,16 @@ void WebsideServer::setupBaseRoutes() {
             return res;
         }
         std::string tail = req.path.substr(std::string("/debuggers/1/frames/").size());
-        bool wantsBindings = false;
-        auto bindingsPos = tail.find("/bindings");
-        if (bindingsPos != std::string::npos) {
-            wantsBindings = true;
-            tail = tail.substr(0, bindingsPos);
+        std::string sub;
+        auto slash = tail.find('/');
+        if (slash != std::string::npos) {
+            sub = tail.substr(slash + 1);
+            tail = tail.substr(0, slash);
+        }
+        if (!isKnownFrameSubRoute(sub)) {
+            res.statusCode = 404;
+            res.body = Json::object().set("error", "Unknown sub-route").dump();
+            return res;
         }
         int index = 0;
         try { index = std::stoi(tail); } catch (...) {
@@ -1314,8 +1374,12 @@ void WebsideServer::setupBaseRoutes() {
             res.body = Json::object().set("error", "Invalid frame index").dump();
             return res;
         }
-        if (wantsBindings) {
+        if (sub == "bindings") {
             res.body = getFrameBindings(index);
+        } else if (sub == "registers") {
+            res.body = getFrameRegisters(index);
+        } else if (sub == "stack") {
+            res.body = getFrameStack(index);
         } else {
             res.body = getFrameDetail(index);
             if (res.body == "{}") {

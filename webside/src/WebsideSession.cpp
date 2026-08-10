@@ -70,8 +70,9 @@ std::string WebsideSession::getFrameRegisters(const smalldbg::StackFrame& frame)
     return buildFrameRegistersJson(frame);
 }
 
-std::string WebsideSession::getFrameStack(const smalldbg::StackTrace& trace, int index) const {
-    return buildFrameStackJson(getDebugger(), trace, index - 1);
+std::string WebsideSession::getFrameStack(const smalldbg::StackTrace& trace, int index,
+                                          uint64_t rangeStart, uint64_t rangeEnd) const {
+    return buildFrameStackJson(getDebugger(), trace, index - 1, rangeStart, rangeEnd);
 }
 
 // =========================================================================
@@ -191,18 +192,27 @@ std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& 
 
 std::string WebsideSession::buildFrameStackJson(smalldbg::Debugger* dbg,
                                                 const smalldbg::StackTrace& trace,
-                                                int rawIndex) const {
+                                                int rawIndex,
+                                                uint64_t rangeStart,
+                                                uint64_t rangeEnd) const {
     const auto& rawFrames = trace.getFrames();
     int first = std::max(0, rawIndex - 1);
     int last = std::min(static_cast<int>(rawFrames.size()) - 1, rawIndex + 1);
     size_t ptrSize = rawFrames[0]->registers.pointerSize();
 
-    uint64_t lo = rawFrames[first]->sp();
-    uint64_t hi = rawFrames[last]->fp() + ptrSize * 2;
-    if (hi <= lo || (hi - lo) > 4096) {
-        lo = rawFrames[rawIndex]->sp();
-        hi = rawFrames[rawIndex]->fp() + ptrSize * 2;
-        if (hi <= lo || (hi - lo) > 4096) return "[]";
+    uint64_t lo, hi;
+    if (rangeEnd > rangeStart) {
+        lo = rangeStart & ~(uint64_t)(ptrSize - 1);
+        hi = rangeEnd;
+        if ((hi - lo) > 65536) hi = lo + 65536;
+    } else {
+        lo = rawFrames[first]->sp();
+        hi = rawFrames[last]->fp() + ptrSize * 2;
+        if (hi <= lo || (hi - lo) > 4096) {
+            lo = rawFrames[rawIndex]->sp();
+            hi = rawFrames[rawIndex]->fp() + ptrSize * 2;
+            if (hi <= lo || (hi - lo) > 4096) return "[]";
+        }
     }
 
     size_t byteCount = static_cast<size_t>(hi - lo);

@@ -62,6 +62,8 @@ protected:
     virtual std::string listFrames() const;
     virtual std::string getFrameDetail(int index) const;
     virtual std::string getFrameBindings(int index) const;
+    virtual std::string getFrameRegisters(int index) const;
+    virtual std::string getFrameStack(int index) const;
 
     // ---- class / search data (delegate to the session) ----
     virtual std::string classListData(const std::string& root = "",
@@ -103,8 +105,8 @@ protected:
     // on the thread the id resolves to.
     HttpResponse handleDebuggerRoute(const HttpRequest& req) const;
     HttpResponse handleNativeDebuggerRoute(
-        const std::vector<std::string>& segments, smalldbg::Thread& thread,
-        int debuggerId) const;
+        const std::vector<std::string>& segments, const HttpRequest& req,
+        smalldbg::Thread& thread, int debuggerId) const;
     HttpResponse handleSmalltalkDebuggerRoute(
         const std::vector<std::string>& segments, int threadIndex,
         int debuggerId) const;
