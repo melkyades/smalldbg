@@ -6,6 +6,7 @@ set(WEBSIDE_COMMON
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/MemoryTypeMap.cpp
 )
 
 # Add every subdirectory of src/ that has its own CMakeLists.txt
