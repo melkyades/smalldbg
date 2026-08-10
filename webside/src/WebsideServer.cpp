@@ -16,6 +16,22 @@
 
 namespace webside {
 
+static std::string threadIdHex(uint64_t tid) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "0x%llx", static_cast<unsigned long long>(tid));
+    return buf;
+}
+
+// A human-readable name for a thread: the symbol its PC sits in, which reads
+// as what the thread is currently doing.
+static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread& thread) {
+    smalldbg::Registers regs;
+    if (dbg.getRegisters(&thread, regs) != smalldbg::Status::Ok) return "";
+    auto sym = dbg.getSymbolProvider()->getSymbolByAddress(regs.ip());
+    if (!sym) return "";
+    return (sym->moduleName.empty() ? "" : sym->moduleName + "!") + sym->name;
+}
+
 WebsideServer::WebsideServer(int port) : server(port) {}
 
 void WebsideServer::run() {
@@ -462,6 +478,25 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
 // /debuggers routes
 // =========================================================================
 
+// Primary first, so the id a client remembers stays the main thread.
+std::vector<std::shared_ptr<smalldbg::Thread>>
+WebsideServer::nativeThreads() const {
+    auto* dbg = session->getDebugger();
+    if (!dbg) return {};
+    auto proc = dbg->getProcess();
+    if (!proc) return {};
+
+    auto primary = proc->primaryThread();
+    std::vector<std::shared_ptr<smalldbg::Thread>> ordered;
+    if (primary) ordered.push_back(primary);
+    for (auto& t : proc->threads()) {
+        if (!t) continue;
+        if (!primary || t->getThreadId() != primary->getThreadId())
+            ordered.push_back(t);
+    }
+    return ordered;
+}
+
 HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
     HttpResponse res;
     auto segments = splitPath(req.path);
@@ -485,28 +520,32 @@ HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
         return res;
     }
 
-    if (debuggerId == 1)
-        return handleNativeDebuggerRoute(segments);
+    // Native OS threads are 1..N; green threads are N+1..N+M.
+    auto threads = nativeThreads();
+    int nativeCount = static_cast<int>(threads.size());
+    if (debuggerId >= 1 && debuggerId <= nativeCount)
+        return handleNativeDebuggerRoute(segments, *threads[debuggerId - 1], debuggerId);
 
-    // Debugger 2+: green threads (0-based index = debuggerId - 2)
-    int threadIndex = debuggerId - 2;
+    int threadIndex = debuggerId - nativeCount - 1;  // 0-based green index
     if (threadIndex < 0 || threadIndex >= session->greenThreadCount()) {
         res.statusCode = 404;
         res.body = Json::object().set("error", "Debugger not found").dump();
         return res;
     }
 
-    return handleSmalltalkDebuggerRoute(segments, threadIndex);
+    return handleSmalltalkDebuggerRoute(segments, threadIndex, debuggerId);
 }
 
 HttpResponse WebsideServer::handleNativeDebuggerRoute(
-    const std::vector<std::string>& segments) const {
+    const std::vector<std::string>& segments, smalldbg::Thread& thread,
+    int debuggerId) const {
     HttpResponse res;
 
     if (segments.size() == 2) {
         res.body = Json::object()
-            .set("id", 1)
-            .set("description", "Native stack")
+            .set("id", debuggerId)
+            .set("description", "Native thread " + threadIdHex(thread.getThreadId())
+                              + (debuggerId == 1 ? " (main)" : ""))
             .set("status", stopReason())
             .dump();
         return res;
@@ -514,26 +553,30 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
 
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
-            res.body = listFrames();
+            res.body = session->listFrames(thread);
             return res;
         }
-        std::string tail = segments[3];
         bool wantsBindings = (segments.size() > 4 && segments[4] == "bindings");
         int index = 0;
-        try { index = std::stoi(tail); } catch (...) {
+        try { index = std::stoi(segments[3]); } catch (...) {
             res.statusCode = 400;
             res.body = Json::object().set("error", "Invalid frame index").dump();
             return res;
         }
-        if (wantsBindings) {
-            res.body = getFrameBindings(index);
-        } else {
-            res.body = getFrameDetail(index);
-            if (res.body == "{}") {
-                res.statusCode = 404;
-                res.body = Json::object().set("error", "Frame not found").dump();
-            }
+        smalldbg::StackTrace trace(&thread);
+        if (trace.unwind(256) != smalldbg::Status::Ok) {
+            res.body = wantsBindings ? "[]" : "{}";
+            return res;
         }
+        const auto& frames = trace.getFrames();
+        if (index < 1 || index > static_cast<int>(frames.size())) {
+            res.statusCode = 404;
+            res.body = Json::object().set("error", "Frame not found").dump();
+            return res;
+        }
+        res.body = wantsBindings
+            ? session->getFrameBindings(trace, *frames[index - 1], index)
+            : session->getFrameDetail(trace, *frames[index - 1], index);
         return res;
     }
 
@@ -543,12 +586,13 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
 }
 
 HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
-    const std::vector<std::string>& segments, int threadIndex) const {
+    const std::vector<std::string>& segments, int threadIndex,
+    int debuggerId) const {
     HttpResponse res;
 
     if (segments.size() == 2) {
         res.body = Json::object()
-            .set("id", threadIndex + 2)
+            .set("id", debuggerId)
             .set("description", "Smalltalk: " +
                 session->getGreenThreadName(threadIndex))
             .set("status", stopReason())
@@ -885,7 +929,7 @@ void WebsideServer::setupRoutes() {
         return handleInspect(req);
     });
 
-    // ---- Debuggers: 1 = native stack, 2+ = green threads ----
+    // ---- Debuggers: native OS threads 1..N (primary first), green threads N+1.. ----
     server.route("GET", "/debuggers", [this](const HttpRequest&) {
         HttpResponse res;
         if (!isActive()) {
@@ -893,14 +937,52 @@ void WebsideServer::setupRoutes() {
             return res;
         }
         auto arr = Json::array();
-        arr.add(Json::object()
-            .set("id", 1)
-            .set("description", "Native stack")
-            .set("status", stopReason()));
-        for (int i = 0; i < session->greenThreadCount(); i++) {
+        auto threads = nativeThreads();
+        int id = 1;
+        for (size_t i = 0; i < threads.size(); i++, id++) {
             arr.add(Json::object()
-                .set("id", i + 2)
+                .set("id", id)
+                .set("description", "Native thread " + threadIdHex(threads[i]->getThreadId())
+                                  + (id == 1 ? " (main)" : ""))
+                .set("status", stopReason()));
+        }
+        for (int i = 0; i < session->greenThreadCount(); i++, id++) {
+            arr.add(Json::object()
+                .set("id", id)
                 .set("description", "Smalltalk: " + session->getGreenThreadName(i))
+                .set("status", stopReason()));
+        }
+        res.body = arr.dump();
+        return res;
+    });
+
+    // ---- Threads: native OS threads (+ green threads); debuggerId maps to /debuggers/<id> ----
+    server.route("GET", "/threads", [this](const HttpRequest&) {
+        HttpResponse res;
+        auto* dbg = session->getDebugger();
+        if (!isActive() || !dbg) { res.body = "[]"; return res; }
+        auto current = dbg->getCurrentThread();
+        auto arr = Json::array();
+        auto threads = nativeThreads();
+        int id = 1;
+        for (size_t i = 0; i < threads.size(); i++, id++) {
+            arr.add(Json::object()
+                .set("debuggerId", id)
+                .set("id", threadIdHex(threads[i]->getThreadId()))
+                .set("type", "native")
+                .set("name", threadTopFrameName(*dbg, *threads[i]))
+                .set("isMain", i == 0)
+                .set("isCurrent", current && current->getThreadId() == threads[i]->getThreadId())
+                .set("status", stopReason()));
+        }
+        for (int i = 0; i < session->greenThreadCount(); i++, id++) {
+            arr.add(Json::object()
+                .set("debuggerId", id)
+                .set("id", std::to_string(i + 1))
+                .set("type", "smalltalk")
+                .set("name", session->getGreenThreadName(i))
+                .set("isMain", false)
+                .set("isCurrent", false)
                 .set("status", stopReason()));
         }
         res.body = arr.dump();
@@ -935,6 +1017,14 @@ void WebsideServer::setupRoutes() {
         if (segments.size() >= 5 && segments[2] == "frames") {
             std::string action = segments[4];
             bool success = false;
+
+            // Step the thread this debugger id resolves to, not just primary.
+            int debuggerId = 0;
+            try { debuggerId = std::stoi(segments[1]); } catch (...) {}
+            auto* dbg = session->getDebugger();
+            auto threads = nativeThreads();
+            if (dbg && debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
+                dbg->setCurrentThread(threads[debuggerId - 1]);
 
             if (action == "stepinto")              success = session->step();
             else if (action == "stepover")         success = session->stepOver();

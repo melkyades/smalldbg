@@ -97,12 +97,20 @@ protected:
     virtual void onPostSuspend() {}
     virtual void onPreResume() {}
 
-    // ---- /debuggers routes (debugger 1 = native stack, 2+ = green threads) ----
+    // ---- /debuggers routes ----
+    // Debugger ids: native OS threads are 1..N (primary first), then any
+    // green (Smalltalk) threads are N+1..N+M. Frame walking and stepping act
+    // on the thread the id resolves to.
     HttpResponse handleDebuggerRoute(const HttpRequest& req) const;
     HttpResponse handleNativeDebuggerRoute(
-        const std::vector<std::string>& segments) const;
+        const std::vector<std::string>& segments, smalldbg::Thread& thread,
+        int debuggerId) const;
     HttpResponse handleSmalltalkDebuggerRoute(
-        const std::vector<std::string>& segments, int threadIndex) const;
+        const std::vector<std::string>& segments, int threadIndex,
+        int debuggerId) const;
+
+    // Native OS threads ordered with the primary thread first (id = index+1).
+    std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;
 
     // ---- VM inspector routes (delegate to session->getInspector()) ----
     virtual HttpResponse handleRegions(const HttpRequest& req) const;
