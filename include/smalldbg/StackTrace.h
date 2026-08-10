@@ -11,6 +11,15 @@ namespace smalldbg {
 class Thread;  // Forward declaration
 class StackFrameProcessor;  // Forward declaration
 
+/// A function the compiler folded into another function's code. The debug
+/// info records the call site, so a single physical frame can stand for
+/// several logical calls; DbgEng's `k` prints these as "(Inline)" rows.
+struct InlineFrameInfo {
+    std::string name;
+    std::string moduleName;
+    uint64_t offset{0};   // displacement within the inlined function
+};
+
 /// Processor-specific metadata attached to a frame.
 /// Each processor subtype defines its own derived struct
 /// (e.g. SmalltalkFrameMetadata).  Clients cast based on
@@ -50,7 +59,14 @@ struct StackFrame {
     std::string functionName;    // Resolved function name (if available)
     std::string moduleName;      // Module containing this frame
     uint64_t functionOffset;     // Offset from function start
-    
+    // Entry point of the function. Not always ip()-functionOffset: a frame
+    // parked in a VM stub has an ip outside its own code.
+    Address functionStart{0};
+
+    // True for a synthesized inline frame: it shares the physical frame's
+    // registers, so ip()/fp()/sp() describe the enclosing physical frame.
+    bool inlined = false;
+
     // Source location (if available)
     std::string sourceFile;
     uint32_t sourceLine = 0;

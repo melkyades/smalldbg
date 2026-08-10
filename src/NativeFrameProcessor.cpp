@@ -52,6 +52,7 @@ void NativeFrameProcessor::process(StackFrame& frame, Debugger* debugger) {
         frame.functionName = symbol->name;
         frame.moduleName = symbol->moduleName;
         frame.functionOffset = frame.ip() - symbol->address;
+        frame.functionStart = symbol->address;
     } else {
         frame.functionName = "<unknown>";
         frame.moduleName = "<unknown>";

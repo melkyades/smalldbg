@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Types.h"
+#include "StackTrace.h"      // InlineFrameInfo
 #include "SymbolProvider.h"  // Need full definition for SymbolOptions default parameter
 #include <functional>
 #include <vector>
@@ -86,6 +87,7 @@ public:
     Status getRegisters(Registers &out) const;
     Status getRegisters(const Thread* thread, Registers &out) const;
     Status recoverCallerRegisters(Registers& regs) const;
+    std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp, Address fp) const;
 
     // Logging callback (simple) — optional
     void setLogCallback(std::function<void(const std::string &)> cb);

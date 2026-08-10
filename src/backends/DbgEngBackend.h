@@ -88,6 +88,8 @@ public:
     Status writeMemory(Address address, const void* data, size_t size) override;
     Status getRegisters(Thread* thread, Registers& out) const override;
     Status recoverCallerRegisters(Registers& regs) const override;
+    std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp,
+                                                 Address fp) const override;
 
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
@@ -147,9 +149,11 @@ protected:
     // already on the engine thread runs inline.
     void runOnEngineThread(const std::function<void()>& fn) const;
 
-    // Reads the engine's registers for whatever thread is selected on it.
+    // Register reads and inline-frame expansion, both requiring the engine
+    // thread and the right thread selected on it.
     Status readRegisters(Registers& out) const;
-
+    void collectInlineFrames(Address ip, Address sp, Address fp,
+                             std::vector<InlineFrameInfo>& out) const;
     std::string captureCommandOutput(const std::string& cmd) const;
 
     // Initialise the COM interfaces. Returns false on failure.

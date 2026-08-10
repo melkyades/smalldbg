@@ -168,6 +168,10 @@ Status Debugger::recoverCallerRegisters(Registers& regs) const {
     return backend->recoverCallerRegisters(regs);
 }
 
+std::vector<InlineFrameInfo> Debugger::getInlineFrames(Address ip, Address sp, Address fp) const {
+    return backend->getInlineFrames(ip, sp, fp);
+}
+
 bool Debugger::isAttached() const { return backend->isAttached(); }
 
 std::optional<uintptr_t> Debugger::attachedPid() const { return backend->attachedPid(); }

@@ -54,7 +54,29 @@ Status StackTrace::unwind(size_t maxFrames) {
         
         // Let the processor fill in frame description
         processor->process(*frame, debugger);
-        
+
+        // A physical frame can stand for several logical calls when the
+        // compiler inlined them. Emit those above it (innermost first) so the
+        // frame list matches what the engine's own backtrace shows.
+        if (!frame->metadata) {
+            for (auto& inl : debugger->getInlineFrames(regs.ip(), regs.sp(), regs.fp())) {
+                if (frames.size() >= maxFrames) break;
+                auto synthetic = std::make_unique<StackFrame>();
+                synthetic->registers = frame->registers;
+                synthetic->hasRegisters = frame->hasRegisters;
+                synthetic->thread = thread;
+                synthetic->processor = processor;
+                synthetic->prev = frames.empty() ? nullptr : frames.back().get();
+                synthetic->inlined = true;
+                synthetic->functionName = inl.name;
+                synthetic->moduleName = inl.moduleName;
+                synthetic->functionOffset = inl.offset;
+                synthetic->functionStart = regs.ip() - inl.offset;
+                frames.push_back(std::move(synthetic));
+            }
+            frame->prev = frames.empty() ? nullptr : frames.back().get();
+        }
+
         // Recover caller registers without clobbering the stored frame.
         // unwind() modifies frame->registers in-place, so we save/restore
         // to keep the frame's own register context intact.

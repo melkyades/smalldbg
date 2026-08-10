@@ -804,6 +804,75 @@ Status DbgEngBackend::getRegisters(Thread* thread, Registers& out) const {
 // Stack unwinding via DbgEng
 // ---------------------------------------------------------------------------
 
+// Deep enough for any real inlining chain; the rows past it are physical frames
+// our own walker produces anyway.
+static constexpr ULONG kMaxInlineFrames = 16;
+
+// GetNameByInlineContext yields "module!function".
+static InlineFrameInfo inlineFrameNamed(const std::string& qualified, uint64_t offset) {
+    InlineFrameInfo info;
+    size_t bang = qualified.find('!');
+    if (bang == std::string::npos) {
+        info.name = qualified;
+    } else {
+        info.moduleName = qualified.substr(0, bang);
+        info.name = qualified.substr(bang + 1);
+    }
+    info.offset = offset;
+    return info;
+}
+
+// GetStackTraceEx expands a physical frame into the chain of inlined calls live
+// at its IP. Seeded with the frame's own context, its leading
+// STACK_FRAME_TYPE_INLINE rows are those calls; the rows after them are the
+// physical frame and its callers, which our own walker already produces.
+void DbgEngBackend::collectInlineFrames(Address ip, Address sp, Address fp,
+                                        std::vector<InlineFrameInfo>& out) const {
+    IDebugControl5* control5 = nullptr;
+    IDebugSymbols4* symbols4 = nullptr;
+    if (FAILED(const_cast<IDebugControl4*>(control)->QueryInterface(
+            __uuidof(IDebugControl5), (void**)&control5)))
+        return;
+    if (FAILED(const_cast<IDebugSymbols3*>(symbols)->QueryInterface(
+            __uuidof(IDebugSymbols4), (void**)&symbols4))) {
+        control5->Release();
+        return;
+    }
+
+    DEBUG_STACK_FRAME_EX raw[kMaxInlineFrames] = {};
+    ULONG filled = 0;
+    HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, raw, kMaxInlineFrames, &filled);
+    if (FAILED(hr) && log)
+        log("(dbgeng) GetStackTraceEx failed hr=" + toHex((unsigned long)hr));
+
+    for (ULONG i = 0; SUCCEEDED(hr) && i < filled; i++) {
+        INLINE_FRAME_CONTEXT ctx;
+        ctx.ContextValue = raw[i].InlineFrameContext;
+        if (ctx.FrameType != STACK_FRAME_TYPE_INLINE) break;
+
+        char name[512] = {};
+        ULONG nameSize = 0;
+        ULONG64 displacement = 0;
+        if (FAILED(symbols4->GetNameByInlineContext(
+                raw[i].InstructionOffset, raw[i].InlineFrameContext,
+                name, sizeof(name), &nameSize, &displacement)))
+            break;
+        out.push_back(inlineFrameNamed(name, displacement));
+    }
+
+    symbols4->Release();
+    control5->Release();
+}
+
+std::vector<InlineFrameInfo> DbgEngBackend::getInlineFrames(
+    Address ip, Address sp, Address fp) const
+{
+    std::vector<InlineFrameInfo> result;
+    if (!attached) return result;
+    runOnEngineThread([&]{ collectInlineFrames(ip, sp, fp, result); });
+    return result;
+}
+
 Status DbgEngBackend::recoverCallerRegisters(Registers& regs) const {
     if (!attached) return Status::NotAttached;
 

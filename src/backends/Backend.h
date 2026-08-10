@@ -2,6 +2,7 @@
 
 #include "../../include/smalldbg/Types.h"
 #include "../../include/smalldbg/Process.h"
+#include "../../include/smalldbg/StackTrace.h"
 #include <functional>
 #include <vector>
 #include <optional>
@@ -56,6 +57,12 @@ public:
     // Stack unwinding: restore caller's register state from current frame
     // Returns Status::Ok if successful, Status::Error if no unwind info available
     virtual Status recoverCallerRegisters(Registers& regs) const = 0;
+
+    // Functions inlined into the code at `ip`, innermost first. Needs the
+    // frame's sp/fp because the engine resolves inline call sites against a
+    // frame context. Backends without inline info return nothing.
+    virtual std::vector<InlineFrameInfo> getInlineFrames(
+        Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
 
     virtual bool isAttached() const { return false; }
     std::optional<uintptr_t> attachedPid() const {
