@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <future>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -789,10 +790,13 @@ std::vector<Breakpoint> DbgEngBackend::listBreakpoints() const {
 Status DbgEngBackend::readMemory(Address address, void* outBuf, size_t size) const {
     if (!attached) return Status::NotAttached;
 
-    ULONG bytesRead = 0;
-    HRESULT hr = dataSpaces->ReadVirtual(address, outBuf, static_cast<ULONG>(size), &bytesRead);
-    if (FAILED(hr) || bytesRead != size) return Status::NotFound;
-    return Status::Ok;
+    Status result = Status::Ok;
+    runOnEngineThread([&]{
+        ULONG bytesRead = 0;
+        HRESULT hr = dataSpaces->ReadVirtual(address, outBuf, static_cast<ULONG>(size), &bytesRead);
+        result = (FAILED(hr) || bytesRead != size) ? Status::NotFound : Status::Ok;
+    });
+    return result;
 }
 
 Status DbgEngBackend::writeMemory(Address address, const void* data, size_t size) {
@@ -995,6 +999,7 @@ StopReason DbgEngBackend::waitForEvent(StopReason reason, int timeout_ms) {
 
 void DbgEngBackend::eventLoop() {
     if (log) log("(dbgeng) event loop thread started");
+    eventThreadId = std::this_thread::get_id();
 
     if (!initSession()) return;
 
@@ -1315,13 +1320,48 @@ void DbgEngBackend::registerSymbolBackend() {
 // Phase 2 — Main loop helpers
 // ---------------------------------------------------------------------------
 
+// Tasks run outside the lock: they call into DbgEng and may re-enter the backend.
+void DbgEngBackend::runPendingEngineTasks(std::unique_lock<std::mutex>& lock) {
+    while (!engineTasks.empty()) {
+        auto task = std::move(engineTasks.front());
+        engineTasks.pop_front();
+        lock.unlock();
+        task();
+        lock.lock();
+    }
+}
+
 bool DbgEngBackend::waitForResumeSignal() {
     std::unique_lock<std::mutex> lock(mutex);
-    cv.wait(lock, [this]{ return continueRequested || !running.load(); });
-    if (!running) return false;
-    continueRequested = false;
-    stopReason = StopReason::None;
-    return true;
+    for (;;) {
+        cv.wait(lock, [this]{
+            return continueRequested || !engineTasks.empty() || !running.load();
+        });
+        if (!running) return false;
+
+        runPendingEngineTasks(lock);
+        if (!continueRequested) continue;
+
+        continueRequested = false;
+        stopReason = StopReason::None;
+        return true;
+    }
+}
+
+void DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
+    if (!running || std::this_thread::get_id() == eventThreadId) {
+        fn();
+        return;
+    }
+
+    std::promise<void> done;
+    auto future = done.get_future();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        engineTasks.push_back([&]{ fn(); done.set_value(); });
+    }
+    cv.notify_all();
+    future.wait();
 }
 
 void DbgEngBackend::beginExecution(ULONG& execStatus) {
@@ -1479,8 +1519,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
 // executeCommand — run a raw DbgEng command and return captured output.
 // ---------------------------------------------------------------------------
 
-std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
-    if (!control || !client) return "(no engine)";
+std::string DbgEngBackend::captureCommandOutput(const std::string& cmd) const {
     DbgEngOutputCapture cap;
     IDebugOutputCallbacks* oldCb = nullptr;
     const_cast<IDebugClient5*>(client)->GetOutputCallbacks(&oldCb);
@@ -1489,6 +1528,13 @@ std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
                                                     DEBUG_EXECUTE_NO_REPEAT);
     const_cast<IDebugClient5*>(client)->SetOutputCallbacks(oldCb);
     return cap.text();
+}
+
+std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
+    if (!control || !client) return "(no engine)";
+    std::string out;
+    runOnEngineThread([&]{ out = captureCommandOutput(cmd); });
+    return out;
 }
 
 // ---------------------------------------------------------------------------

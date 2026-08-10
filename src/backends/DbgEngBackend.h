@@ -9,6 +9,8 @@
 #include <condition_variable>
 #include <memory>
 #include <atomic>
+#include <deque>
+#include <functional>
 #include <windows.h>
 #include <dbgeng.h>
 
@@ -124,6 +126,14 @@ public:
     void onModuleUnloaded(ULONG64 base, const char* imageName);
 
 private:
+    // Run a closure on the event-loop thread and block until it finishes.
+    // DbgEng is owned by that thread: a context switch requested from another
+    // one does not take effect, and reads can land on the wrong thread. A call
+    // already on the engine thread runs inline.
+    void runOnEngineThread(const std::function<void()>& fn) const;
+
+    std::string captureCommandOutput(const std::string& cmd) const;
+
     // Initialise the COM interfaces. Returns false on failure.
     bool initInterfaces();
     void releaseInterfaces();
@@ -153,6 +163,7 @@ private:
 
     // Phase 2: main loop helpers
     bool waitForResumeSignal();  // wait for resume/step, false → exit
+    void runPendingEngineTasks(std::unique_lock<std::mutex>& lock);
     void beginExecution(ULONG& execStatus);  // set execution status on engine
     void pumpEvents(ULONG execStatus);       // inner WaitForEvent pump
     enum class EventAction { Continue, Stop, EndOfTrace, SessionEnded };
@@ -181,7 +192,11 @@ private:
 
     // --- Event thread ---
     std::thread eventThread;
+    std::thread::id eventThreadId;
     std::atomic<bool> running{false};
+
+    // Closures marshaled to the event-loop thread (drained in waitForResumeSignal).
+    mutable std::deque<std::function<void()>> engineTasks;
 
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;
@@ -197,7 +212,7 @@ private:
 
     // --- Stop state (protected by mutex) ---
     mutable std::mutex mutex;
-    std::condition_variable cv;
+    mutable std::condition_variable cv;
     bool stopped          = false;
     StopReason stopReason = StopReason::None;
     Address stopAddress   = 0;
