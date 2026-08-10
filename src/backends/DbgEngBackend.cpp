@@ -591,27 +591,8 @@ Status DbgEngBackend::openTrace(const std::string& path) {
 
     if (log) log("(dbgeng) openTrace: using WinDbg Preview dbgeng.dll via OpenDumpFile");
 
-    // Launch the event loop which will do the actual OpenDumpFile + WaitForEvent
-    tracePath = path;
-    initMode = InitMode::OpenTrace;
-    running = true;
-    initDone = false;
-    initOk = false;
-
-    if (eventThread.joinable()) eventThread.join();
-    eventThread = std::thread(&DbgEngBackend::eventLoop, this);
-
-    // Wait for init to complete
-    {
-        std::unique_lock<std::mutex> lock(initMutex);
-        initCv.wait(lock, [this]{ return initDone; });
-    }
-
-    if (!initOk) {
-        // OpenDumpFile failed
+    if (startSession(InitMode::OpenTrace, path) != Status::Ok) {
         if (log) log("(dbgeng) openTrace: DbgEng OpenDumpFile failed");
-        running = false;
-        if (eventThread.joinable()) eventThread.join();
         return Status::Error;
     }
 
@@ -620,6 +601,33 @@ Status DbgEngBackend::openTrace(const std::string& path) {
     return Status::Ok;
 }
 
+// Start the event loop in `mode` and block until it has opened the target.
+Status DbgEngBackend::startSession(InitMode mode, const std::string& target) {
+    tracePath = target;
+    initMode = mode;
+    running = true;
+    initDone = false;
+    initOk = false;
+
+    if (eventThread.joinable()) eventThread.join();
+    eventThread = std::thread(&DbgEngBackend::eventLoop, this);
+
+    {
+        std::unique_lock<std::mutex> lock(initMutex);
+        initCv.wait(lock, [this]{ return initDone; });
+    }
+
+    if (initOk) return Status::Ok;
+
+    running = false;
+    if (eventThread.joinable()) eventThread.join();
+    return Status::Error;
+}
+
+// Crash/WER dumps are handled by the standard system dbgeng.dll (loaded lazily
+// by initInterfaces()).  Unlike TTD traces, no WinDbg Preview engine is
+// required.  The dump is opened as a frozen, read-only process snapshot:
+// registers, memory, modules and stacks are available, but run control is not.
 Status DbgEngBackend::openDump(const std::string& path) {
     if (attached) {
         if (log) log("(dbgeng) openDump: already attached, detach first");
@@ -628,30 +636,8 @@ Status DbgEngBackend::openDump(const std::string& path) {
 
     if (log) log("(dbgeng) openDump: opening " + path);
 
-    // Crash/WER dumps are handled by the standard system dbgeng.dll (loaded
-    // lazily by initInterfaces()).  Unlike TTD traces, no WinDbg Preview
-    // engine is required.  The dump is opened as a frozen, read-only process
-    // snapshot: registers, memory, modules and stacks are available, but run
-    // control (resume/step) is not.
-    tracePath = path;
-    initMode = InitMode::OpenDump;
-    running = true;
-    initDone = false;
-    initOk = false;
-
-    if (eventThread.joinable()) eventThread.join();
-    eventThread = std::thread(&DbgEngBackend::eventLoop, this);
-
-    // Wait for init to complete
-    {
-        std::unique_lock<std::mutex> lock(initMutex);
-        initCv.wait(lock, [this]{ return initDone; });
-    }
-
-    if (!initOk) {
+    if (startSession(InitMode::OpenDump, path) != Status::Ok) {
         if (log) log("(dbgeng) openDump: DbgEng OpenDumpFile failed");
-        running = false;
-        if (eventThread.joinable()) eventThread.join();
         return Status::Error;
     }
 

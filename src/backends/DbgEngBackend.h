@@ -126,6 +126,12 @@ public:
     void onModuleUnloaded(ULONG64 base, const char* imageName);
 
 private:
+    // What the event loop should open when it starts.
+    enum class InitMode { None, Launch, Attach, OpenTrace, OpenDump };
+
+    // Start the event loop in `mode` and block until the target is open.
+    Status startSession(InitMode mode, const std::string& target);
+
     // Ask the event loop to continue the target with a DbgEng execution status.
     // requestStep pins the thread it applies to; requestResume runs them all.
     void requestStep(ULONG execStatus, Thread& thread);
@@ -217,7 +223,6 @@ private:
     std::string launchPath;
     std::vector<std::string> launchArgs;
     uintptr_t attachPid = 0;
-    enum class InitMode { None, Launch, Attach, OpenTrace, OpenDump };
     InitMode initMode = InitMode::None;
     std::string tracePath;  // for InitMode::OpenTrace / InitMode::OpenDump
     bool initOk = false;
