@@ -14,6 +14,7 @@ const char* memTypeName(MemType t) {
     case MemType::StringAscii: return "ascii";
     case MemType::StringUtf16: return "utf16";
     case MemType::StringUtf32: return "utf32";
+    case MemType::Struct:      return "struct";
     }
     return "data1";
 }
@@ -40,8 +41,45 @@ size_t memTypeElementSize(MemType t) {
     case MemType::StringAscii: return 1;
     case MemType::StringUtf16: return 2;
     case MemType::StringUtf32: return 4;
+    case MemType::Struct:      return 0;
     }
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Dialect-defined layouts
+// ---------------------------------------------------------------------------
+
+int MemoryTypeMap::defineStruct(const std::string& name, size_t size) {
+    int existing = structIdNamed(name);
+    if (existing >= 0) {
+        structs[existing].size = size;
+        return existing;
+    }
+    structs.push_back({name, size});
+    return static_cast<int>(structs.size()) - 1;
+}
+
+const StructType* MemoryTypeMap::structType(int id) const {
+    if (id < 0 || id >= static_cast<int>(structs.size())) return nullptr;
+    return &structs[id];
+}
+
+int MemoryTypeMap::structIdNamed(const std::string& name) const {
+    for (size_t i = 0; i < structs.size(); i++)
+        if (structs[i].name == name) return static_cast<int>(i);
+    return -1;
+}
+
+std::string MemoryTypeMap::typeName(const MemTypeRange& range) const {
+    if (const auto* s = structType(range.structId)) return s->name;
+    return memTypeName(range.type);
+}
+
+size_t MemoryTypeMap::elementSize(const MemTypeRange& range) const {
+    if (const auto* s = structType(range.structId))
+        return s->size ? s->size : static_cast<size_t>(range.end - range.start);
+    return memTypeElementSize(range.type);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,18 +101,19 @@ void MemoryTypeMap::erase(std::map<uint64_t, MemTypeRange>& from,
 
         it = from.erase(it);
         if (r.start < start)
-            reinsert.push_back({r.start, start, r.type, r.user});
+            reinsert.push_back({r.start, start, r.type, r.user, r.structId});
         if (r.end > end)
-            reinsert.push_back({end, r.end, r.type, r.user});
+            reinsert.push_back({end, r.end, r.type, r.user, r.structId});
     }
     for (const auto& r : reinsert) from[r.start] = r;
 }
 
 void MemoryTypeMap::insert(std::map<uint64_t, MemTypeRange>& into,
-                           uint64_t start, uint64_t end, MemType type, bool user) {
+                           uint64_t start, uint64_t end, MemType type, bool user,
+                           int structId) {
     if (end <= start) return;
     erase(into, start, end);
-    into[start] = MemTypeRange{start, end, type, user};
+    into[start] = MemTypeRange{start, end, type, user, structId};
 }
 
 const MemTypeRange* MemoryTypeMap::find(const std::map<uint64_t, MemTypeRange>& in,
@@ -87,14 +126,14 @@ const MemTypeRange* MemoryTypeMap::find(const std::map<uint64_t, MemTypeRange>& 
     return nullptr;
 }
 
-void MemoryTypeMap::setDefault(uint64_t start, uint64_t end, MemType type) {
-    insert(defaults, start, end, type, false);
+void MemoryTypeMap::setDefault(uint64_t start, uint64_t end, MemType type, int structId) {
+    insert(defaults, start, end, type, false, structId);
 }
 
 void MemoryTypeMap::clearDefaults() { defaults.clear(); }
 
-void MemoryTypeMap::setUser(uint64_t start, uint64_t end, MemType type) {
-    insert(user, start, end, type, true);
+void MemoryTypeMap::setUser(uint64_t start, uint64_t end, MemType type, int structId) {
+    insert(user, start, end, type, true, structId);
 }
 
 void MemoryTypeMap::clearUser(uint64_t start, uint64_t end) {
@@ -129,20 +168,20 @@ uint64_t MemoryTypeMap::nextUserStart(uint64_t addr, uint64_t hi) const {
 // this alone and never step over a layer it should have seen.
 MemTypeRange MemoryTypeMap::rangeAt(uint64_t addr, uint64_t lo, uint64_t hi) const {
     if (const auto* u = find(user, addr))
-        return {std::max(lo, u->start), std::min(hi, u->end), u->type, true};
+        return {std::max(lo, u->start), std::min(hi, u->end), u->type, true, u->structId};
 
     uint64_t clip = nextUserStart(addr, hi);
 
     MemTypeRange p;
     if (provider && provider(addr, p))
-        return {std::max(lo, p.start), std::min(clip, p.end), p.type, false};
+        return {std::max(lo, p.start), std::min(clip, p.end), p.type, false, p.structId};
 
     if (const auto* d = find(defaults, addr))
-        return {std::max(lo, d->start), std::min(clip, d->end), d->type, false};
+        return {std::max(lo, d->start), std::min(clip, d->end), d->type, false, d->structId};
 
     auto dit = defaults.upper_bound(addr);
     if (dit != defaults.end()) clip = std::min(clip, dit->second.start);
-    return {lo, clip, fallback, false};
+    return {lo, clip, fallback, false, -1};
 }
 
 std::vector<MemTypeRange> MemoryTypeMap::classify(uint64_t start, uint64_t end) const {
@@ -154,11 +193,15 @@ std::vector<MemTypeRange> MemoryTypeMap::classify(uint64_t start, uint64_t end) 
         MemTypeRange r = rangeAt(at, at, end);
         uint64_t next = (r.end > at && r.end <= end) ? r.end : end;
 
-        if (!out.empty() && out.back().type == r.type && out.back().user == r.user
-            && out.back().end == at) {
+        // Struct runs never merge: each instance is its own record.
+        bool extends = !out.empty() && out.back().end == at
+                    && out.back().type == r.type && out.back().user == r.user
+                    && out.back().structId == r.structId
+                    && r.type != MemType::Struct;
+        if (extends) {
             out.back().end = next;
         } else {
-            out.push_back({at, next, r.type, r.user});
+            out.push_back({at, next, r.type, r.user, r.structId});
         }
         at = next;
     }
