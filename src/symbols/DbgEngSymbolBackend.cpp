@@ -174,6 +174,20 @@ void DbgEngSymbolBackend::enumerateSymbols(const std::string& pattern, SymbolCal
     symbols->EndSymbolMatch(handle);
 }
 
+static const char* symbolTypeName(ULONG type) {
+    switch (type) {
+        case DEBUG_SYMTYPE_NONE:     return "none";
+        case DEBUG_SYMTYPE_COFF:     return "coff";
+        case DEBUG_SYMTYPE_CODEVIEW: return "codeview";
+        case DEBUG_SYMTYPE_PDB:      return "pdb";
+        case DEBUG_SYMTYPE_EXPORT:   return "export";
+        case DEBUG_SYMTYPE_DEFERRED: return "deferred";
+        case DEBUG_SYMTYPE_SYM:      return "sym";
+        case DEBUG_SYMTYPE_DIA:      return "dia";
+        default:                     return "unknown";
+    }
+}
+
 void DbgEngSymbolBackend::enumerateModules(ModuleCallback callback) {
     if (!symbols || !callback) return;
 
@@ -192,9 +206,20 @@ void DbgEngSymbolBackend::enumerateModules(ModuleCallback callback) {
         symbols->GetModuleNameString(DEBUG_MODNAME_MODULE, i, 0,
                                      shortBuf, sizeof(shortBuf), nullptr);
 
+        // The symbol file the engine settled on — for a loaded PDB this is the
+        // full path of the .pdb, which is what tells a mismatched/stale PDB
+        // apart from the intended one.
+        char symFileBuf[512] = {};
+        symbols->GetModuleNameString(DEBUG_MODNAME_SYMBOL_FILE, i, 0,
+                                     symFileBuf, sizeof(symFileBuf), nullptr);
+
         ModuleInfo info;
         info.path = nameBuf;
         info.shortName = shortBuf;
+        info.symbolType = symbolTypeName(params.SymbolType);
+        if (params.SymbolType != DEBUG_SYMTYPE_NONE &&
+            params.SymbolType != DEBUG_SYMTYPE_DEFERRED)
+            info.symbolFile = symFileBuf;
         info.loadAddress = static_cast<Address>(params.Base);
         info.endAddress  = static_cast<Address>(params.Base + params.Size);
         info.symbolCount = static_cast<uint64_t>(params.SymbolType != DEBUG_SYMTYPE_NONE ? 1 : 0);

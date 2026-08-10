@@ -52,6 +52,8 @@ struct Breakpoint {
 struct ModuleInfo {
     std::string path;         // File path on disk
     std::string shortName;    // Filename component only
+    std::string symbolFile;   // Symbol file actually in use (PDB path), if any
+    std::string symbolType;   // "pdb", "export", "deferred", "none", ...
     Address loadAddress{0};   // Runtime load address
     Address endAddress{0};    // Upper bound of text segment
     Address slide{0};         // ASLR slide (loadAddress - preferredBase)
