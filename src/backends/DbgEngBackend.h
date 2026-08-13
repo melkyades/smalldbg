@@ -138,10 +138,12 @@ protected:
 
     // Make `thread` the engine's current thread. Must run on the engine thread;
     // selectThreadOnEngine() is the version callable from anywhere.
-    virtual void selectThread(Thread& thread) const;
+    // False when the engine does not know the thread, in which case nothing
+    // was selected and the current selection still stands.
+    virtual bool selectThread(Thread& thread) const;
     void selectThreadOnEngine(Thread& thread) const;
 
-    ULONG engineThreadId(Thread& thread) const;
+    bool engineThreadId(Thread& thread, ULONG& out) const;
 
     // Run a closure on the event-loop thread and block until it finishes.
     // DbgEng is owned by that thread: a context switch requested from another

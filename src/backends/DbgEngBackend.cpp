@@ -1314,19 +1314,20 @@ void DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     future.wait();
 }
 
-ULONG DbgEngBackend::engineThreadId(Thread& thread) const {
-    ULONG engineId = 0;
-    sysObjects->GetThreadIdBySystemId(
-        static_cast<ULONG>(thread.getThreadId()), &engineId);
-    return engineId;
+bool DbgEngBackend::engineThreadId(Thread& thread, ULONG& out) const {
+    HRESULT hr = sysObjects->GetThreadIdBySystemId(
+        static_cast<ULONG>(thread.getThreadId()), &out);
+    return SUCCEEDED(hr);
 }
 
-void DbgEngBackend::selectThread(Thread& thread) const {
-    sysObjects->SetCurrentThreadId(engineThreadId(thread));
+bool DbgEngBackend::selectThread(Thread& thread) const {
+    ULONG engineId = 0;
+    if (!engineThreadId(thread, engineId)) return false;
+    return SUCCEEDED(sysObjects->SetCurrentThreadId(engineId));
 }
 
 void DbgEngBackend::selectThreadOnEngine(Thread& thread) const {
-    runOnEngineThread([&]{ selectThread(thread); });
+    (void)runOnEngineThread([&]{ (void)selectThread(thread); });
 }
 
 void DbgEngBackend::beginExecution(ULONG& execStatus) {

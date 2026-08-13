@@ -8,9 +8,12 @@ namespace smalldbg {
 // A TTD position is global and encodes the thread executing at it, so
 // SetCurrentThreadId does not move the engine; only the command processor's
 // "~<id>s" repositions the replay onto a thread's timeline.
-void TTDBackend::selectThread(Thread& thread) const {
-    std::string command = "~" + std::to_string(engineThreadId(thread)) + "s";
+bool TTDBackend::selectThread(Thread& thread) const {
+    ULONG engineId = 0;
+    if (!engineThreadId(thread, engineId)) return false;
+    std::string command = "~" + std::to_string(engineId) + "s";
     control->Execute(DEBUG_OUTCTL_IGNORE, command.c_str(), DEBUG_EXECUTE_NOT_LOGGED);
+    return true;
 }
 
 // WinDbg Preview's dbgeng.dll has built-in TTD support: it opens .run traces

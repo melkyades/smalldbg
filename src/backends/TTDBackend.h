@@ -23,7 +23,7 @@ public:
     bool isTTDTrace() const override { return true; }
 
 protected:
-    void selectThread(Thread& thread) const override;
+    bool selectThread(Thread& thread) const override;
 };
 
 } // namespace smalldbg
