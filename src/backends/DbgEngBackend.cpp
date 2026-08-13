@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <future>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -31,6 +32,26 @@
 // DO NOT link statically: no #pragma comment(lib, "dbgeng.lib")
 
 typedef HRESULT (STDAPICALLTYPE *PFN_DebugCreate)(REFIID InterfaceId, PVOID* Interface);
+
+namespace {
+
+struct ComReleaser {
+    void operator()(IUnknown* p) const { p->Release(); }
+};
+
+// A COM interface held for the length of a scope.
+template <typename T>
+using ComPtr = std::unique_ptr<T, ComReleaser>;
+
+// The requested interface, or nothing when this engine does not implement it.
+template <typename T, typename From>
+ComPtr<T> queryInterface(From* from) {
+    T* raw = nullptr;
+    if (FAILED(from->QueryInterface(__uuidof(T), (void**)&raw))) return {};
+    return ComPtr<T>(raw);
+}
+
+} // namespace
 
 // The loaded dbgeng module and DebugCreate function pointer
 static HMODULE g_dbgengModule = nullptr;
@@ -828,24 +849,20 @@ static InlineFrameInfo inlineFrameNamed(const std::string& qualified, uint64_t o
 // physical frame and its callers, which our own walker already produces.
 void DbgEngBackend::collectInlineFrames(Address ip, Address sp, Address fp,
                                         std::vector<InlineFrameInfo>& out) const {
-    IDebugControl5* control5 = nullptr;
-    IDebugSymbols4* symbols4 = nullptr;
-    if (FAILED(const_cast<IDebugControl4*>(control)->QueryInterface(
-            __uuidof(IDebugControl5), (void**)&control5)))
-        return;
-    if (FAILED(const_cast<IDebugSymbols3*>(symbols)->QueryInterface(
-            __uuidof(IDebugSymbols4), (void**)&symbols4))) {
-        control5->Release();
-        return;
-    }
+    auto control5 = queryInterface<IDebugControl5>(control);
+    if (!control5) return;
+    auto symbols4 = queryInterface<IDebugSymbols4>(symbols);
+    if (!symbols4) return;
 
     DEBUG_STACK_FRAME_EX raw[kMaxInlineFrames] = {};
     ULONG filled = 0;
     HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, raw, kMaxInlineFrames, &filled);
-    if (FAILED(hr) && log)
-        log("(dbgeng) GetStackTraceEx failed hr=" + toHex((unsigned long)hr));
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) GetStackTraceEx failed hr=" + toHex((unsigned long)hr));
+        return;
+    }
 
-    for (ULONG i = 0; SUCCEEDED(hr) && i < filled; i++) {
+    for (ULONG i = 0; i < filled; i++) {
         INLINE_FRAME_CONTEXT ctx;
         ctx.ContextValue = raw[i].InlineFrameContext;
         if (ctx.FrameType != STACK_FRAME_TYPE_INLINE) break;
@@ -859,9 +876,6 @@ void DbgEngBackend::collectInlineFrames(Address ip, Address sp, Address fp,
             break;
         out.push_back(inlineFrameNamed(name, displacement));
     }
-
-    symbols4->Release();
-    control5->Release();
 }
 
 std::vector<InlineFrameInfo> DbgEngBackend::getInlineFrames(
