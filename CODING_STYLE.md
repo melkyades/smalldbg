@@ -1,6 +1,6 @@
 # SmallDBG Coding Style
 
-C++17, MSVC / GCC / Clang.  Keep things simple and readable.
+C++20, MSVC / GCC / Clang.  Keep things simple and readable.
 
 ## Naming
 
@@ -138,6 +138,42 @@ using UniqueHandle = std::unique_ptr<void, HandleCloser>;
 - When a parameter is unused, cast to void: `(void)param;`
   or use unnamed parameter: `void foo(int /*unused*/)`.
 
+One loop per function.  A loop inside a loop is two functions: name the
+inner one and hand it the element.  A loop body should ideally be a single
+call taking the element, plus whatever else that call needs.
+
+```cpp
+// Good
+void StackTrace::appendInlinedFrames(const StackFrame& physical, Address ip,
+                                     const std::vector<InlineFrameInfo>& inlined,
+                                     size_t maxFrames) {
+    for (const auto& one : inlined) {
+        if (frames.size() >= maxFrames) break;
+        frames.push_back(inlinedFrameFor(physical, ip, one));
+    }
+}
+```
+
+Check for failure and return early.  Never put the work in an `else`: the
+happy path stays at one level of indentation no matter how many ways the
+call can fail.
+
+```cpp
+// Good
+auto control5 = queryInterface<IDebugControl5>(control);
+if (!control5) return;
+auto symbols4 = queryInterface<IDebugSymbols4>(symbols);
+if (!symbols4) return;
+// ... the work, unindented
+
+// Bad
+if (control5) {
+    if (symbols4) {
+        // ... the work, buried
+    }
+}
+```
+
 ## Error Handling
 
 - No exceptions.  Use `Status` enum returns.
@@ -162,8 +198,8 @@ using UniqueHandle = std::unique_ptr<void, HandleCloser>;
 
 ## Miscellaneous
 
-- C++17 standard (`std::optional`, structured bindings, `if constexpr`, etc.).
-- Build system: CMake (minimum 3.10).
+- C++20 standard (`std::optional`, structured bindings, `if constexpr`, etc.).
+- Build system: CMake (minimum 3.15).
 - No RTTI.  No exceptions.  Keep dependencies minimal.
 - Prefer `enum class` over plain `enum`.
 - Comments: `//` for single-line, `///` for doc/Doxygen-style.
