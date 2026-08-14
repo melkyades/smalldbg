@@ -142,7 +142,7 @@ static MethodNames parseMethodHeader(const std::string& src) {
 
 EggDebugSession::EggDebugSession() {
     debugger = std::make_unique<smalldbg::Debugger>(
-        smalldbg::Mode::External, smalldbg::ARM64::instance());
+        smalldbg::Mode::External, smalldbg::hostArch());
 
     debugger->setLogCallback([](const std::string& msg) {
         std::cerr << "[dbg] " << msg << std::endl;

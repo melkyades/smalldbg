@@ -104,4 +104,16 @@ public:
     static ARM64* instance() { static ARM64 inst; return &inst; }
 };
 
+/// The architecture this build runs on, which is the only one it can debug:
+/// a debugger and its target must match, WoW64 aside.
+inline const Arch* hostArch() {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    return ARM64::instance();
+#elif defined(_M_IX86) || defined(__i386__)
+    return X86::instance();
+#else
+    return X64::instance();
+#endif
+}
+
 } // namespace smalldbg

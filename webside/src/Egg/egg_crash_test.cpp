@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
     std::cout << "Launching: " << eggPath << std::endl;
     for (auto& a : args) std::cout << "  arg: " << a << std::endl;
 
-    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::ARM64::instance());
+    smalldbg::Debugger dbg(smalldbg::Mode::External, smalldbg::hostArch());
 
     dbg.setLogCallback([](const std::string& msg) {
         std::cerr << "[dbg] " << msg << std::endl;
