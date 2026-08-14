@@ -819,10 +819,25 @@ HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
         std::vector<uint8_t> buf(totalBytes, 0);
         process->readMemory(addr, buf.data(), totalBytes);
 
+        // A 64-bit value does not survive JSON's number type intact, so a
+        // client that needs it exact asks for hex.
+        bool asHex = false;
+        auto formatIt = req.params.find("format");
+        if (formatIt != req.params.end()) asHex = formatIt->second == "hex";
+
         auto values = Json::array();
         int actualCount = static_cast<int>(totalBytes / unitSize);
-        for (int i = 0; i < actualCount; i++)
-            values.add(readTypedValue(buf.data() + i * unitSize, unitSize, isSigned));
+        for (int i = 0; i < actualCount; i++) {
+            const uint8_t* unit = buf.data() + i * unitSize;
+            if (!asHex) {
+                values.add(readTypedValue(unit, unitSize, isSigned));
+                continue;
+            }
+            uint64_t raw = 0;
+            std::memcpy(&raw, unit, unitSize);
+            values.add(unitSize <= 4 ? Json::hex(static_cast<uint32_t>(raw))
+                                     : Json::hex(raw));
+        }
 
         result.set("type", type);
         result.set("values", values);
