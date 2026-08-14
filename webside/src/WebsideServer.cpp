@@ -1044,7 +1044,7 @@ void WebsideServer::setupRoutes() {
         const bool stopped = dbg->isStopped();
         int id = 1;
         for (size_t i = 0; i < threads.size(); i++, id++) {
-            arr.add(Json::object()
+            auto entry = Json::object()
                 .set("debuggerId", id)
                 .set("id", threadIdHex(threads[i]->getThreadId()))
                 .set("type", "native")
@@ -1052,7 +1052,12 @@ void WebsideServer::setupRoutes() {
                                      : std::string())
                 .set("isMain", i == 0)
                 .set("isCurrent", current && current->getThreadId() == threads[i]->getThreadId())
-                .set("status", stopReason()));
+                .set("status", stopReason());
+            std::string green =
+                stopped ? session->greenThreadOn(threads[i]->getThreadId())
+                        : std::string();
+            if (!green.empty()) entry.set("runs", green);
+            arr.add(std::move(entry));
         }
         for (int i = 0; i < session->greenThreadCount(); i++, id++) {
             arr.add(Json::object()

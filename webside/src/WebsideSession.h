@@ -74,6 +74,8 @@ public:
     virtual std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const = 0;
     virtual std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const = 0;
     virtual std::string getSmalltalkStackContents(int threadIndex) const = 0;
+    /// The green thread this OS thread is currently executing, if any.
+    virtual std::string greenThreadOn(uint64_t /*nativeThreadId*/) const { return {}; }
 
     // ---- class browsing ----
     virtual bool discoverClasses() = 0;
