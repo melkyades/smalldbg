@@ -85,9 +85,11 @@ std::string WebsideSession::getFrameRegisters(const smalldbg::StackFrame& frame)
     return buildFrameRegistersJson(frame);
 }
 
-std::string WebsideSession::getFrameStack(const smalldbg::StackTrace& trace, int index,
-                                          uint64_t rangeStart, uint64_t rangeEnd) const {
-    return buildFrameStackJson(getDebugger(), trace, index - 1, rangeStart, rangeEnd);
+std::string WebsideSession::stackDescriptors(const smalldbg::StackTrace& trace,
+                                             int selectedIndex,
+                                             uint64_t from, int slots) const {
+    uint64_t to = from + static_cast<uint64_t>(slots) * pointerSize();
+    return buildStackDescriptorsJson(getDebugger(), trace, selectedIndex, from, to);
 }
 
 // =========================================================================
@@ -219,45 +221,36 @@ std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& 
     return arr.dump();
 }
 
-std::string WebsideSession::buildFrameStackJson(smalldbg::Debugger* dbg,
-                                                const smalldbg::StackTrace& trace,
-                                                int rawIndex,
-                                                uint64_t rangeStart,
-                                                uint64_t rangeEnd) const {
-    const auto& rawFrames = trace.getFrames();
-    int first = std::max(0, rawIndex - 1);
-    int last = std::min(static_cast<int>(rawFrames.size()) - 1, rawIndex + 1);
-    size_t ptrSize = rawFrames[0]->registers.pointerSize();
+void WebsideSession::describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
+                                        int frameIndex, int selectedIndex, size_t slot,
+                                        uint64_t from, uint64_t to) const {
+    int rel = frameIndex < selectedIndex ? -1 : frameIndex == selectedIndex ? 0 : 1;
+    auto describe = [&](uint64_t address, const char* role) {
+        if (address < from || address >= to) return;
+        out.add(Json::object()
+            .set("address", addressHex(address))
+            .set("frameIndex", frameIndex)
+            .set("frameRel", rel)
+            .set("role", role));
+    };
+    describe(frame.sp(), "sp");
+    describe(frame.fp(), "fp");
+    describe(frame.fp() + slot, "retAddr");
+}
 
-    uint64_t lo, hi;
-    if (rangeEnd > rangeStart) {
-        lo = rangeStart & ~(uint64_t)(ptrSize - 1);
-        hi = rangeEnd;
-        if ((hi - lo) > 65536) hi = lo + 65536;
-    } else {
-        lo = rawFrames[first]->sp();
-        hi = rawFrames[last]->fp() + ptrSize * 2;
-        if (hi <= lo || (hi - lo) > 4096) {
-            lo = rawFrames[rawIndex]->sp();
-            hi = rawFrames[rawIndex]->fp() + ptrSize * 2;
-            if (hi <= lo || (hi - lo) > 4096) return "[]";
-        }
-    }
-
-    size_t byteCount = static_cast<size_t>(hi - lo);
-    std::vector<uint8_t> buf(byteCount);
-    if (dbg->readMemory(lo, buf.data(), byteCount) != smalldbg::Status::Ok)
-        return "[]";
-
+std::string WebsideSession::buildStackDescriptorsJson(smalldbg::Debugger* /*dbg*/,
+                                                      const smalldbg::StackTrace& trace,
+                                                      int selectedIndex,
+                                                      uint64_t from,
+                                                      uint64_t to) const {
+    const auto& frames = trace.getFrames();
+    size_t slot = pointerSize();
     auto arr = Json::array();
-    for (uint64_t addr = lo; addr < hi; addr += ptrSize) {
-        uint64_t val = 0;
-        size_t off = static_cast<size_t>(addr - lo);
-        std::memcpy(&val, &buf[off], std::min(ptrSize, byteCount - off));
-        arr.add(Json::object()
-            .set("address", Json::hex(ptrSize == 4 ? static_cast<uint32_t>(addr) : addr))
-            .set("value", Json::hex(ptrSize == 4 ? static_cast<uint32_t>(val) : val)));
-    }
+
+    for (size_t i = 0; i < frames.size(); i++)
+        describeFrameSlots(arr, *frames[i], static_cast<int>(i + 1), selectedIndex,
+                           slot, from, to);
+
     return arr.dump();
 }
 

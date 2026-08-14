@@ -63,7 +63,10 @@ protected:
     virtual std::string getFrameDetail(int index) const;
     virtual std::string getFrameBindings(int index) const;
     virtual std::string getFrameRegisters(int index) const;
-    virtual std::string getFrameStack(int index) const;
+    /// What the addresses in [from, to) mean on the current stack. Contents
+    /// come from /memory; this says which frame owns a slot and what it holds.
+    virtual std::string stackDescriptors(int selectedIndex, uint64_t from,
+                                         int slots) const;
 
     // ---- class / search data (delegate to the session) ----
     virtual std::string classListData(const std::string& root = "",

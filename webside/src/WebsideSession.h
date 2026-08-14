@@ -71,10 +71,11 @@ public:
     /// are not padded out to 16 digits.
     Json addressHex(uint64_t address) const;
 
-    /// Raw stack slots around frame `index`. `rangeStart`/`rangeEnd` page an
-    /// explicit address window (for scrolling); 0/0 picks the default window.
-    std::string getFrameStack(const smalldbg::StackTrace& trace, int index,
-                              uint64_t rangeStart = 0, uint64_t rangeEnd = 0) const;
+    /// What the addresses in [from, to) mean in terms of the frames on this
+    /// stack. Contents come from /memory; this says which frame owns a slot
+    /// and what it holds. Addresses inside no frame are simply absent.
+    std::string stackDescriptors(const smalldbg::StackTrace& trace, int selectedIndex,
+                                 uint64_t from, int slots) const;
 
     // ---- green threads (Smalltalk-level) ----
     virtual void refreshGreenThreads() = 0;
@@ -154,12 +155,19 @@ protected:
     /// JSON register dump for one frame (arch-aware).
     virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
 
-    /// JSON view of the raw stack memory around a frame (reads target memory).
-    virtual std::string buildFrameStackJson(smalldbg::Debugger* dbg,
-                                            const smalldbg::StackTrace& trace,
-                                            int rawIndex,
-                                            uint64_t rangeStart,
-                                            uint64_t rangeEnd) const;
+    /// Descriptors for the slots of one frame that fall in [from, to).
+    void describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
+                            int frameIndex, int selectedIndex, size_t slot,
+                            uint64_t from, uint64_t to) const;
+
+    /// One descriptor per meaningful address in [from, to). The base names the
+    /// slots any frame-pointer ABI has; dialects add what their own frame
+    /// layout means and may read the target to describe a slot's value.
+    virtual std::string buildStackDescriptorsJson(smalldbg::Debugger* dbg,
+                                                  const smalldbg::StackTrace& trace,
+                                                  int selectedIndex,
+                                                  uint64_t from,
+                                                  uint64_t to) const;
 };
 
 } // namespace webside

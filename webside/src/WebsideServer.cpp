@@ -23,22 +23,13 @@ static std::string threadIdHex(uint64_t tid) {
 }
 
 static bool isKnownFrameSubRoute(const std::string& sub) {
-    return sub.empty() || sub == "bindings" || sub == "registers" || sub == "stack";
+    return sub.empty() || sub == "bindings" || sub == "registers";
 }
 
 static uint64_t param64(const HttpRequest& req, const char* key, uint64_t dflt = 0) {
     auto it = req.params.find(key);
     if (it == req.params.end()) return dflt;
     try { return std::stoull(it->second, nullptr, 0); } catch (...) { return dflt; }
-}
-
-// Optional address window so a client can scroll the stack: from/to, or from
-// plus a slot count. Zeroes mean "use the window around the frame itself".
-static std::pair<uint64_t, uint64_t> stackWindow(const HttpRequest& req) {
-    uint64_t from = param64(req, "from");
-    uint64_t to = param64(req, "to");
-    if (from != 0 && to == 0) to = from + param64(req, "count", 256);
-    return {from, to};
 }
 
 // The symbol the thread's PC sits in. Needs a stopped target: reading the
@@ -174,14 +165,13 @@ std::string WebsideServer::getFrameRegisters(int index) const {
     return session->getFrameRegisters(*frames[index - 1]);
 }
 
-std::string WebsideServer::getFrameStack(int index) const {
+std::string WebsideServer::stackDescriptors(int selectedIndex, uint64_t from,
+                                           int slots) const {
     auto thread = session->primaryThread();
     if (!thread) return "[]";
     smalldbg::StackTrace trace(thread.get());
     if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    const auto& frames = trace.getFrames();
-    if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
-    return session->getFrameStack(trace, index);
+    return session->stackDescriptors(trace, selectedIndex, from, slots);
 }
 
 // =========================================================================
@@ -612,6 +602,13 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
         return res;
     }
 
+    if (segments[2] == "stack") {
+        res.body = stackDescriptors(static_cast<int>(param64(req, "frame", 1)),
+                                    param64(req, "address"),
+                                    static_cast<int>(param64(req, "count", 64)));
+        return res;
+    }
+
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
             res.body = session->listFrames(thread);
@@ -644,10 +641,6 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
             res.body = session->getFrameBindings(trace, *frames[index - 1], index);
         else if (sub == "registers")
             res.body = session->getFrameRegisters(*frames[index - 1]);
-        else if (sub == "stack") {
-            auto window = stackWindow(req);
-            res.body = session->getFrameStack(trace, index, window.first, window.second);
-        }
         else
             res.body = session->getFrameDetail(trace, *frames[index - 1], index);
         return res;
@@ -1422,8 +1415,6 @@ void WebsideServer::setupBaseRoutes() {
             res.body = getFrameBindings(index);
         } else if (sub == "registers") {
             res.body = getFrameRegisters(index);
-        } else if (sub == "stack") {
-            res.body = getFrameStack(index);
         } else {
             res.body = getFrameDetail(index);
             if (res.body == "{}") {
