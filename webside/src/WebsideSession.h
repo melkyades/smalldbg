@@ -87,6 +87,9 @@ public:
     virtual std::string getSmalltalkStackContents(int threadIndex) const = 0;
     /// The green thread this OS thread is currently executing, if any.
     virtual std::string greenThreadOn(uint64_t /*nativeThreadId*/) const { return {}; }
+    /// Registers for one green-thread frame. A dialect whose activations are
+    /// not native frames has nothing to say here.
+    virtual std::string getSmalltalkFrameRegisters(int, int) const { return "[]"; }
 
     // ---- class browsing ----
     virtual bool discoverClasses() = 0;

@@ -685,8 +685,9 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
         std::string sub = segments.size() > 4 ? segments[4] : "";
         if (sub == "bindings") {
             res.body = session->getSmalltalkFrameBindings(threadIndex, index);
+        } else if (sub == "registers") {
+            res.body = session->getSmalltalkFrameRegisters(threadIndex, index);
         } else if (!sub.empty()) {
-            // No per-frame registers or stack for green threads yet.
             res.statusCode = 404;
             res.body = Json::object().set("error", "Unknown sub-route").dump();
         } else {
