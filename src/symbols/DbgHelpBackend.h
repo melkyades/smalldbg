@@ -1,8 +1,8 @@
 // DbgHelp symbol backend for Windows
 #pragma once
 
-#include "../../include/smalldbg/SymbolBackend.h"
-#include "../../include/smalldbg/SymbolProvider.h"
+#include "../../include/smalldbg/symbols/SymbolSource.h"
+#include "../../include/smalldbg/symbols/SymbolProvider.h"
 #include <windows.h>
 #include <string>
 

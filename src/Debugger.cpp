@@ -1,7 +1,7 @@
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackFrameProcessor.h"
 #include "smalldbg/NativeFrameProcessor.h"
 #include <algorithm>

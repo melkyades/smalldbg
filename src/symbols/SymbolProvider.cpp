@@ -1,4 +1,4 @@
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackTrace.h"
 #include "backends/Backend.h"
 

@@ -1,6 +1,6 @@
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Thread.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackTrace.h"
 #include <iostream>
 #include <iomanip>

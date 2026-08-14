@@ -1,6 +1,6 @@
 // Example demonstrating symbol resolution
 #include "smalldbg/Debugger.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/Process.h"
 #include <iostream>
 #include <iomanip>

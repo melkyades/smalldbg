@@ -2,7 +2,7 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/StackTrace.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 
 namespace smalldbg {
 

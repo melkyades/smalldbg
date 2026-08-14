@@ -4,7 +4,7 @@
 // (DWARF line-table walking is not yet implemented).
 #pragma once
 
-#include "../../include/smalldbg/SymbolProvider.h"
+#include "../../include/smalldbg/symbols/SymbolProvider.h"
 #include <optional>
 #include <string>
 

@@ -35,7 +35,7 @@ add_library(smalldbg STATIC
     src/Debugger.cpp
     src/Process.cpp
     src/Thread.cpp
-    src/SymbolProvider.cpp
+    src/symbols/SymbolProvider.cpp
     src/StackTrace.cpp
     src/StackFrame.cpp
     src/LocalVariable.cpp

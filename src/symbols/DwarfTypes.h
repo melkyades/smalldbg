@@ -4,7 +4,7 @@
 // subprogram local variable / parameter locations.
 #pragma once
 
-#include "../../include/smalldbg/SymbolProvider.h"
+#include "../../include/smalldbg/symbols/SymbolProvider.h"
 #include "../../include/smalldbg/Types.h"
 #include <string>
 #include <vector>

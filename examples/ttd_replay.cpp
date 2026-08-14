@@ -10,7 +10,7 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/StackTrace.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>

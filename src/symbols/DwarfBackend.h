@@ -1,7 +1,7 @@
 // DWARF symbol backend for macOS/Linux (POSIX)
 #pragma once
 
-#include "../../include/smalldbg/SymbolBackend.h"
+#include "../../include/smalldbg/symbols/SymbolSource.h"
 #include "DwarfTypes.h"
 #include <vector>
 #include <memory>

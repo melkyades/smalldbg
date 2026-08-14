@@ -3,7 +3,7 @@
 
 #include "Types.h"
 #include "StackTrace.h"      // InlineFrameInfo
-#include "SymbolProvider.h"  // Need full definition for SymbolOptions default parameter
+#include "symbols/SymbolProvider.h"  // Need full definition for SymbolOptions default parameter
 #include <functional>
 #include <vector>
 #include <optional>

@@ -8,7 +8,7 @@
 #include "SymbolsInternal.h"
 #include "ObjectFileParser.h"
 #include "../backends/Backend.h"
-#include "../../include/smalldbg/SymbolProvider.h"
+#include "../../include/smalldbg/symbols/SymbolProvider.h"
 #include "../../include/smalldbg/StackTrace.h"
 #include "../platform/SourceResolver.h"
 #include <algorithm>

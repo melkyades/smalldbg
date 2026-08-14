@@ -1,8 +1,8 @@
 // Symbol provider abstraction - manages multiple symbol backends
 #pragma once
 
-#include "Types.h"
-#include "SymbolBackend.h"
+#include "../Types.h"
+#include "SymbolSource.h"
 #include <string>
 #include <vector>
 #include <memory>

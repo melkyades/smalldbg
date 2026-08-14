@@ -1,7 +1,7 @@
 // Symbol backend interface - allows plugging in different symbol resolution systems
 #pragma once
 
-#include "Types.h"
+#include "../Types.h"
 #include <string>
 #include <optional>
 #include <vector>

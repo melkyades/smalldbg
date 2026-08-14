@@ -1,6 +1,6 @@
 #include "smalldbg/NativeFrameProcessor.h"
 #include "smalldbg/StackTrace.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/Debugger.h"
 
 namespace smalldbg {

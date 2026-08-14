@@ -10,7 +10,7 @@
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
-#include "smalldbg/SymbolProvider.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 #include "../symbols/DwarfBackend.h"
 #include <cstring>
 #include <algorithm>
