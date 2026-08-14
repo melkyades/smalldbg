@@ -20,11 +20,12 @@ class StackFrameProcessor;
 
 // Whether an engine call was refused on this thread because the debuggee was
 // running. Recorded per-thread so that a caller serving one request at a time
-// can ask, afterwards, whether what it just produced was actually complete --
-// without every layer in between having to forward a Status it does not care
-// about. `consumeEngineBusy` clears the flag as it reads it.
+// can clear it, do the work, and ask afterwards whether what it produced was
+// actually complete, without every layer in between forwarding a Status it
+// does not care about.
 void markEngineBusy();
-bool consumeEngineBusy();
+void clearEngineBusy();
+bool engineWasBusy();
 
 class Debugger {
 public:

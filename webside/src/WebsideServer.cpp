@@ -53,9 +53,25 @@ static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread&
 
 WebsideServer::WebsideServer(int port) : server(port) {}
 
+// A refused handler still answers something shaped like the truth, an empty
+// list or a zeroed read, which a client cannot tell from the real thing.
+static HttpResponse answerOrConflict(const HttpRequest& request,
+                                     const HttpHandler& handler) {
+    smalldbg::clearEngineBusy();
+    HttpResponse response = handler(request);
+    if (!smalldbg::engineWasBusy()) return response;
+
+    HttpResponse conflict;
+    conflict.statusCode = 409;
+    conflict.statusMessage = "Conflict";
+    conflict.body = "{\"error\":\"debuggee is running\"}";
+    return conflict;
+}
+
 void WebsideServer::run() {
     setupBaseRoutes();
     setupRoutes();
+    server.setHandlerWrapper(answerOrConflict);
     server.run();
 }
 

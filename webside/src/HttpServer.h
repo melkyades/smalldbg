@@ -42,6 +42,10 @@ public:
     // Register a prefix route handler (matches all paths starting with prefix)
     void routePrefix(const std::string& method, const std::string& pathPrefix, HttpHandler handler);
 
+    // Runs in place of every handler, and decides the response it returns.
+    using HandlerWrapper = std::function<HttpResponse(const HttpRequest&, const HttpHandler&)>;
+    void setHandlerWrapper(HandlerWrapper wrapper);
+
     // Start the server (blocking)
     void run();
 
@@ -52,7 +56,8 @@ public:
 
 private:
     HttpResponse dispatch(const HttpRequest& request);
-    std::string getRouteKey(const std::string& method, const std::string& path);
+    const HttpHandler* handlerFor(const HttpRequest& request) const;
+    std::string getRouteKey(const std::string& method, const std::string& path) const;
 
     int port;
     std::unique_ptr<httplib::Server> server;
@@ -63,6 +68,7 @@ private:
     // cannot stall the accept loop, but handlers stay strictly serialized:
     // the debug session they drive serves one request at a time.
     std::mutex handlerMutex;
+    HandlerWrapper handlerWrapper;
 };
 
 } // namespace webside

@@ -24,11 +24,9 @@ thread_local bool engineBusy = false;
 
 void markEngineBusy() { engineBusy = true; }
 
-bool consumeEngineBusy() {
-    bool was = engineBusy;
-    engineBusy = false;
-    return was;
-}
+void clearEngineBusy() { engineBusy = false; }
+
+bool engineWasBusy() { return engineBusy; }
 
 Debugger::Debugger(Mode m, const Arch* arch)
     : backend(nullptr), symbolProvider(nullptr), mode(m),

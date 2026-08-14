@@ -66,6 +66,10 @@ void HttpServer::routePrefix(const std::string& method, const std::string& pathP
     prefixRoutes[getRouteKey(method, pathPrefix)] = handler;
 }
 
+void HttpServer::setHandlerWrapper(HandlerWrapper wrapper) {
+    handlerWrapper = std::move(wrapper);
+}
+
 void HttpServer::run() {
     server->set_read_timeout(kTimeoutSeconds);
     server->set_write_timeout(kTimeoutSeconds);
@@ -109,57 +113,50 @@ void HttpServer::stop() {
     server->stop();
 }
 
+// Exact match, else the longest prefix ending at a segment boundary.
+const HttpHandler* HttpServer::handlerFor(const HttpRequest& request) const {
+    std::string routeKey = getRouteKey(request.method, request.path);
+
+    auto exact = routes.find(routeKey);
+    if (exact != routes.end()) return &exact->second;
+
+    const HttpHandler* best = nullptr;
+    size_t bestLength = 0;
+    for (const auto& [key, handler] : prefixRoutes) {
+        if (routeKey.compare(0, key.length(), key) != 0) continue;
+        if (routeKey.length() != key.length() && routeKey[key.length()] != '/') continue;
+        if (key.length() < bestLength) continue;
+        best = &handler;
+        bestLength = key.length();
+    }
+    return best;
+}
+
 HttpResponse HttpServer::dispatch(const HttpRequest& request) {
     // Handlers drive the debug session, which serves one request at a time.
     std::lock_guard<std::mutex> serialize(handlerMutex);
 
-    // Find handler
-    std::string routeKey = getRouteKey(request.method, request.path);
-    HttpResponse response;
-
-    auto it = routes.find(routeKey);
-    if (it != routes.end()) {
-        try {
-            response = it->second(request);
-        } catch (const std::exception& e) {
-            response.statusCode = 500;
-            response.statusMessage = "Internal Server Error";
-            response.body = "{\"error\":\"" + std::string(e.what()) + "\"}";
-        }
-    } else {
-        // Try prefix route matching (longest prefix first)
-        std::string bestMatch;
-        for (auto& [key, handler] : prefixRoutes) {
-            if (routeKey.length() >= key.length() &&
-                routeKey.substr(0, key.length()) == key &&
-                key.length() > bestMatch.length()) {
-                // Ensure match is at path boundary
-                if (routeKey.length() == key.length() ||
-                    routeKey[key.length()] == '/') {
-                    bestMatch = key;
-                }
-            }
-        }
-        if (!bestMatch.empty()) {
-            auto pit = prefixRoutes.find(bestMatch);
-            try {
-                response = pit->second(request);
-            } catch (const std::exception& e) {
-                response.statusCode = 500;
-                response.statusMessage = "Internal Server Error";
-                response.body = "{\"error\":\"" + std::string(e.what()) + "\"}";
-            }
-        } else {
-            response.statusCode = 404;
-            response.statusMessage = "Not Found";
-            response.body = "{\"error\":\"Route not found\"}";
-        }
+    const HttpHandler* handler = handlerFor(request);
+    if (!handler) {
+        HttpResponse missing;
+        missing.statusCode = 404;
+        missing.statusMessage = "Not Found";
+        missing.body = "{\"error\":\"Route not found\"}";
+        return missing;
     }
 
-    return response;
+    try {
+        return handlerWrapper ? handlerWrapper(request, *handler) : (*handler)(request);
+    } catch (const std::exception& e) {
+        HttpResponse failed;
+        failed.statusCode = 500;
+        failed.statusMessage = "Internal Server Error";
+        failed.body = "{\"error\":\"" + std::string(e.what()) + "\"}";
+        return failed;
+    }
 }
 
-std::string HttpServer::getRouteKey(const std::string& method, const std::string& path) {
+std::string HttpServer::getRouteKey(const std::string& method, const std::string& path) const {
     return method + " " + path;
 }
 
