@@ -41,8 +41,8 @@ static std::pair<uint64_t, uint64_t> stackWindow(const HttpRequest& req) {
     return {from, to};
 }
 
-// A human-readable name for a thread: the symbol its PC sits in, which reads
-// as what the thread is currently doing.
+// The symbol the thread's PC sits in. Needs a stopped target: reading the
+// registers of a running one blocks in the engine until it stops.
 static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread& thread) {
     smalldbg::Registers regs;
     if (dbg.getRegisters(&thread, regs) != smalldbg::Status::Ok) return "";
@@ -133,6 +133,12 @@ std::string WebsideServer::methodDetailData(const std::string& className,
 // ---- frame API: resolve the current thread/frame, then let the session format ----
 
 std::string WebsideServer::listFrames() const {
+    // Unwinding a running target blocks in the engine until it stops, so
+    // decline the way the engine would rather than answer an empty stack.
+    if (!session->getDebugger()->isStopped()) {
+        smalldbg::markEngineBusy();
+        return "[]";
+    }
     auto thread = session->primaryThread();
     if (!thread) return "[]";
     return session->listFrames(*thread);
@@ -1035,13 +1041,15 @@ void WebsideServer::setupRoutes() {
         auto current = dbg->getCurrentThread();
         auto arr = Json::array();
         auto threads = nativeThreads();
+        const bool stopped = dbg->isStopped();
         int id = 1;
         for (size_t i = 0; i < threads.size(); i++, id++) {
             arr.add(Json::object()
                 .set("debuggerId", id)
                 .set("id", threadIdHex(threads[i]->getThreadId()))
                 .set("type", "native")
-                .set("name", threadTopFrameName(*dbg, *threads[i]))
+                .set("name", stopped ? threadTopFrameName(*dbg, *threads[i])
+                                     : std::string())
                 .set("isMain", i == 0)
                 .set("isCurrent", current && current->getThreadId() == threads[i]->getThreadId())
                 .set("status", stopReason()));
@@ -1427,9 +1435,11 @@ void WebsideServer::setupBaseRoutes() {
     server.route("GET", "/debug/state", [this](const HttpRequest&) {
         HttpResponse res;
         auto p = pid();
+        auto* debugger = session ? session->getDebugger() : nullptr;
         res.body = Json::object()
             .set("active", isActive())
             .set("pid", p ? *p : 0)
+            .set("stopped", debugger && debugger->isStopped())
             .set("stopReason", stopReason())
             .dump();
         return res;
