@@ -1,6 +1,8 @@
 # Webside debugger servers — VM-specific frontends built on top of smalldbg
 # and the shared HttpServer / WebsideServer infrastructure.
 
+find_package(httplib REQUIRED)
+
 set(WEBSIDE_COMMON
     ${CMAKE_CURRENT_SOURCE_DIR}/src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideServer.cpp

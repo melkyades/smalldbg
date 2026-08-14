@@ -3,16 +3,17 @@
 #include <string>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
-#include <atomic>
-#include <cstdint>
+
+namespace httplib { class Server; }
 
 namespace webside {
 
 // Simple HTTP request
 struct HttpRequest {
     std::string method;      // GET, POST, etc.
-    std::string path;        // /api/debug/launch
+    std::string path;        // /api/debug/launch, still percent-encoded
     std::string body;        // Request body
     std::map<std::string, std::string> headers;
     std::map<std::string, std::string> params; // Query parameters
@@ -37,21 +38,24 @@ public:
 
     // Register a route handler (exact match)
     void route(const std::string& method, const std::string& path, HttpHandler handler);
-    
+
     // Register a prefix route handler (matches all paths starting with prefix)
     void routePrefix(const std::string& method, const std::string& pathPrefix, HttpHandler handler);
-    
+
     // Start the server (blocking)
     void run();
-    
+
     // Stop the server
     void stop();
 
     static std::string urlDecode(const std::string& encoded);
 
 private:
+    HttpResponse dispatch(const HttpRequest& request);
+    std::string getRouteKey(const std::string& method, const std::string& path);
+
     int port;
-    std::atomic<bool> running_{false};
+    std::unique_ptr<httplib::Server> server;
     std::map<std::string, HttpHandler> routes; // key: "METHOD /path"
     std::map<std::string, HttpHandler> prefixRoutes; // key: "METHOD /pathprefix"
 
@@ -59,14 +63,6 @@ private:
     // cannot stall the accept loop, but handlers stay strictly serialized:
     // the debug session they drive serves one request at a time.
     std::mutex handlerMutex;
-    std::atomic<int> activeConnections{0};
-
-    void serveConnection(uintptr_t clientSocket);
-    void handleClient(uintptr_t clientSocket);
-    bool receiveRequest(uintptr_t clientSocket, std::string& raw);
-    HttpRequest parseRequest(const std::string& rawRequest);
-    std::string buildResponse(const HttpResponse& response);
-    std::string getRouteKey(const std::string& method, const std::string& path);
 };
 
 } // namespace webside

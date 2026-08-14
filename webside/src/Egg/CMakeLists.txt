@@ -8,7 +8,7 @@ add_executable(webside_egg
     EggKnownObjects.cpp
     ${WEBSIDE_COMMON}
 )
-target_link_libraries(webside_egg PRIVATE smalldbg)
+target_link_libraries(webside_egg PRIVATE smalldbg httplib::httplib)
 
 add_executable(egg_crash_test egg_crash_test.cpp)
 target_link_libraries(egg_crash_test PRIVATE smalldbg)
