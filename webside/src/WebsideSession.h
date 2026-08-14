@@ -159,6 +159,10 @@ protected:
     virtual std::string addSmalltalkFrameBindings(const smalldbg::StackFrame& frame) const;
     virtual std::string addNativeFrameBindings(const smalldbg::StackFrame& frame) const;
 
+    /// Arguments of one frame as [{name, value}]. Empty where a dialect
+    /// cannot tell arguments from locals, which is the base case.
+    virtual std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const;
+
     /// JSON register dump for one frame (arch-aware).
     virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
 

@@ -65,6 +65,8 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
             .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
             .set("functionAddress", addressHex(functionAddressOf(frame)));
         if (frame.inlined) entry.set("inlined", true);
+        std::string args = buildFrameArgumentsJson(frame);
+        if (args != "[]") entry.set("arguments", Json::parse(args));
         arr.add(std::move(entry));
     }
     return arr.dump();
@@ -191,6 +193,11 @@ std::string WebsideSession::addNativeFrameBindings(const smalldbg::StackFrame& f
         arr.add(std::move(binding));
     }
     return arr.dump();
+}
+
+std::string WebsideSession::buildFrameArgumentsJson(
+    const smalldbg::StackFrame& /*frame*/) const {
+    return "[]";
 }
 
 std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& frame) const {
