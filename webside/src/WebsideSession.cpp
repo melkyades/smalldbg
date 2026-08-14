@@ -50,6 +50,7 @@ static bool unwindThread(smalldbg::Thread*, smalldbg::StackTrace& trace, size_t 
 // =========================================================================
 
 std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrames) const {
+    prepareFrames();
     smalldbg::StackTrace trace(&thread);
     if (!unwindThread(&thread, trace, maxFrames)) return "[]";
 

@@ -139,6 +139,10 @@ protected:
     // ---- virtual hooks for frame formatting ----
     // Dialects override these; the base builds generic native JSON.
 
+    /// Runs before a stack walk: an unwind leaves the engine unable to serve
+    /// some reads, so a dialect reads what it needs for frames here.
+    virtual void prepareFrames() const {}
+
     /// Display label for a frame (used by listFrames).
     virtual std::string buildFrameLabel(const smalldbg::StackFrame& frame) const;
 
