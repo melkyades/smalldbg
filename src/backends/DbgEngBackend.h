@@ -90,6 +90,8 @@ public:
     Status recoverCallerRegisters(Registers& regs) const override;
     std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp,
                                                  Address fp) const override;
+    InlineFrameMap getInlineFrameMap(Address ip, Address sp,
+                                     Address fp) const override;
 
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
@@ -158,6 +160,8 @@ protected:
                              std::vector<InlineFrameInfo>& out) const;
     std::string captureCommandOutput(const std::string& cmd) const;
 
+    void collectInlineFrameMap(Address ip, Address sp, Address fp,
+                               InlineFrameMap& out) const;
     // Initialise the COM interfaces. Returns false on failure.
     bool initInterfaces();
     void releaseInterfaces();

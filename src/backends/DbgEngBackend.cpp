@@ -887,6 +887,69 @@ std::vector<InlineFrameInfo> DbgEngBackend::getInlineFrames(
     return result;
 }
 
+static constexpr ULONG kMaxWalkFrames = 512;
+
+// GetStackTraceEx walks the stack from the frame it is given, so asking it
+// once per frame re-walks what the first call already knew. One walk returns
+// the whole stack with inline entries preceding the physical frame that holds
+// them; group them there and the per-frame calls disappear.
+// Inline rows precede the physical frame they belong to, so they accumulate in
+// `pending` until a physical row claims them. Every physical frame the walk saw
+// gets an entry, empty or not: a missing key has to mean "the walk never
+// reached here", or a frame with no inline functions would ask again one at a
+// time.
+static void groupInlineFrame(IDebugSymbols4& symbols4,
+                             const DEBUG_STACK_FRAME_EX& row,
+                             std::vector<InlineFrameInfo>& pending,
+                             InlineFrameMap& out) {
+    INLINE_FRAME_CONTEXT ctx;
+    ctx.ContextValue = row.InlineFrameContext;
+    if (ctx.FrameType != STACK_FRAME_TYPE_INLINE) {
+        out[{row.InstructionOffset, row.FrameOffset}] = std::move(pending);
+        pending.clear();
+        return;
+    }
+
+    char name[512] = {};
+    ULONG nameSize = 0;
+    ULONG64 displacement = 0;
+    if (FAILED(symbols4.GetNameByInlineContext(
+            row.InstructionOffset, row.InlineFrameContext,
+            name, sizeof(name), &nameSize, &displacement)))
+        return;
+    pending.push_back(inlineFrameNamed(name, displacement));
+}
+
+void DbgEngBackend::collectInlineFrameMap(Address ip, Address sp, Address fp,
+                                          InlineFrameMap& out) const {
+    auto control5 = queryInterface<IDebugControl5>(control);
+    if (!control5) return;
+    auto symbols4 = queryInterface<IDebugSymbols4>(symbols);
+    if (!symbols4) return;
+
+    std::vector<DEBUG_STACK_FRAME_EX> raw(kMaxWalkFrames);
+    ULONG filled = 0;
+    HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, raw.data(),
+                                           kMaxWalkFrames, &filled);
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) GetStackTraceEx failed hr=" + toHex((unsigned long)hr));
+        return;
+    }
+
+    std::vector<InlineFrameInfo> pending;
+    for (ULONG i = 0; i < filled; i++)
+        groupInlineFrame(*symbols4, raw[i], pending, out);
+}
+
+InlineFrameMap DbgEngBackend::getInlineFrameMap(
+    Address ip, Address sp, Address fp) const
+{
+    InlineFrameMap result;
+    if (!attached) return result;
+    runOnEngineThread([&]{ collectInlineFrameMap(ip, sp, fp, result); });
+    return result;
+}
+
 Status DbgEngBackend::recoverCallerRegisters(Registers& regs) const {
     if (!attached) return Status::NotAttached;
 

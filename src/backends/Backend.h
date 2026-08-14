@@ -64,6 +64,12 @@ public:
     virtual std::vector<InlineFrameInfo> getInlineFrames(
         Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
 
+    // Every frame's inline functions in one walk, starting from the frame
+    // described by ip/sp/fp. Backends without inline info return nothing, and
+    // callers fall back to asking frame by frame.
+    virtual InlineFrameMap getInlineFrameMap(
+        Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
+
     virtual bool isAttached() const { return false; }
     std::optional<uintptr_t> attachedPid() const {
         if (process) return process->getPid();

@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <map>
+#include <utility>
 #include <cstdint>
 
 namespace smalldbg {
@@ -19,6 +21,11 @@ struct InlineFrameInfo {
     std::string moduleName;
     uint64_t offset{0};   // displacement within the inlined function
 };
+
+/// Inline frames for a whole stack, keyed by the (ip, fp) of the physical
+/// frame that holds them. Asking per frame costs a stack walk each time.
+using InlineFrameMap =
+    std::map<std::pair<Address, Address>, std::vector<InlineFrameInfo>>;
 
 /// Processor-specific metadata attached to a frame.
 /// Each processor subtype defines its own derived struct
@@ -98,6 +105,16 @@ public:
     size_t getFrameCount() const { return frames.size(); }
 
 private:
+    // A physical frame can stand for several logical calls when the compiler
+    // inlined them. Emit those above it, innermost first, so the frame list
+    // matches what the engine's own backtrace shows.
+    void appendInlinedFrames(const StackFrame& physical, Address ip,
+                             const std::vector<InlineFrameInfo>& inlined,
+                             size_t maxFrames);
+    std::unique_ptr<StackFrame> inlinedFrameFor(const StackFrame& physical,
+                                                Address ip,
+                                                const InlineFrameInfo& inlined) const;
+
     const Thread* thread;
     std::vector<std::unique_ptr<StackFrame>> frames;
 };

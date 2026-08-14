@@ -184,6 +184,10 @@ std::shared_ptr<Thread> Debugger::getCurrentThread() {
     return selectedThread;
 }
 
+InlineFrameMap Debugger::getInlineFrameMap(Address ip, Address sp, Address fp) const {
+    return backend->getInlineFrameMap(ip, sp, fp);
+}
+
 void Debugger::setCurrentThread(std::shared_ptr<Thread> thread) {
     selectedThread = thread;
 }

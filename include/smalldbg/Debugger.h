@@ -96,6 +96,7 @@ public:
     // Callback receives (reason, address) - address is relevant for breakpoints/exceptions
     // Return false to stop execution, true to continue
     void setEventCallback(std::function<bool(StopReason, Address)> cb);
+    InlineFrameMap getInlineFrameMap(Address ip, Address sp, Address fp) const;
 
     // Symbol support
     SymbolProvider* getSymbolProvider();

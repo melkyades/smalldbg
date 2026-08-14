@@ -7,6 +7,29 @@
 
 namespace smalldbg {
 
+namespace {
+
+StackFrameProcessor* processorFor(
+    const std::vector<std::unique_ptr<StackFrameProcessor>>& processors,
+    Address ip, const Registers& regs, Debugger* debugger) {
+    for (const auto& p : processors)
+        if (p->canProcess(ip, regs, debugger)) return p.get();
+    return nullptr;
+}
+
+// The walk covers the frames the engine can follow. A frame past that -- a
+// VM's own, unwound by a dialect processor -- is not in the map, and is worth
+// one direct question.
+std::vector<InlineFrameInfo> inlinedFramesAt(const InlineFrameMap& walked,
+                                             const Registers& regs,
+                                             Debugger* debugger) {
+    auto known = walked.find({regs.ip(), regs.fp()});
+    if (known != walked.end()) return known->second;
+    return debugger->getInlineFrames(regs.ip(), regs.sp(), regs.fp());
+}
+
+} // namespace
+
 StackTrace::StackTrace(const Thread* t)
     : thread(t) {
 }
@@ -26,6 +49,12 @@ Status StackTrace::unwind(size_t maxFrames) {
 
     const auto& processors = debugger->getFrameProcessors();
 
+    // One walk up front answers the inline question for every frame the engine
+    // can follow. Frames past that -- a VM's own, unwound by a dialect
+    // processor -- are not in it, and fall back to asking one at a time.
+    InlineFrameMap inlineFrames =
+        debugger->getInlineFrameMap(regs.ip(), regs.sp(), regs.fp());
+
     Address prevFp = 0;
     while (frames.size() < maxFrames && regs.ip() != 0) {
         // After the first frame, require FP to advance to avoid infinite loops.
@@ -33,14 +62,8 @@ Status StackTrace::unwind(size_t maxFrames) {
             break;
         prevFp = regs.fp();
         
-        // Find the processor that handles this frame
-        StackFrameProcessor* processor = nullptr;
-        for (const auto& p : processors) {
-            if (p->canProcess(regs.ip(), regs, debugger)) {
-                processor = p.get();
-                break;
-            }
-        }
+        StackFrameProcessor* processor =
+            processorFor(processors, regs.ip(), regs, debugger);
         if (!processor)
             break;
         
@@ -55,25 +78,10 @@ Status StackTrace::unwind(size_t maxFrames) {
         // Let the processor fill in frame description
         processor->process(*frame, debugger);
 
-        // A physical frame can stand for several logical calls when the
-        // compiler inlined them. Emit those above it (innermost first) so the
-        // frame list matches what the engine's own backtrace shows.
         if (!frame->metadata) {
-            for (auto& inl : debugger->getInlineFrames(regs.ip(), regs.sp(), regs.fp())) {
-                if (frames.size() >= maxFrames) break;
-                auto synthetic = std::make_unique<StackFrame>();
-                synthetic->registers = frame->registers;
-                synthetic->hasRegisters = frame->hasRegisters;
-                synthetic->thread = thread;
-                synthetic->processor = processor;
-                synthetic->prev = frames.empty() ? nullptr : frames.back().get();
-                synthetic->inlined = true;
-                synthetic->functionName = inl.name;
-                synthetic->moduleName = inl.moduleName;
-                synthetic->functionOffset = inl.offset;
-                synthetic->functionStart = regs.ip() - inl.offset;
-                frames.push_back(std::move(synthetic));
-            }
+            appendInlinedFrames(*frame, regs.ip(),
+                                inlinedFramesAt(inlineFrames, regs, debugger),
+                                maxFrames);
             frame->prev = frames.empty() ? nullptr : frames.back().get();
         }
 
@@ -92,6 +100,31 @@ Status StackTrace::unwind(size_t maxFrames) {
     }
     
     return Status::Ok;
+}
+
+std::unique_ptr<StackFrame> StackTrace::inlinedFrameFor(
+    const StackFrame& physical, Address ip, const InlineFrameInfo& inlined) const {
+    auto synthetic = std::make_unique<StackFrame>();
+    synthetic->registers = physical.registers;
+    synthetic->hasRegisters = physical.hasRegisters;
+    synthetic->thread = thread;
+    synthetic->processor = physical.processor;
+    synthetic->prev = frames.empty() ? nullptr : frames.back().get();
+    synthetic->inlined = true;
+    synthetic->functionName = inlined.name;
+    synthetic->moduleName = inlined.moduleName;
+    synthetic->functionOffset = inlined.offset;
+    synthetic->functionStart = ip - inlined.offset;
+    return synthetic;
+}
+
+void StackTrace::appendInlinedFrames(const StackFrame& physical, Address ip,
+                                     const std::vector<InlineFrameInfo>& inlined,
+                                     size_t maxFrames) {
+    for (const auto& one : inlined) {
+        if (frames.size() >= maxFrames) break;
+        frames.push_back(inlinedFrameFor(physical, ip, one));
+    }
 }
 
 void StackTrace::resolveFrameDetails(size_t index, Debugger* debugger) {
