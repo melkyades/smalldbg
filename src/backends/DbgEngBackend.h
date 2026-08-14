@@ -151,17 +151,21 @@ protected:
     // DbgEng is owned by that thread: a context switch requested from another
     // one does not take effect, and reads can land on the wrong thread. A call
     // already on the engine thread runs inline.
-    void runOnEngineThread(const std::function<void()>& fn) const;
+    //
+    // Answers false, having done nothing, when the engine cannot service the
+    // task -- which is whenever the debuggee is running. Callers must treat
+    // that as a failed operation rather than assume the closure ran.
+    [[nodiscard]] bool runOnEngineThread(const std::function<void()>& fn) const;
 
     // Register reads and inline-frame expansion, both requiring the engine
     // thread and the right thread selected on it.
     Status readRegisters(Registers& out) const;
+    void collectInlineFrameMap(Address ip, Address sp, Address fp,
+                               InlineFrameMap& out) const;
     void collectInlineFrames(Address ip, Address sp, Address fp,
                              std::vector<InlineFrameInfo>& out) const;
     std::string captureCommandOutput(const std::string& cmd) const;
 
-    void collectInlineFrameMap(Address ip, Address sp, Address fp,
-                               InlineFrameMap& out) const;
     // Initialise the COM interfaces. Returns false on failure.
     bool initInterfaces();
     void releaseInterfaces();
@@ -224,6 +228,9 @@ protected:
 
     // Closures marshaled to the event-loop thread (drained in waitForResumeSignal).
     mutable std::deque<std::function<void()>> engineTasks;
+    // Whether the engine thread is parked where it can drain engineTasks.
+    // Guarded by `mutex`; see runOnEngineThread.
+    bool engineIdle = false;
 
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;

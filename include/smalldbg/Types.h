@@ -22,7 +22,10 @@ enum class Status {
     NotAttached,
     AlreadyAttached,
     NotFound,
-    NotSupported
+    NotSupported,
+    // The debuggee is running, so the engine cannot serve this. Distinct from
+    // a failure: the same call answers normally once the target stops.
+    Busy
 };
 
 enum class StopReason {

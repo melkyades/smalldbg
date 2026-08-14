@@ -18,6 +18,18 @@
 
 namespace smalldbg {
 
+namespace {
+thread_local bool engineBusy = false;
+}
+
+void markEngineBusy() { engineBusy = true; }
+
+bool consumeEngineBusy() {
+    bool was = engineBusy;
+    engineBusy = false;
+    return was;
+}
+
 Debugger::Debugger(Mode m, const Arch* arch)
     : backend(nullptr), symbolProvider(nullptr), mode(m),
       initialArch(arch ? arch : X64::instance()) {
@@ -172,6 +184,10 @@ std::vector<InlineFrameInfo> Debugger::getInlineFrames(Address ip, Address sp, A
     return backend->getInlineFrames(ip, sp, fp);
 }
 
+InlineFrameMap Debugger::getInlineFrameMap(Address ip, Address sp, Address fp) const {
+    return backend->getInlineFrameMap(ip, sp, fp);
+}
+
 bool Debugger::isAttached() const { return backend->isAttached(); }
 
 std::optional<uintptr_t> Debugger::attachedPid() const { return backend->attachedPid(); }
@@ -182,10 +198,6 @@ std::shared_ptr<Process> Debugger::getProcess() {
 
 std::shared_ptr<Thread> Debugger::getCurrentThread() {
     return selectedThread;
-}
-
-InlineFrameMap Debugger::getInlineFrameMap(Address ip, Address sp, Address fp) const {
-    return backend->getInlineFrameMap(ip, sp, fp);
 }
 
 void Debugger::setCurrentThread(std::shared_ptr<Thread> thread) {

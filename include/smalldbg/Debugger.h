@@ -18,6 +18,14 @@ class Process;
 class Thread;
 class StackFrameProcessor;
 
+// Whether an engine call was refused on this thread because the debuggee was
+// running. Recorded per-thread so that a caller serving one request at a time
+// can ask, afterwards, whether what it just produced was actually complete --
+// without every layer in between having to forward a Status it does not care
+// about. `consumeEngineBusy` clears the flag as it reads it.
+void markEngineBusy();
+bool consumeEngineBusy();
+
 class Debugger {
 public:
     explicit Debugger(Mode m, const Arch* arch = nullptr);
@@ -88,6 +96,7 @@ public:
     Status getRegisters(const Thread* thread, Registers &out) const;
     Status recoverCallerRegisters(Registers& regs) const;
     std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp, Address fp) const;
+    InlineFrameMap getInlineFrameMap(Address ip, Address sp, Address fp) const;
 
     // Logging callback (simple) — optional
     void setLogCallback(std::function<void(const std::string &)> cb);
@@ -96,7 +105,6 @@ public:
     // Callback receives (reason, address) - address is relevant for breakpoints/exceptions
     // Return false to stop execution, true to continue
     void setEventCallback(std::function<bool(StopReason, Address)> cb);
-    InlineFrameMap getInlineFrameMap(Address ip, Address sp, Address fp) const;
 
     // Symbol support
     SymbolProvider* getSymbolProvider();

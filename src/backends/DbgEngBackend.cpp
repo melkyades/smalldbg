@@ -700,11 +700,11 @@ Status DbgEngBackend::readMemory(Address address, void* outBuf, size_t size) con
     if (!attached) return Status::NotAttached;
 
     Status result = Status::Ok;
-    runOnEngineThread([&]{
+    if (!runOnEngineThread([&]{
         ULONG bytesRead = 0;
         HRESULT hr = dataSpaces->ReadVirtual(address, outBuf, static_cast<ULONG>(size), &bytesRead);
         result = (FAILED(hr) || bytesRead != size) ? Status::NotFound : Status::Ok;
-    });
+    })) return Status::Busy;
     return result;
 }
 
@@ -814,10 +814,15 @@ Status DbgEngBackend::getRegisters(Thread* thread, Registers& out) const {
     if (!attached) return Status::NotAttached;
 
     Status result = Status::Ok;
-    runOnEngineThread([&]{
-        if (thread) selectThread(*thread);
+    if (!runOnEngineThread([&]{
+        // Reading whatever happens to be selected would answer another
+        // thread's registers as if they were this one's.
+        if (thread && !selectThread(*thread)) {
+            result = Status::NotFound;
+            return;
+        }
         result = readRegisters(out);
-    });
+    })) return Status::Busy;
     return result;
 }
 
@@ -883,7 +888,9 @@ std::vector<InlineFrameInfo> DbgEngBackend::getInlineFrames(
 {
     std::vector<InlineFrameInfo> result;
     if (!attached) return result;
-    runOnEngineThread([&]{ collectInlineFrames(ip, sp, fp, result); });
+    // A refusal answers no inline frames, which is what a caller that cannot
+    // reach the engine should see.
+    (void)runOnEngineThread([&]{ collectInlineFrames(ip, sp, fp, result); });
     return result;
 }
 
@@ -946,7 +953,7 @@ InlineFrameMap DbgEngBackend::getInlineFrameMap(
 {
     InlineFrameMap result;
     if (!attached) return result;
-    runOnEngineThread([&]{ collectInlineFrameMap(ip, sp, fp, result); });
+    (void)runOnEngineThread([&]{ collectInlineFrameMap(ip, sp, fp, result); });
     return result;
 }
 
@@ -1360,35 +1367,59 @@ void DbgEngBackend::runPendingEngineTasks(std::unique_lock<std::mutex>& lock) {
 
 bool DbgEngBackend::waitForResumeSignal() {
     std::unique_lock<std::mutex> lock(mutex);
+    // Parked here, and only here, the engine can service work for other
+    // threads. The flag is cleared before leaving, under the lock, so nothing
+    // can be queued for an engine that is about to stop draining.
+    engineIdle = true;
     for (;;) {
         cv.wait(lock, [this]{
             return continueRequested || !engineTasks.empty() || !running.load();
         });
-        if (!running) return false;
+        if (!running) {
+            engineIdle = false;
+            return false;
+        }
 
         runPendingEngineTasks(lock);
         if (!continueRequested) continue;
 
         continueRequested = false;
         stopReason = StopReason::None;
+        engineIdle = false;
         return true;
     }
 }
 
-void DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
+// The engine thread services tasks only while it is parked waiting for a
+// resume, which is to say only while the debuggee is stopped. Once it enters
+// WaitForEvent nothing is drained until the target stops again, so a task
+// queued then would wait for an event that may never come.
+//
+// Rather than let a caller block on that, the task is refused. The check and
+// the queueing both happen under `mutex`, and the flag is cleared under the
+// same lock after the last drain, so a task is never accepted by an engine
+// that has stopped listening. Refusing is the only safe answer: the callers
+// capture their results by reference, so a queued task can never be abandoned
+// after the fact.
+bool DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     if (!running || std::this_thread::get_id() == eventThreadId) {
         fn();
-        return;
+        return true;
     }
 
     std::promise<void> done;
     auto future = done.get_future();
     {
         std::lock_guard<std::mutex> lock(mutex);
+        if (!engineIdle) {
+            markEngineBusy();
+            return false;
+        }
         engineTasks.push_back([&]{ fn(); done.set_value(); });
     }
     cv.notify_all();
     future.wait();
+    return true;
 }
 
 bool DbgEngBackend::engineThreadId(Thread& thread, ULONG& out) const {
@@ -1576,7 +1607,8 @@ std::string DbgEngBackend::captureCommandOutput(const std::string& cmd) const {
 std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
     if (!control || !client) return "(no engine)";
     std::string out;
-    runOnEngineThread([&]{ out = captureCommandOutput(cmd); });
+    if (!runOnEngineThread([&]{ out = captureCommandOutput(cmd); }))
+        return "(debuggee running)";
     return out;
 }
 
