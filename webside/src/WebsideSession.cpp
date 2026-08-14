@@ -31,6 +31,16 @@ std::shared_ptr<smalldbg::Thread> WebsideSession::resolveThread(uint64_t threadI
     return opt ? *opt : nullptr;
 }
 
+size_t WebsideSession::pointerSize() const {
+    auto* dbg = getDebugger();
+    return dbg ? dbg->arch()->pointerSize() : smalldbg::hostArch()->pointerSize();
+}
+
+Json WebsideSession::addressHex(uint64_t address) const {
+    return pointerSize() <= 4 ? Json::hex(static_cast<uint32_t>(address))
+                              : Json::hex(address);
+}
+
 static bool unwindThread(smalldbg::Thread*, smalldbg::StackTrace& trace, size_t maxFrames) {
     return trace.unwind(std::max(maxFrames, size_t(64))) == smalldbg::Status::Ok;
 }
@@ -46,10 +56,15 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
     const auto& frames = trace.getFrames();
     auto arr = Json::array();
     for (size_t i = 0; i < frames.size(); i++) {
-        arr.add(Json::object()
+        const smalldbg::StackFrame& frame = *frames[i];
+        auto entry = Json::object()
             .set("index", static_cast<int>(i + 1))
-            .set("label", buildFrameLabel(*frames[i]))
-            .set("ip", Json::hex(frames[i]->ip())));
+            .set("label", buildFrameLabel(frame))
+            .set("ip", addressHex(frame.ip()))
+            .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
+            .set("functionAddress", addressHex(functionAddressOf(frame)));
+        if (frame.inlined) entry.set("inlined", true);
+        arr.add(std::move(entry));
     }
     return arr.dump();
 }
@@ -88,11 +103,23 @@ std::string WebsideSession::buildFrameLabel(const smalldbg::StackFrame& frame) c
     return "<unknown>";
 }
 
+// Not always ip minus functionOffset: a frame parked in a runtime stub has an
+// ip outside the code of the function that owns it.
+uint64_t WebsideSession::functionAddressOf(const smalldbg::StackFrame& frame) {
+    return frame.functionStart ? frame.functionStart
+                               : frame.ip() - frame.functionOffset;
+}
+
 std::string WebsideSession::buildFrameDetailJson(const smalldbg::StackFrame& frame,
                                                  int index) const {
     auto j = Json::object()
         .set("index", index)
-        .set("label", buildFrameLabel(frame));
+        .set("label", buildFrameLabel(frame))
+        .set("ip", addressHex(frame.ip()))
+        .set("functionAddress", addressHex(functionAddressOf(frame)))
+        .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
+        .set("inlined", frame.inlined)
+        .set("hasSource", false);
 
     if (frame.metadata)
         addSmalltalkFrameDetail(j, frame);

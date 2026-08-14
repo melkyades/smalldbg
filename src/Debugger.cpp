@@ -57,6 +57,10 @@ void Debugger::useBackend(Backend* newBackend) {
     symbolProvider = std::make_unique<SymbolProvider>(backend);
 }
 
+const Arch* Debugger::arch() const {
+    return backend ? backend->getArch() : initialArch;
+}
+
 void Debugger::updateArch(const Arch* arch) {
     disassembler = std::make_unique<Disassembler>(arch);
 }

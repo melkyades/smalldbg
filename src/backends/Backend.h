@@ -103,6 +103,9 @@ public:
     // Default implementation returns an empty list.
     virtual std::vector<ModuleInfo> enumerateModules() const { return {}; }
 
+    // The target's architecture, updated once the backend has identified it.
+    const Arch* getArch() const { return arch; }
+
 protected:
     Mode mode{Mode::External};
     const Arch* arch{X64::instance()};

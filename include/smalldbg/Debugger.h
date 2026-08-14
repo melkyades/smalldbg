@@ -118,6 +118,9 @@ public:
     Backend* getBackend() const { return backend; }
     Disassembler* getDisassembler() { return disassembler.get(); }
 
+    /// The target's architecture, as the backend currently understands it.
+    const Arch* arch() const;
+
     /// Update arch after the backend detects the target's real architecture
     /// (e.g. a WoW64 process running under a 64-bit host).
     void updateArch(const Arch* arch);

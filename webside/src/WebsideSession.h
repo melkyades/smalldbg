@@ -61,6 +61,16 @@ public:
     std::string getFrameBindings(smalldbg::StackTrace& trace,
                                  const smalldbg::StackFrame& frame, int index) const;
     std::string getFrameRegisters(const smalldbg::StackFrame& frame) const;
+    /// Where the frame's function starts, for a client that disassembles it.
+    static uint64_t functionAddressOf(const smalldbg::StackFrame& frame);
+
+    /// The target's pointer width, or the host's while there is no target.
+    size_t pointerSize() const;
+
+    /// A target address in hex at that width, so a 32-bit target's addresses
+    /// are not padded out to 16 digits.
+    Json addressHex(uint64_t address) const;
+
     /// Raw stack slots around frame `index`. `rangeStart`/`rangeEnd` page an
     /// explicit address window (for scrolling); 0/0 picks the default window.
     std::string getFrameStack(const smalldbg::StackTrace& trace, int index,
