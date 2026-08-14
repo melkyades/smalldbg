@@ -193,15 +193,17 @@ std::string WebsideSession::addNativeFrameBindings(const smalldbg::StackFrame& f
 std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& frame) const {
     const auto& regs = frame.registers;
     auto arr = Json::array();
-    auto add = [&](const char* name, uint64_t v) {
-        arr.add(Json::object().set("name", name).set("value", Json::hex(v)));
+    auto add = [&](const char* name, uint64_t v, bool isFlags = false) {
+        auto entry = Json::object().set("name", name).set("value", Json::hex(v));
+        if (isFlags) entry.set("description", regs.arch->describeFlags(v));
+        arr.add(std::move(entry));
     };
     if (regs.arch == smalldbg::X86::instance()) {
         const auto& r = regs.x86;
         add("eip", r.eip); add("esp", r.esp); add("ebp", r.ebp);
         add("eax", r.eax); add("ebx", r.ebx); add("ecx", r.ecx);
         add("edx", r.edx); add("esi", r.esi); add("edi", r.edi);
-        add("eflags", r.eflags);
+        add("eflags", r.eflags, true);
     } else if (regs.arch == smalldbg::X64::instance()) {
         const auto& r = regs.x64;
         add("rip", r.rip); add("rsp", r.rsp); add("rbp", r.rbp);
@@ -210,7 +212,7 @@ std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& 
         add("r8", r.r8); add("r9", r.r9); add("r10", r.r10);
         add("r11", r.r11); add("r12", r.r12); add("r13", r.r13);
         add("r14", r.r14); add("r15", r.r15);
-        add("rflags", r.rflags);
+        add("rflags", r.rflags, true);
     } else {
         add("ip", regs.ip()); add("fp", regs.fp()); add("sp", regs.sp());
     }
