@@ -78,6 +78,29 @@ private:
 - Raw pointers for non-owning back-references (`Debugger*`, `Process*`).
 - Aggregate initialization with `{}`: `bool stopped{false};`
 
+Prefer a reference to a pointer.  A reference parameter states that the
+argument is always there, so the callee never checks it; keep a pointer
+only where absence is a real state.  Existing signatures are fine as they
+are - convert them when the code is being touched anyway.
+
+```cpp
+// Good - non-null is in the type
+void process(StackFrame& frame, Debugger& debugger);
+
+// Bad - invites a null check that can never fire
+void process(StackFrame* frame, Debugger* debugger);
+```
+
+For something that may be absent, return a raw pointer.  `std::optional`
+holds values; `std::optional<T&>` is a C++26 addition and does not compile
+here, and `std::optional<std::reference_wrapper<T>>` buys nothing for the
+`.get()` it costs at every use.
+
+```cpp
+StackFrameProcessor* processorFor(...);        // nullptr when none matches
+std::optional<Symbol> getSymbolByAddress(Address addr);   // a value
+```
+
 ## RAII & Null Checks
 
 Use RAII for all resource management.  If a resource is acquired in a
