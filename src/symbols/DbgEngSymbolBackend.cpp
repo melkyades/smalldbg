@@ -27,16 +27,18 @@ Status DbgEngSymbolBackend::initialize(void* /*processHandle*/, const SymbolOpti
     if (!opts.searchPath.empty() || opts.useSymbolServer) {
         std::string symPath;
 
-        // Get existing symbol path
+        // The caller's own path goes first: a same-named pdb from the cache
+        // or the symbol server would otherwise answer, and load successfully
+        // with every symbol at the wrong address.
+        if (!opts.searchPath.empty())
+            symPath = opts.searchPath;
+
         char existingPath[2048] = {};
         ULONG pathSize = 0;
         symbols->GetSymbolPath(existingPath, sizeof(existingPath), &pathSize);
-        symPath = existingPath;
-
-        // Append user search path
-        if (!opts.searchPath.empty()) {
+        if (existingPath[0]) {
             if (!symPath.empty()) symPath += ";";
-            symPath += opts.searchPath;
+            symPath += existingPath;
         }
 
         // Append symbol server
