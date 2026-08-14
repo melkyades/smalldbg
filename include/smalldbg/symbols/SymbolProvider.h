@@ -3,6 +3,7 @@
 
 #include "../Types.h"
 #include "SymbolSource.h"
+#include "SymbolDatabase.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -107,10 +108,26 @@ public:
     const NativeTypeInfo* getTypeByName(const std::string& name);
     std::optional<std::string> getVariableTypeName(const std::string& name);
 
+    // Everything known about an address ends up here, whichever producer
+    // found it, so a caller asks once instead of merging answers itself.
+    SymbolDatabase& database() { return symbolDatabase; }
+    const SymbolDatabase& database() const { return symbolDatabase; }
+
+    /// What is at this address. Native symbols are folded in on demand, so a
+    /// caller need not know whether it lies in a module or in a heap.
+    std::optional<SymbolicInfo> symbolicInfoFor(Address address);
+
 private:
+    /// Records a native symbol the first time it is asked for, so repeated
+    /// lookups in the same routine stop reaching the symbol engine.
+    void rememberNativeSymbol(Address address);
+
     Backend* backend;
     std::vector<std::unique_ptr<SymbolBackend>> backends;
     SymbolOptions symbolOptions;
+    SymbolDatabase symbolDatabase;
+    SourceRef nativeSymbols;
+    bool modulesRegistered{false};
 };
 
 } // namespace smalldbg

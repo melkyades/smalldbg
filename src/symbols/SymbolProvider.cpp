@@ -122,3 +122,36 @@ std::optional<std::string> SymbolProvider::getVariableTypeName(const std::string
 
 } // namespace smalldbg
 
+
+namespace smalldbg {
+
+// Modules are registered once, so attributing an address to one costs no
+// engine call; in-image modules are added through addModule as well.
+void SymbolProvider::rememberNativeSymbol(Address address) {
+    if (!nativeSymbols.valid())
+        nativeSymbols = symbolDatabase.addSource("native symbols", Volatility::Stable);
+
+    if (!modulesRegistered) {
+        modulesRegistered = true;
+        for (const auto& module : getModules())
+            symbolDatabase.addModule(module.shortName, ModuleKind::Native,
+                                     module.loadAddress, module.endAddress);
+    }
+
+    // Outside every module there is nothing for the symbol engine to say, and
+    // asking is the slowest way to learn that.
+    if (!symbolDatabase.moduleAt(address).valid()) return;
+
+    auto symbol = getSymbolByAddress(address);
+    if (!symbol || symbol->name.empty()) return;
+    symbolDatabase.add(symbol->address, symbol->size, symbol->name,
+                       SymbolKind::Code, SymbolLayer::Symbol, nativeSymbols);
+}
+
+std::optional<SymbolicInfo> SymbolProvider::symbolicInfoFor(Address address) {
+    if (auto known = symbolDatabase.symbolicInfoFor(address)) return known;
+    rememberNativeSymbol(address);
+    return symbolDatabase.symbolicInfoFor(address);
+}
+
+} // namespace smalldbg
