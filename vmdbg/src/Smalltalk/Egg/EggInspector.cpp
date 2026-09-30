@@ -1,5 +1,5 @@
 #include "EggInspector.h"
-#include "../Json.h"
+#include "Json.h"
 #include <iostream>
 #include <functional>
 #include <algorithm>

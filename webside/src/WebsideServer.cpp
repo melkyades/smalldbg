@@ -1,6 +1,6 @@
 #include "WebsideServer.h"
 #include "Json.h"
-#include "WebsideInspector.h"
+#include "VMInspector.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"

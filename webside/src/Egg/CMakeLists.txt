@@ -1,16 +1,19 @@
 # Egg Smalltalk debugger
+set(EGG_VM ${VMDBG_SRC}/Smalltalk/Egg)
+
 add_executable(webside_egg
     main.cpp
     EggWebsideServer.cpp
-    EggDebugSession.cpp
-    EggInspector.cpp
-    EggHeapObject.cpp
-    EggKnownObjects.cpp
+    ${EGG_VM}/EggDebugSession.cpp
+    ${EGG_VM}/EggInspector.cpp
+    ${EGG_VM}/EggHeapObject.cpp
+    ${EGG_VM}/EggKnownObjects.cpp
     ${WEBSIDE_COMMON}
 )
+target_include_directories(webside_egg PRIVATE ${WEBSIDE_INCLUDES} ${EGG_VM})
 target_link_libraries(webside_egg PRIVATE smalldbg httplib::httplib)
 
-add_executable(egg_crash_test egg_crash_test.cpp)
+add_executable(egg_crash_test ${EGG_VM}/egg_crash_test.cpp)
 target_link_libraries(egg_crash_test PRIVATE smalldbg)
 
 # Sign with debugger entitlement so task_for_pid works without sudo (macOS only)

@@ -1,5 +1,5 @@
 #include "EggDebugSession.h"
-#include "../Json.h"
+#include "Json.h"
 #include <algorithm>
 #include <cctype>
 #include <cstring>

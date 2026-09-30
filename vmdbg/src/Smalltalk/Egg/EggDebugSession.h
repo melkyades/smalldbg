@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../WebsideSession.h"
+#include "VMSession.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/StackTrace.h"
 #include "EggInspector.h"
-#include "../Json.h"
+#include "Json.h"
 #include <string>
 #include <vector>
 #include <memory>

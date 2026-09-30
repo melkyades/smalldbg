@@ -1,4 +1,4 @@
-#include "WebsideSession.h"
+#include "VMSession.h"
 #include "Json.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Arch.h"

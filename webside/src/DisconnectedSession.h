@@ -1,6 +1,6 @@
 #pragma once
 
-#include "WebsideSession.h"
+#include "VMSession.h"
 
 namespace webside {
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <smalldbg/Debugger.h>
-#include "../WebsideInspector.h"
+#include "VMInspector.h"
 #include "EggObject.h"
 #include "EggHeapObject.h"
 #include "EggKnownObjects.h"
