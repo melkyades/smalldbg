@@ -1,4 +1,5 @@
 #include "EggDebugSession.h"
+#include "EggInspectorJson.h"
 #include "Json.h"
 #include <algorithm>
 #include <cctype>
@@ -964,7 +965,7 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
 std::string EggDebugSession::getSmalltalkStackContents(int threadIndex) const {
     if (threadIndex < 0 || threadIndex >= static_cast<int>(greenThreads.size()))
         return "[]";
-    return inspector->getStackContents(greenThreads[threadIndex].state);
+    return eggStackContentsJson(*inspector, greenThreads[threadIndex].state);
 }
 
 // ---- Interface stubs (not yet wired; low-level ops go through the routes) ----

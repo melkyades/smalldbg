@@ -23,7 +23,6 @@ public:
 
     // ---- VMInspector ----
     StackRegion evaluatorStack() const override;
-    std::string inspectObject(uint64_t oop, int maxSlots) const override;
 
     // ---- Factory: wrap a raw address as a typed object ---------------
     EggHeapObject heapObjectAt(uint64_t addr) const;
@@ -78,9 +77,6 @@ public:
 
     /// Read a single slot from the evaluator stack (1-based index).
     uint64_t readStackSlot(const EvaluatorState& st, uint64_t index) const;
-
-    /// JSON array of all used stack slots (from SP to the bottom of the stack).
-    std::string getStackContents(const EvaluatorState& st) const;
 
     /// A single Smalltalk evaluation frame.
     struct SmalltalkFrame {

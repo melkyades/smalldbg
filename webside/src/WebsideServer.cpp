@@ -502,6 +502,8 @@ HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
     return res;
 }
 
+std::string WebsideServer::inspectJson(uint64_t, int) const { return "{}"; }
+
 HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
     HttpResponse res;
     auto* inspector = session->getInspector();
@@ -521,7 +523,7 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
         try { maxSlots = std::stoi(maxIt->second); } catch (...) {}
     }
 
-    res.body = inspector->inspectObject(addr, maxSlots);
+    res.body = inspectJson(addr, maxSlots);
     return res;
 }
 

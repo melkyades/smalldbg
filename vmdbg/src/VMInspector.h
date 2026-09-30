@@ -7,8 +7,7 @@ namespace vmdbg {
 
 /// VM-level introspection behind the /regions, /classify and /inspect routes.
 ///
-/// Dialects implement this so the server never handles VM-specific types:
-/// object rendering is returned already formatted as JSON.
+/// Dialects implement this so the server never handles VM-specific types.
 class VMInspector {
 public:
     virtual ~VMInspector() = default;
@@ -21,9 +20,6 @@ public:
         uint64_t bp{0};
     };
     virtual StackRegion evaluatorStack() const = 0;
-
-    /// JSON description of the object at `oop`, with at most `maxSlots` slots.
-    virtual std::string inspectObject(uint64_t oop, int maxSlots) const = 0;
 };
 
 } // namespace vmdbg

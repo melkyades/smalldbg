@@ -4,13 +4,15 @@ set(EGG_VM ${VMDBG_SRC}/Smalltalk/Egg)
 add_executable(webside_egg
     main.cpp
     EggWebsideServer.cpp
+    EggInspectorJson.cpp
     ${EGG_VM}/EggDebugSession.cpp
     ${EGG_VM}/EggInspector.cpp
     ${EGG_VM}/EggHeapObject.cpp
     ${EGG_VM}/EggKnownObjects.cpp
     ${WEBSIDE_COMMON}
 )
-target_include_directories(webside_egg PRIVATE ${WEBSIDE_INCLUDES} ${EGG_VM})
+target_include_directories(webside_egg PRIVATE
+    ${WEBSIDE_INCLUDES} ${EGG_VM} ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(webside_egg PRIVATE smalldbg httplib::httplib)
 
 add_executable(egg_crash_test ${EGG_VM}/egg_crash_test.cpp)

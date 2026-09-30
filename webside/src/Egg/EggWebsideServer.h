@@ -19,6 +19,7 @@ protected:
     std::string dialect() const override;
     std::string description() const override;
     std::unique_ptr<WebsideSession> createSession() override;
+    std::string inspectJson(uint64_t oop, int maxSlots) const override;
 };
 
 } // namespace webside

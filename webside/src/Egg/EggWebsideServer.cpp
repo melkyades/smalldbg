@@ -1,4 +1,5 @@
 #include "EggWebsideServer.h"
+#include "EggInspectorJson.h"
 
 namespace webside {
 
@@ -9,6 +10,13 @@ std::string EggWebsideServer::description() const { return "Egg Smalltalk"; }
 
 std::unique_ptr<WebsideSession> EggWebsideServer::createSession() {
     return std::make_unique<EggDebugSession>();
+}
+
+// handleInspect only asks once the session has an inspector, which only an
+// EggDebugSession has.
+std::string EggWebsideServer::inspectJson(uint64_t oop, int maxSlots) const {
+    auto& egg = static_cast<const EggDebugSession&>(*session);
+    return inspectEggObject(*egg.getInspector(), oop, maxSlots);
 }
 
 } // namespace webside
