@@ -1,7 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
-#include "VMSession.h"
+#include "WebsideSession.h"
 #include "DisconnectedSession.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Debugger.h"

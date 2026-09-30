@@ -10,6 +10,7 @@ set(VMDBG_SRC ${CMAKE_SOURCE_DIR}/vmdbg/src)
 set(WEBSIDE_COMMON
     ${CMAKE_CURRENT_SOURCE_DIR}/src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideServer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Json.cpp
     ${VMDBG_SRC}/VMSession.cpp
     ${VMDBG_SRC}/MemoryTypeMap.cpp

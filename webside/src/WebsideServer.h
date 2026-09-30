@@ -1,7 +1,7 @@
 #pragma once
 
 #include "HttpServer.h"
-#include "VMSession.h"
+#include "WebsideSession.h"
 #include "DisconnectedSession.h"
 #include <string>
 #include <vector>

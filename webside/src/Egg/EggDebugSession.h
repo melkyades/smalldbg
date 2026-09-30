@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VMSession.h"
+#include "WebsideSession.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"

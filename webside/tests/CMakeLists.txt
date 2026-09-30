@@ -4,6 +4,7 @@ find_package(doctest REQUIRED)
 add_executable(webside_tests
     test_websidesession.cpp
     ${VMDBG_SRC}/VMSession.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Json.cpp
 )
 target_include_directories(webside_tests PRIVATE ${WEBSIDE_INCLUDES})
