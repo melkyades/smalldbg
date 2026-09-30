@@ -1,6 +1,6 @@
 #include "EggInspectorJson.h"
 #include "Json.h"
-#include "EggInspector.h"
+#include "Smalltalk/Egg/EggInspector.h"
 
 #include <algorithm>
 

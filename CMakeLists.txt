@@ -119,5 +119,8 @@ add_subdirectory(examples)
 # Tests first, so webside/tests can depend on the test_target executable.
 add_subdirectory(tests)
 
+# The VM layer webside reads through. Added first: webside links it.
+add_subdirectory(vmdbg)
+
 # Webside debugger servers (Egg, Bee, etc)
 add_subdirectory(webside)

@@ -1,5 +1,5 @@
 #pragma once
-#include "EggInspector.h"
+#include "Smalltalk/Egg/EggInspector.h"
 #include <cstdint>
 #include <string>
 namespace webside {
