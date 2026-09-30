@@ -3,15 +3,15 @@
 #include <string>
 #include <cstdint>
 
-namespace webside {
+namespace vmdbg {
 
 /// VM-level introspection behind the /regions, /classify and /inspect routes.
 ///
 /// Dialects implement this so the server never handles VM-specific types:
 /// object rendering is returned already formatted as JSON.
-class WebsideInspector {
+class VMInspector {
 public:
-    virtual ~WebsideInspector() = default;
+    virtual ~VMInspector() = default;
 
     /// The VM's evaluator stack, when it has one.
     struct StackRegion {
@@ -26,4 +26,4 @@ public:
     virtual std::string inspectObject(uint64_t oop, int maxSlots) const = 0;
 };
 
-} // namespace webside
+} // namespace vmdbg

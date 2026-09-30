@@ -10,7 +10,7 @@ namespace webside {
 ///
 /// A thin dialect front end: it only names the dialect and builds an
 /// EggDebugSession. All Webside HTTP behavior lives in WebsideServer, which
-/// delegates to the session (a WebsideSession) and its WebsideInspector.
+/// delegates to the session (a WebsideSession) and its VMInspector.
 class EggWebsideServer : public WebsideServer {
 public:
     explicit EggWebsideServer(int port);

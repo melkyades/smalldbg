@@ -17,11 +17,11 @@ namespace egg {
 ///
 /// An inspector for the Egg interpreter VM
 /// (no JIT, ARM64 only, 64-bit pointers).
-class EggInspector : public webside::WebsideInspector {
+class EggInspector : public vmdbg::VMInspector {
 public:
     explicit EggInspector(smalldbg::Debugger* dbg);
 
-    // ---- WebsideInspector ----
+    // ---- VMInspector ----
     StackRegion evaluatorStack() const override;
     std::string inspectObject(uint64_t oop, int maxSlots) const override;
 

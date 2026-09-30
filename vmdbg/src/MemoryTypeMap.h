@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace webside {
+namespace vmdbg {
 
 /// How a stretch of target memory should be presented in a listing.
 enum class MemType {
@@ -108,4 +108,4 @@ private:
                                     uint64_t addr);
 };
 
-} // namespace webside
+} // namespace vmdbg

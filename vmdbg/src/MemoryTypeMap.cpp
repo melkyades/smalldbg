@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace webside {
+namespace vmdbg {
 
 const char* memTypeName(MemType t) {
     switch (t) {
@@ -208,4 +208,4 @@ std::vector<MemTypeRange> MemoryTypeMap::classify(uint64_t start, uint64_t end) 
     return out;
 }
 
-} // namespace webside
+} // namespace vmdbg

@@ -14,10 +14,11 @@ namespace smalldbg {
     struct StackFrame;
 }
 
+namespace vmdbg { class VMInspector; }
+
 namespace webside {
 
 class Json;             // forward declaration
-class WebsideInspector; // forward declaration
 
 /// Abstract interface for all Webside debug sessions.
 ///
@@ -129,7 +130,7 @@ public:
 
     // ---- underlying debugger / VM inspector ----
     virtual smalldbg::Debugger* getDebugger() const = 0;
-    virtual WebsideInspector* getInspector() const = 0;
+    virtual vmdbg::VMInspector* getInspector() const = 0;
 
     // ---- thread helpers ----
     std::shared_ptr<smalldbg::Thread> resolveThread(uint64_t threadId) const;

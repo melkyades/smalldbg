@@ -401,7 +401,7 @@ std::string EggInspector::getStackContents(const EvaluatorState& st) const {
 }
 
 // =========================================================================
-// WebsideInspector — VM introspection rendered as JSON for the server
+// VMInspector — VM introspection rendered as JSON for the server
 // =========================================================================
 
 using webside::Json;
