@@ -27,6 +27,11 @@ public:
     virtual Status resume() = 0;
     virtual Status step(Thread* thread) = 0;
     virtual Status suspend() = 0; // Interrupt running process
+
+    // Stepping over a call and out of a frame need nothing but breakpoints, so
+    // every backend has them; one whose engine does better says so.
+    virtual Status stepOver(Thread* thread);
+    virtual Status stepOut(Thread* thread);
     
     // --- Reverse debugging (TTD) ---
     // Default implementations return NotSupported; override in backends that support TTD
@@ -107,6 +112,11 @@ public:
     const Arch* getArch() const { return arch; }
 
 protected:
+    /** Run until the frame `depth` below the current one is returned to. **/
+    Status runToFrameReturn(Thread* thread, size_t depth);
+    /** Run until `address` is reached, by a breakpoint taken away after. **/
+    Status runTo(Address address);
+
     Mode mode{Mode::External};
     const Arch* arch{X64::instance()};
     std::function<void(const std::string &)> log;

@@ -43,6 +43,7 @@ add_library(smalldbg STATIC
     src/NativeFrameProcessor.cpp
     src/bindings/CAPI.cpp
     src/Disassembler.cpp
+    src/backends/Backend.cpp
 )
 
 target_link_libraries(smalldbg PRIVATE capstone::capstone)

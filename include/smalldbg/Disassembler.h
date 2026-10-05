@@ -12,6 +12,7 @@ struct DisasmInsn {
     int size;
     std::string bytes;
     std::string text;
+    bool isCall{false};  // transfers control to a callee that returns here
 };
 
 class Disassembler {

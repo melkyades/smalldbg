@@ -62,6 +62,43 @@ Symbol launchAtBreakHere(Debugger& dbg) {
     return *sym;
 }
 
+// Where the current frame returns to in its caller.
+Address callerResumeAddress(Debugger& dbg) {
+    auto thread = dbg.getCurrentThread();
+    REQUIRE(thread.get() != nullptr);
+    StackTrace trace(thread.get());
+    REQUIRE(trace.unwind(2) == Status::Ok);
+    REQUIRE(trace.getFrameCount() >= 2);
+    return trace.getFrames()[1]->ip();
+}
+
+Address currentIP(Debugger& dbg) {
+    Registers r;
+    REQUIRE(dbg.getRegisters(r) == Status::Ok);
+    return r.ip();
+}
+
+// The instruction the target is stopped on.
+DisasmInsn currentInstruction(Debugger& dbg) {
+    Address ip = currentIP(dbg);
+    uint8_t code[16];
+    REQUIRE(dbg.readMemory(ip, code, sizeof code) == Status::Ok);
+    auto insns = dbg.getDisassembler()->disassemble(code, sizeof code, ip);
+    REQUIRE_FALSE(insns.empty());
+    return insns[0];
+}
+
+// Single-step until the target is stopped on a call; false if none comes
+// within `limit` steps.
+bool stepToCall(Debugger& dbg, int limit) {
+    for (int i = 0; i < limit; i++) {
+        if (currentInstruction(dbg).isCall) return true;
+        REQUIRE(dbg.step() == Status::Ok);
+        REQUIRE(dbg.waitForEvent(StopReason::SingleStep, 15000) == StopReason::SingleStep);
+    }
+    return false;
+}
+
 } // namespace
 
 TEST_CASE("launch attaches and stops at the initial breakpoint") {
@@ -184,6 +221,47 @@ TEST_CASE("single-stepping advances the instruction pointer") {
     Registers after;
     REQUIRE(dbg.getRegisters(after) == Status::Ok);
     CHECK(after.ip() != before.ip());
+
+    dbg.detach();
+}
+
+TEST_CASE("stepping out of a function stops where its caller resumes") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    Address resumeAt = callerResumeAddress(dbg);
+
+    REQUIRE(dbg.stepOut() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 15000) != StopReason::None);
+    CHECK(currentIP(dbg) == resumeAt);
+
+    dbg.detach();
+}
+
+TEST_CASE("stepping over a call stops at the instruction after it") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    REQUIRE(dbg.stepOut() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 15000) != StopReason::None);
+
+    REQUIRE(stepToCall(dbg, 200));
+    DisasmInsn call = currentInstruction(dbg);
+
+    REQUIRE(dbg.stepOver() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 15000) != StopReason::None);
+    CHECK(currentIP(dbg) == call.address + call.size);
+
+    dbg.detach();
+}
+
+TEST_CASE("stepping over an instruction that is not a call is a single step") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    DisasmInsn first = currentInstruction(dbg);
+    REQUIRE_FALSE(first.isCall);
+
+    REQUIRE(dbg.stepOver() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 15000) != StopReason::None);
+    CHECK(currentIP(dbg) == first.address + first.size);
 
     dbg.detach();
 }

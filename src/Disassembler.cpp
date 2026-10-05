@@ -36,7 +36,10 @@ Disassembler::Disassembler(const Arch* arch_) : arch(arch_) {
     getCapstoneArchMode(arch, a, m);
     if (cs_open(a, m, reinterpret_cast<csh*>(&handle)) != CS_ERR_OK) {
         handle = nullptr;
+        return;
     }
+    // Instruction groups, which say what is a call, need the detail pass.
+    cs_option(*reinterpret_cast<csh*>(&handle), CS_OPT_DETAIL, CS_OPT_ON);
 }
 
 Disassembler::~Disassembler() {
@@ -55,7 +58,8 @@ std::vector<DisasmInsn> Disassembler::disassemble(const uint8_t* code, size_t si
             bytes << std::hex << std::setw(2) << std::setfill('0') << (int)ins.bytes[j];
         }
         std::string text = std::string(ins.mnemonic) + " " + ins.op_str;
-        out.push_back({ins.address, (int)ins.size, bytes.str(), text});
+        bool isCall = cs_insn_group(*reinterpret_cast<csh*>(&handle), &ins, CS_GRP_CALL);
+        out.push_back({ins.address, (int)ins.size, bytes.str(), text, isCall});
     }
     cs_free(insns, count);
     return out;

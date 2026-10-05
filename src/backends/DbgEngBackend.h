@@ -74,6 +74,7 @@ public:
 
     Status resume() override;
     Status step(Thread* thread) override;
+    Status stepOver(Thread* thread) override;
     Status suspend() override;
 
     // --- Post-mortem crash-dump loading ---

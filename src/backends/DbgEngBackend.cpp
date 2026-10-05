@@ -529,6 +529,19 @@ Status DbgEngBackend::step(Thread* thread) {
     return Status::Ok;
 }
 
+Status DbgEngBackend::stepOver(Thread* thread) {
+    if (!attached) return Status::NotAttached;
+    if (isDump) {
+        if (log) log("(dbgeng) stepOver: not supported on a static crash dump");
+        return Status::NotSupported;
+    }
+
+    requestStep(DEBUG_STATUS_STEP_OVER, *thread);
+
+    if (log) log("(dbgeng) stepOver requested");
+    return Status::Ok;
+}
+
 // The engine must be sitting on the thread being stepped, or it steps whichever
 // one it last had selected.
 void DbgEngBackend::requestStep(ULONG execStatus, Thread& thread) {
@@ -1459,6 +1472,7 @@ void DbgEngBackend::beginExecution(ULONG& execStatus) {
 
     // Remember PC before stepping (for TTD end-of-trace detection).
     bool isStep = (execStatus == DEBUG_STATUS_STEP_INTO ||
+                   execStatus == DEBUG_STATUS_STEP_OVER ||
                    execStatus == DEBUG_STATUS_REVERSE_STEP_INTO ||
                    execStatus == DEBUG_STATUS_REVERSE_STEP_OVER);
     stepPending = isStep;
@@ -1536,8 +1550,9 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
     }
 
     // TTD: forward step at same PC → end of trace.
-    if (isTTDTrace() && execStatus == DEBUG_STATUS_STEP_INTO &&
-        pc == static_cast<ULONG64>(lastStepPC)) {
+    bool forwardStep = execStatus == DEBUG_STATUS_STEP_INTO ||
+                       execStatus == DEBUG_STATUS_STEP_OVER;
+    if (isTTDTrace() && forwardStep && pc == static_cast<ULONG64>(lastStepPC)) {
         if (log) log("(dbgeng) TTD forward step at same PC — end of trace");
         {
             std::lock_guard<std::mutex> lock(mutex);

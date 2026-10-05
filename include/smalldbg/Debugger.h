@@ -42,6 +42,11 @@ public:
     Status step();              // Step using selectedThread or primaryThread
     Status step(Thread* thread); // Step specific thread
     Status suspend(); // Interrupt/break into running process
+
+    Status stepOver();
+    Status stepOver(Thread* thread);
+    Status stepOut();
+    Status stepOut(Thread* thread);
     
     // --- Reverse debugging (TTD) ---
     Status openTrace(const std::string& tracePath);  // Open a TTD trace file (.run)

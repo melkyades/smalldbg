@@ -95,6 +95,26 @@ Status Debugger::step(Thread* thread) {
     return backend->step(thread);
 }
 
+Status Debugger::stepOver() {
+    auto proc = backend->getProcess();
+    auto thread = selectedThread ? selectedThread : proc->primaryThread();
+    return stepOver(thread.get());
+}
+
+Status Debugger::stepOver(Thread* thread) {
+    return backend->stepOver(thread);
+}
+
+Status Debugger::stepOut() {
+    auto proc = backend->getProcess();
+    auto thread = selectedThread ? selectedThread : proc->primaryThread();
+    return stepOut(thread.get());
+}
+
+Status Debugger::stepOut(Thread* thread) {
+    return backend->stepOut(thread);
+}
+
 Status Debugger::suspend() {
     return backend->suspend();
 }

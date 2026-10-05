@@ -226,47 +226,11 @@ bool EggDebugSession::step() {
 }
 
 bool EggDebugSession::stepOver() {
-    // Step over: set a temporary breakpoint at the next instruction in the
-    // current frame (i.e. the return address of the callee if stepping into
-    // a call, or the very next instruction otherwise).  We approximate this
-    // by setting a breakpoint at the caller's IP (frame 1) so that if the
-    // current instruction is a call we stop when it returns.  Then resume.
-    // If there's no caller frame we fall back to a plain single-step.
-    auto thread = debugger->getCurrentThread();
-    if (!thread) return step();
-
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
-        return step();
-
-    auto returnAddr = trace.getFrames()[1]->ip();
-    debugger->setBreakpoint(returnAddr, "__stepover_tmp");
-    bool ok = debugger->resume() == smalldbg::Status::Ok;
-    if (ok) {
-        debugger->waitForEvent(smalldbg::StopReason::None, -1);
-    }
-    debugger->clearBreakpoint(returnAddr);
-    return ok;
+    return debugger->stepOver() == smalldbg::Status::Ok;
 }
 
 bool EggDebugSession::stepOut() {
-    // Step out: set a temporary breakpoint at the caller's return address
-    // (frame 1 IP) and resume execution.
-    auto thread = debugger->getCurrentThread();
-    if (!thread) return false;
-
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
-        return false;
-
-    auto returnAddr = trace.getFrames()[1]->ip();
-    debugger->setBreakpoint(returnAddr, "__stepout_tmp");
-    bool ok = debugger->resume() == smalldbg::Status::Ok;
-    if (ok) {
-        debugger->waitForEvent(smalldbg::StopReason::None, -1);
-    }
-    debugger->clearBreakpoint(returnAddr);
-    return ok;
+    return debugger->stepOut() == smalldbg::Status::Ok;
 }
 
 bool EggDebugSession::stepBack() {
