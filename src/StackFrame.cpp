@@ -1,4 +1,4 @@
-#include "smalldbg/StackTrace.h"
+#include "smalldbg/StackFrame.h"
 #include <iostream>
 #include <iomanip>
 
