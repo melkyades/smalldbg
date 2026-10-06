@@ -1,6 +1,6 @@
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/symbols/SymbolProvider.h"
-#include "smalldbg/StackFrameProcessor.h"
+#include "smalldbg/StackUnwinder.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Debugger.h"
@@ -9,16 +9,16 @@ namespace smalldbg {
 
 namespace {
 
-StackFrameProcessor* processorFor(
-    const std::vector<std::unique_ptr<StackFrameProcessor>>& processors,
+StackUnwinder* unwinderFor(
+    const std::vector<std::unique_ptr<StackUnwinder>>& unwinders,
     Address ip, const Registers& regs, Debugger* debugger) {
-    for (const auto& p : processors)
-        if (p->canProcess(ip, regs, debugger)) return p.get();
+    for (const auto& p : unwinders)
+        if (p->canUnwind(ip, regs, debugger)) return p.get();
     return nullptr;
 }
 
 // The walk covers the frames the engine can follow. A frame past that -- a
-// VM's own, unwound by a dialect processor -- is not in the map, and is worth
+// VM's own, unwound by a dialect unwinder -- is not in the map, and is worth
 // one direct question.
 std::vector<InlineFrameInfo> inlinedFramesAt(const InlineFrameMap& walked,
                                              const Registers& regs,
@@ -47,11 +47,11 @@ Status StackTrace::unwind(size_t maxFrames) {
     if (status != Status::Ok)
         return status;
 
-    const auto& processors = debugger->getFrameProcessors();
+    const auto& unwinders = debugger->getUnwinders();
 
     // One walk up front answers the inline question for every frame the engine
     // can follow. Frames past that -- a VM's own, unwound by a dialect
-    // processor -- are not in it, and fall back to asking one at a time.
+    // unwinder -- are not in it, and fall back to asking one at a time.
     InlineFrameMap inlineFrames =
         debugger->getInlineFrameMap(regs.ip(), regs.sp(), regs.fp());
 
@@ -62,9 +62,9 @@ Status StackTrace::unwind(size_t maxFrames) {
             break;
         prevFp = regs.fp();
         
-        StackFrameProcessor* processor =
-            processorFor(processors, regs.ip(), regs, debugger);
-        if (!processor)
+        StackUnwinder* unwinder =
+            unwinderFor(unwinders, regs.ip(), regs, debugger);
+        if (!unwinder)
             break;
         
         // Build the frame
@@ -72,11 +72,11 @@ Status StackTrace::unwind(size_t maxFrames) {
         frame->registers = regs;
         frame->hasRegisters = true;
         frame->thread = thread;
-        frame->processor = processor;
+        frame->unwinder = unwinder;
         frame->prev = frames.empty() ? nullptr : frames.back().get();
         
-        // Let the processor fill in frame description
-        processor->process(*frame, debugger);
+        // Let the unwinder fill in the frame's description
+        unwinder->process(*frame, debugger);
 
         if (!frame->metadata) {
             appendInlinedFrames(*frame, regs.ip(),
@@ -89,7 +89,7 @@ Status StackTrace::unwind(size_t maxFrames) {
         // unwind() modifies frame->registers in-place, so we save/restore
         // to keep the frame's own register context intact.
         Registers savedRegs = frame->registers;
-        Status unwound = processor->unwind(*frame, debugger);
+        Status unwound = unwinder->unwind(*frame, debugger);
         regs = frame->registers;           // caller state for next iteration
         frame->registers = savedRegs;      // restore this frame's own state
         
@@ -108,7 +108,7 @@ std::unique_ptr<StackFrame> StackTrace::inlinedFrameFor(
     synthetic->registers = physical.registers;
     synthetic->hasRegisters = physical.hasRegisters;
     synthetic->thread = thread;
-    synthetic->processor = physical.processor;
+    synthetic->unwinder = physical.unwinder;
     synthetic->prev = frames.empty() ? nullptr : frames.back().get();
     synthetic->inlined = true;
     synthetic->functionName = inlined.name;
@@ -128,8 +128,8 @@ void StackTrace::appendInlinedFrames(const StackFrame& physical, Address ip,
 }
 
 void StackTrace::resolveFrameDetails(size_t index, Debugger* debugger) {
-    if (index < frames.size() && frames[index]->processor) {
-        frames[index]->processor->resolveDetails(*frames[index], debugger);
+    if (index < frames.size() && frames[index]->unwinder) {
+        frames[index]->unwinder->resolveDetails(*frames[index], debugger);
     }
 }
 

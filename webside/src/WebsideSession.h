@@ -103,8 +103,8 @@ protected:
     /// Display label for a frame (used by listFrames).
     virtual std::string buildFrameLabel(const smalldbg::StackFrame& frame) const;
 
-    /// JSON detail for one frame; dispatches to the smalltalk/native hook
-    /// based on whether the frame carries processor metadata.
+    /** JSON detail for one frame; dispatches to the smalltalk/native hook
+     *  based on whether the frame carries unwinder metadata. **/
     virtual std::string buildFrameDetailJson(const smalldbg::StackFrame& frame,
                                              int index) const;
     virtual void addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;

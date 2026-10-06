@@ -97,7 +97,7 @@ here, and `std::optional<std::reference_wrapper<T>>` buys nothing for the
 `.get()` it costs at every use.
 
 ```cpp
-StackFrameProcessor* processorFor(...);        // nullptr when none matches
+StackUnwinder* unwinderFor(...);              // nullptr when none matches
 std::optional<Symbol> getSymbolByAddress(Address addr);   // a value
 ```
 

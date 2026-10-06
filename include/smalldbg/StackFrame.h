@@ -9,7 +9,7 @@
 namespace smalldbg {
 
 class Thread;
-class StackFrameProcessor;
+class StackUnwinder;
 
 /** A function the compiler folded into another function's code. The debug
  *  info records the call site, so a single physical frame can stand for
@@ -20,8 +20,8 @@ struct InlineFrameInfo {
     uint64_t offset{0};   // displacement within the inlined function
 };
 
-/** Data a frame processor attaches to the frames it produces. Each processor
- *  derives its own; clients cast it based on the frame's processor. **/
+/** Data an unwinder attaches to the frames it produces. Each unwinder derives
+ *  its own; clients cast it based on the frame's unwinder. **/
 struct FrameMetadata {
     virtual ~FrameMetadata() = default;
 };
@@ -34,9 +34,9 @@ struct StackFrame {
 
     const Thread* thread{nullptr};
 
-    StackFrameProcessor* processor{nullptr};
+    StackUnwinder* unwinder{nullptr};
 
-    // Processor-specific metadata (null for processors that don't set it)
+    // Unwinder-specific metadata (null for unwinders that don't set it)
     std::unique_ptr<FrameMetadata> metadata;
 
     // Previous frame in the trace (towards the top of the stack / most recent call)

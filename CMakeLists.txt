@@ -40,7 +40,7 @@ add_library(smalldbg STATIC
     src/StackTrace.cpp
     src/StackFrame.cpp
     src/LocalVariable.cpp
-    src/NativeFrameProcessor.cpp
+    src/NativeUnwinder.cpp
     src/bindings/CAPI.cpp
     src/Disassembler.cpp
     src/backends/Backend.cpp

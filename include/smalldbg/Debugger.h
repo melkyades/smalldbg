@@ -16,7 +16,7 @@ namespace smalldbg {
 class Backend;
 class Process;
 class Thread;
-class StackFrameProcessor;
+class StackUnwinder;
 
 // Whether an engine call was refused on this thread because the debuggee was
 // running. Recorded per-thread so that a caller serving one request at a time
@@ -116,9 +116,9 @@ public:
     SymbolProvider* getSymbolProvider();
     Status setSymbolOptions(const SymbolOptions& options);  // Set options before process creation
     
-    // Frame processor registration
-    void registerFrameProcessor(std::unique_ptr<StackFrameProcessor> processor);
-    const std::vector<std::unique_ptr<StackFrameProcessor>>& getFrameProcessors() const { return frameProcessors; }
+    // Stack unwinders, consulted in order. The native one is always last.
+    void registerUnwinder(std::unique_ptr<StackUnwinder> unwinder);
+    const std::vector<std::unique_ptr<StackUnwinder>>& getUnwinders() const { return unwinders; }
     
     Backend* getBackend() const { return backend; }
     Disassembler* getDisassembler() { return disassembler.get(); }
@@ -137,7 +137,7 @@ private:
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
-    std::vector<std::unique_ptr<StackFrameProcessor>> frameProcessors; // registered processors (checked in order)
+    std::vector<std::unique_ptr<StackUnwinder>> unwinders; // checked in order
     std::unique_ptr<Disassembler> disassembler; // disassembler instance
     Mode mode;                  // kept to build a replacement backend
     const Arch* initialArch;

@@ -2,8 +2,8 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/symbols/SymbolProvider.h"
-#include "smalldbg/StackFrameProcessor.h"
-#include "smalldbg/NativeFrameProcessor.h"
+#include "smalldbg/StackUnwinder.h"
+#include "smalldbg/NativeUnwinder.h"
 #include <algorithm>
 #include <sstream>
 
@@ -43,8 +43,8 @@ Debugger::Debugger(Mode m, const Arch* arch)
 
     disassembler = std::make_unique<Disassembler>(initialArch);
 
-    // Register the native/C frame processor as the default (always last in chain)
-    frameProcessors.push_back(std::make_unique<NativeFrameProcessor>());
+    // The native unwinder is the fallback, so it stays last.
+    unwinders.push_back(std::make_unique<NativeUnwinder>());
 }
 
 Debugger::~Debugger(){ delete backend; }
@@ -249,10 +249,10 @@ Status Debugger::setSymbolOptions(const SymbolOptions& options) {
     return Status::Ok;
 }
 
-void Debugger::registerFrameProcessor(std::unique_ptr<StackFrameProcessor> processor) {
-    // Insert before the last element (the native fallback processor)
-    auto it = frameProcessors.empty() ? frameProcessors.end() : std::prev(frameProcessors.end());
-    frameProcessors.insert(it, std::move(processor));
+void Debugger::registerUnwinder(std::unique_ptr<StackUnwinder> unwinder) {
+    // Ahead of the native unwinder, which stays last.
+    auto it = unwinders.empty() ? unwinders.end() : std::prev(unwinders.end());
+    unwinders.insert(it, std::move(unwinder));
 }
 
 } // namespace smalldbg
