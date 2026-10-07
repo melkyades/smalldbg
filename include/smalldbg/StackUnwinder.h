@@ -1,16 +1,18 @@
 #pragma once
 
 #include "Types.h"
+#include "StackFrame.h"
+
+#include <vector>
 
 namespace smalldbg {
 
 class Debugger;
-struct StackFrame;
 
 /** Unwinds the frames of one kind of code, such as native code or a VM's.
  *
- *  A stack trace asks its unwinders in order which one handles a frame, then
- *  has that one find the frame's caller and describe the frame.
+ *  A stack trace asks its unwinders, highest priority first, which one handles
+ *  a frame, then has that one find the frame's caller and describe the frame.
  **/
 class StackUnwinder {
 public:
@@ -31,6 +33,23 @@ public:
     // Lazily resolve expensive details (source location, locals) for a single frame.
     // Default implementation does nothing; subclasses override as needed.
     virtual void resolveDetails(StackFrame& frame, Debugger* debugger) {}
+
+    // The frames from the one at `regs` on, innermost first, as far as this
+    // unwinder can follow them in one go, at most maxFrames. Functions inlined
+    // into a frame come just before it, as frames flagged `inlined`. Only ip,
+    // sp and fp are set in each frame's registers. Empty for an unwinder that
+    // goes one frame at a time, through unwind().
+    virtual std::vector<StackFrame> unwindRun(const Registers& regs,
+                                              size_t maxFrames,
+                                              Debugger* debugger) {
+        return {};
+    }
+
+    // The functions the compiler inlined at the frame's ip, innermost first.
+    virtual std::vector<InlineFrameInfo> inlinedAt(const StackFrame& frame,
+                                                   Debugger* debugger) {
+        return {};
+    }
 };
 
 } // namespace smalldbg

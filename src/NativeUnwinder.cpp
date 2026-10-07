@@ -73,4 +73,9 @@ void NativeUnwinder::resolveDetails(StackFrame& frame, Debugger* debugger) {
     }
 }
 
+std::vector<InlineFrameInfo> NativeUnwinder::inlinedAt(const StackFrame& frame,
+                                                       Debugger* debugger) {
+    return debugger->getInlineFrames(frame.ip(), frame.sp(), frame.fp());
+}
+
 } // namespace smalldbg

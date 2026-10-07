@@ -102,7 +102,6 @@ public:
     Status getRegisters(const Thread* thread, Registers &out) const;
     Status recoverCallerRegisters(Registers& regs) const;
     std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp, Address fp) const;
-    InlineFrameMap getInlineFrameMap(Address ip, Address sp, Address fp) const;
 
     // Logging callback (simple) — optional
     void setLogCallback(std::function<void(const std::string &)> cb);
@@ -116,7 +115,9 @@ public:
     SymbolProvider* getSymbolProvider();
     Status setSymbolOptions(const SymbolOptions& options);  // Set options before process creation
     
-    // Stack unwinders, consulted in order. The native one is always last.
+    // The unwinders a stack trace asks, highest priority first: those added
+    // with registerUnwinder(), in the order they were added, then the
+    // backend's, which handles any frame.
     void registerUnwinder(std::unique_ptr<StackUnwinder> unwinder);
     const std::vector<std::unique_ptr<StackUnwinder>>& getUnwinders() const { return unwinders; }
     
@@ -137,7 +138,7 @@ private:
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
-    std::vector<std::unique_ptr<StackUnwinder>> unwinders; // checked in order
+    std::vector<std::unique_ptr<StackUnwinder>> unwinders; // highest priority first
     std::unique_ptr<Disassembler> disassembler; // disassembler instance
     Mode mode;                  // kept to build a replacement backend
     const Arch* initialArch;

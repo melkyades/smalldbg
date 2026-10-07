@@ -3,7 +3,6 @@
 #include "smalldbg/Thread.h"
 #include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackUnwinder.h"
-#include "smalldbg/NativeUnwinder.h"
 #include <algorithm>
 #include <sstream>
 
@@ -43,8 +42,8 @@ Debugger::Debugger(Mode m, const Arch* arch)
 
     disassembler = std::make_unique<Disassembler>(initialArch);
 
-    // The native unwinder is the fallback, so it stays last.
-    unwinders.push_back(std::make_unique<NativeUnwinder>());
+    // The backend's unwinder handles any frame, so it has the lowest priority.
+    unwinders.push_back(backend->createUnwinder());
 }
 
 Debugger::~Debugger(){ delete backend; }
@@ -54,6 +53,7 @@ Debugger::~Debugger(){ delete backend; }
 void Debugger::useBackend(Backend* newBackend) {
     delete backend;
     backend = newBackend;
+    if (!unwinders.empty()) unwinders.back() = backend->createUnwinder();
     symbolProvider = std::make_unique<SymbolProvider>(backend);
 }
 
@@ -206,10 +206,6 @@ std::vector<InlineFrameInfo> Debugger::getInlineFrames(Address ip, Address sp, A
     return backend->getInlineFrames(ip, sp, fp);
 }
 
-InlineFrameMap Debugger::getInlineFrameMap(Address ip, Address sp, Address fp) const {
-    return backend->getInlineFrameMap(ip, sp, fp);
-}
-
 bool Debugger::isAttached() const { return backend->isAttached(); }
 
 std::optional<uintptr_t> Debugger::attachedPid() const { return backend->attachedPid(); }
@@ -250,7 +246,7 @@ Status Debugger::setSymbolOptions(const SymbolOptions& options) {
 }
 
 void Debugger::registerUnwinder(std::unique_ptr<StackUnwinder> unwinder) {
-    // Ahead of the native unwinder, which stays last.
+    // Above the backend's unwinder, which keeps the lowest priority.
     auto it = unwinders.empty() ? unwinders.end() : std::prev(unwinders.end());
     unwinders.insert(it, std::move(unwinder));
 }

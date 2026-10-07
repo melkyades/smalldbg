@@ -91,8 +91,12 @@ public:
     Status recoverCallerRegisters(Registers& regs) const override;
     std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp,
                                                  Address fp) const override;
-    InlineFrameMap getInlineFrameMap(Address ip, Address sp,
-                                     Address fp) const override;
+    std::unique_ptr<StackUnwinder> createUnwinder() const override;
+
+    // The engine's stack walk from the frame at ip/sp/fp, innermost frame
+    // first, with the functions inlined into each frame just before it.
+    std::vector<StackFrame> walkStack(Address ip, Address sp, Address fp,
+                                      size_t maxFrames) const;
 
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
@@ -161,8 +165,8 @@ protected:
     // Register reads and inline-frame expansion, both requiring the engine
     // thread and the right thread selected on it.
     Status readRegisters(Registers& out) const;
-    void collectInlineFrameMap(Address ip, Address sp, Address fp,
-                               InlineFrameMap& out) const;
+    void collectStackWalk(Address ip, Address sp, Address fp, size_t maxFrames,
+                          std::vector<StackFrame>& out) const;
     void collectInlineFrames(Address ip, Address sp, Address fp,
                              std::vector<InlineFrameInfo>& out) const;
     std::string captureCommandOutput(const std::string& cmd) const;

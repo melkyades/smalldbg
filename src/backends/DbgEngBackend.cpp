@@ -15,6 +15,7 @@
 #include "../../include/smalldbg/Debugger.h"
 
 #include "../symbols/DbgEngSymbolBackend.h"
+#include "DbgEngUnwinder.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -909,65 +910,112 @@ std::vector<InlineFrameInfo> DbgEngBackend::getInlineFrames(
 
 static constexpr ULONG kMaxWalkFrames = 512;
 
-// GetStackTraceEx walks the stack from the frame it is given, so asking it
-// once per frame re-walks what the first call already knew. One walk returns
-// the whole stack with inline entries preceding the physical frame that holds
-// them; group them there and the per-frame calls disappear.
-// Inline rows precede the physical frame they belong to, so they accumulate in
-// `pending` until a physical row claims them. Every physical frame the walk saw
-// gets an entry, empty or not: a missing key has to mean "the walk never
-// reached here", or a frame with no inline functions would ask again one at a
-// time.
-static void groupInlineFrame(IDebugSymbols4& symbols4,
-                             const DEBUG_STACK_FRAME_EX& row,
-                             std::vector<InlineFrameInfo>& pending,
-                             InlineFrameMap& out) {
+// Whether a frame of the engine's walk stands for an inlined function rather
+// than a physical frame.
+static bool isInlineFrame(const DEBUG_STACK_FRAME_EX& frame,
+                          const DEBUG_STACK_FRAME_EX* lastPhysical) {
     INLINE_FRAME_CONTEXT ctx;
-    ctx.ContextValue = row.InlineFrameContext;
-    if (ctx.FrameType != STACK_FRAME_TYPE_INLINE) {
-        out[{row.InstructionOffset, row.FrameOffset}] = std::move(pending);
-        pending.clear();
-        return;
-    }
+    ctx.ContextValue = frame.InlineFrameContext;
+    // The engine adds STACK_FRAME_TYPE_RA to the innermost frame's type.
+    if ((ctx.FrameType & ~STACK_FRAME_TYPE_RA) == STACK_FRAME_TYPE_INLINE)
+        return true;
 
+    // A walk started from explicit registers leaves InlineFrameContext unset.
+    // An inlined frame then has the same ip, sp and fp as the frame it was
+    // inlined into; taken for a caller, it would end the unwind.
+    return lastPhysical && lastPhysical->InstructionOffset == frame.InstructionOffset
+           && lastPhysical->StackOffset == frame.StackOffset
+           && lastPhysical->FrameOffset == frame.FrameOffset;
+}
+
+static bool inlineFrameAt(IDebugSymbols4& symbols4,
+                          const DEBUG_STACK_FRAME_EX& engineFrame, StackFrame& out) {
     char name[512] = {};
     ULONG nameSize = 0;
     ULONG64 displacement = 0;
     if (FAILED(symbols4.GetNameByInlineContext(
-            row.InstructionOffset, row.InlineFrameContext,
+            engineFrame.InstructionOffset, engineFrame.InlineFrameContext,
             name, sizeof(name), &nameSize, &displacement)))
-        return;
-    pending.push_back(inlineFrameNamed(name, displacement));
+        return false;
+
+    InlineFrameInfo info = inlineFrameNamed(name, displacement);
+    out.inlined = true;
+    out.functionName = info.name;
+    out.moduleName = info.moduleName;
+    out.functionOffset = info.offset;
+    return true;
 }
 
-void DbgEngBackend::collectInlineFrameMap(Address ip, Address sp, Address fp,
-                                          InlineFrameMap& out) const {
+// Appends a physical frame, preceded by the inlined frames waiting in
+// `pending` for it, which take its registers.
+static void appendPhysicalFrame(const DEBUG_STACK_FRAME_EX& engineFrame, const Arch* arch,
+                                std::vector<StackFrame>& pending,
+                                std::vector<StackFrame>& out) {
+    StackFrame physical;
+    physical.registers.arch = arch;
+    physical.setIp(engineFrame.InstructionOffset);
+    physical.setSp(engineFrame.StackOffset);
+    physical.setFp(engineFrame.FrameOffset);
+    for (StackFrame& inlined : pending) {
+        inlined.registers = physical.registers;
+        inlined.functionStart = inlined.ip() - inlined.functionOffset;
+        out.push_back(std::move(inlined));
+    }
+    pending.clear();
+    out.push_back(std::move(physical));
+}
+
+// Each inlined function takes an engine frame of its own, so ask the engine
+// for twice as many frames as are wanted.
+static ULONG engineFramesFor(size_t maxFrames) {
+    if (maxFrames == 0 || maxFrames > kMaxWalkFrames / 2) return kMaxWalkFrames;
+    return static_cast<ULONG>(maxFrames) * 2;
+}
+
+// One GetStackTraceEx call covers the whole stack; calling it per frame would
+// walk the frames above each one again.
+void DbgEngBackend::collectStackWalk(Address ip, Address sp, Address fp,
+                                     size_t maxFrames,
+                                     std::vector<StackFrame>& out) const {
     auto control5 = queryInterface<IDebugControl5>(control);
     if (!control5) return;
     auto symbols4 = queryInterface<IDebugSymbols4>(symbols);
     if (!symbols4) return;
 
-    std::vector<DEBUG_STACK_FRAME_EX> raw(kMaxWalkFrames);
+    ULONG wanted = engineFramesFor(maxFrames);
+    std::vector<DEBUG_STACK_FRAME_EX> engineFrames(wanted);
     ULONG filled = 0;
-    HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, raw.data(),
-                                           kMaxWalkFrames, &filled);
+    HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, engineFrames.data(), wanted,
+                                           &filled);
     if (FAILED(hr)) {
         if (log) log("(dbgeng) GetStackTraceEx failed hr=" + toHex((unsigned long)hr));
         return;
     }
 
-    std::vector<InlineFrameInfo> pending;
-    for (ULONG i = 0; i < filled; i++)
-        groupInlineFrame(*symbols4, raw[i], pending, out);
+    std::vector<StackFrame> pending;
+    const DEBUG_STACK_FRAME_EX* lastPhysical = nullptr;
+    for (ULONG i = 0; i < filled; i++) {
+        if (isInlineFrame(engineFrames[i], lastPhysical)) {
+            StackFrame inlined;
+            if (inlineFrameAt(*symbols4, engineFrames[i], inlined))
+                pending.push_back(std::move(inlined));
+            continue;
+        }
+        appendPhysicalFrame(engineFrames[i], arch, pending, out);
+        lastPhysical = &engineFrames[i];
+    }
 }
 
-InlineFrameMap DbgEngBackend::getInlineFrameMap(
-    Address ip, Address sp, Address fp) const
-{
-    InlineFrameMap result;
+std::vector<StackFrame> DbgEngBackend::walkStack(Address ip, Address sp, Address fp,
+                                                 size_t maxFrames) const {
+    std::vector<StackFrame> result;
     if (!attached) return result;
-    (void)runOnEngineThread([&]{ collectInlineFrameMap(ip, sp, fp, result); });
+    (void)runOnEngineThread([&]{ collectStackWalk(ip, sp, fp, maxFrames, result); });
     return result;
+}
+
+std::unique_ptr<StackUnwinder> DbgEngBackend::createUnwinder() const {
+    return std::make_unique<DbgEngUnwinder>(*this);
 }
 
 Status DbgEngBackend::recoverCallerRegisters(Registers& regs) const {

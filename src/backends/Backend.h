@@ -3,6 +3,7 @@
 #include "../../include/smalldbg/Types.h"
 #include "../../include/smalldbg/Process.h"
 #include "../../include/smalldbg/StackTrace.h"
+#include "../../include/smalldbg/NativeUnwinder.h"
 #include <functional>
 #include <vector>
 #include <optional>
@@ -69,11 +70,12 @@ public:
     virtual std::vector<InlineFrameInfo> getInlineFrames(
         Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
 
-    // Every frame's inline functions in one walk, starting from the frame
-    // described by ip/sp/fp. Backends without inline info return nothing, and
-    // callers fall back to asking frame by frame.
-    virtual InlineFrameMap getInlineFrameMap(
-        Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
+    // The debugger's lowest-priority unwinder, so it handles any frame no
+    // other unwinder does. By default the native one, which unwinds a frame at
+    // a time; a backend that can walk the stack itself returns its own.
+    virtual std::unique_ptr<StackUnwinder> createUnwinder() const {
+        return std::make_unique<NativeUnwinder>();
+    }
 
     virtual bool isAttached() const { return false; }
     std::optional<uintptr_t> attachedPid() const {

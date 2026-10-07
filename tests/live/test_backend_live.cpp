@@ -17,11 +17,13 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/StackTrace.h"
+#include "smalldbg/symbols/SymbolProvider.h"
 
 #include "util.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 using namespace smalldbg;
 
@@ -181,6 +183,41 @@ TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     const auto& frames = trace.getFrames();
     REQUIRE(frames.size() > 0);
     CHECK(frames[0]->ip() != 0);
+
+    dbg.detach();
+}
+
+// test_target's "deep" mode recurses 30 times before calling break_here, so a
+// stack walk that stops early fails the frame count.
+TEST_CASE("a deep stack unwinds all the way to the thread start") {
+    Debugger dbg(Mode::External, X64::instance());
+
+    REQUIRE(dbg.launch(test::testTargetPath(), {"deep"}) == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
+
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+    auto breakHere = symbols->getSymbolByName("test_target!break_here");
+    REQUIRE(breakHere.has_value());
+    REQUIRE(dbg.setBreakpoint(breakHere->address, "break_here") == Status::Ok);
+    REQUIRE(dbg.resume() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::Breakpoint, 20000) == StopReason::Breakpoint);
+
+    auto thread = dbg.getProcess()->primaryThread();
+    REQUIRE(thread.get() != nullptr);
+
+    StackTrace trace(thread.get());
+    REQUIRE(trace.unwind(256) == Status::Ok);
+    const auto& frames = trace.getFrames();
+
+    // 30 recursions, plus break_here, main and whatever started the thread.
+    CHECK(frames.size() > 30);
+
+    bool reachedThreadStart = false;
+    for (const auto& frame : frames)
+        if (frame->functionName.find("RtlUserThreadStart") != std::string::npos)
+            reachedThreadStart = true;
+    CHECK(reachedThreadStart);
 
     dbg.detach();
 }

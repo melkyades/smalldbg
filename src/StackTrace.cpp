@@ -9,23 +9,22 @@ namespace smalldbg {
 
 namespace {
 
-StackUnwinder* unwinderFor(
-    const std::vector<std::unique_ptr<StackUnwinder>>& unwinders,
-    Address ip, const Registers& regs, Debugger* debugger) {
-    for (const auto& p : unwinders)
-        if (p->canUnwind(ip, regs, debugger)) return p.get();
+// The highest-priority unwinder that handles the frame whose registers are
+// `regs`.
+StackUnwinder* unwinderFor(const Registers& regs, Debugger* debugger) {
+    for (const auto& unwinder : debugger->getUnwinders())
+        if (unwinder->canUnwind(regs.ip(), regs, debugger)) return unwinder.get();
     return nullptr;
 }
 
-// The walk covers the frames the engine can follow. A frame past that -- a
-// VM's own, unwound by a dialect unwinder -- is not in the map, and is worth
-// one direct question.
-std::vector<InlineFrameInfo> inlinedFramesAt(const InlineFrameMap& walked,
-                                             const Registers& regs,
-                                             Debugger* debugger) {
-    auto known = walked.find({regs.ip(), regs.fp()});
-    if (known != walked.end()) return known->second;
-    return debugger->getInlineFrames(regs.ip(), regs.sp(), regs.fp());
+// A frame of a run comes with its ip, sp and fp. Its other registers are taken
+// from the frame the run started at.
+Registers registersAt(const Registers& start, const StackFrame& frame) {
+    Registers regs = start;
+    regs.setIp(frame.ip());
+    regs.setSp(frame.sp());
+    regs.setFp(frame.fp());
+    return regs;
 }
 
 } // namespace
@@ -37,69 +36,120 @@ StackTrace::StackTrace(const Thread* t)
 StackTrace::~StackTrace() {
 }
 
+// Each frame is unwound by the highest-priority unwinder that handles it. One
+// that can follow several frames in one go hands back a whole run of them,
+// which is cut at the first frame a higher-priority unwinder handles; a run
+// that is not cut is the rest of the stack.
 Status StackTrace::unwind(size_t maxFrames) {
     frames.clear();
 
-    Debugger* debugger = thread->getDebugger();
-
     Registers regs;
-    Status status = debugger->getRegisters(thread, regs);
+    Status status = thread->getDebugger()->getRegisters(thread, regs);
     if (status != Status::Ok)
         return status;
 
-    const auto& unwinders = debugger->getUnwinders();
+    Registers previous;
+    while (shouldKeepUnwinding(regs, previous, maxFrames)) {
+        previous = regs;
+        if (!appendFramesFrom(regs, maxFrames)) break;
+    }
+    return Status::Ok;
+}
 
-    // One walk up front answers the inline question for every frame the engine
-    // can follow. Frames past that -- a VM's own, unwound by a dialect
-    // unwinder -- are not in it, and fall back to asking one at a time.
-    InlineFrameMap inlineFrames =
-        debugger->getInlineFrameMap(regs.ip(), regs.sp(), regs.fp());
+// Appends the frame whose registers are `regs`, or the run of frames starting
+// at it. Leaves in `regs` the registers of the frame to go on from; false when
+// the stack ends.
+bool StackTrace::appendFramesFrom(Registers& regs, size_t maxFrames) {
+    Debugger* debugger = thread->getDebugger();
+    StackUnwinder* unwinder = unwinderFor(regs, debugger);
+    if (!unwinder) return false;
 
-    Address prevFp = 0;
-    while (frames.size() < maxFrames && regs.ip() != 0) {
-        // After the first frame, require FP to advance to avoid infinite loops.
-        if (!frames.empty() && regs.fp() <= prevFp)
-            break;
-        prevFp = regs.fp();
-        
-        StackUnwinder* unwinder =
-            unwinderFor(unwinders, regs.ip(), regs, debugger);
-        if (!unwinder)
-            break;
-        
-        // Build the frame
-        auto frame = std::make_unique<StackFrame>();
+    std::vector<StackFrame> run =
+        unwinder->unwindRun(regs, maxFrames - frames.size(), debugger);
+    if (!run.empty()) return appendRun(run, *unwinder, regs, maxFrames);
+    return appendFrame(*unwinder, regs, maxFrames);
+}
+
+// Takes the frames of a run up to the first one a higher-priority unwinder
+// handles, and leaves that one in `regs` for it. False when the run is not
+// cut, as nothing past it is known. A run does not end there by
+// itself: a backend's walk carries on through code it has no unwind data for,
+// and what it reports past that point is not the stack.
+bool StackTrace::appendRun(std::vector<StackFrame>& run, StackUnwinder& unwinder,
+                           Registers& regs, size_t maxFrames) {
+    Debugger* debugger = thread->getDebugger();
+    const Registers start = regs;
+    size_t from = 0;
+    for (size_t i = 0; i < run.size(); ++i) {
+        if (run[i].inlined) continue;
+        Registers here = from == 0 ? start : registersAt(start, run[i]);
+        if (from > 0 && unwinderFor(here, debugger) != &unwinder) {
+            regs = here;
+            return true;
+        }
+        if (!appendRunFrames(run, from, i + 1, here, unwinder, maxFrames))
+            return false;
+        from = i + 1;
+    }
+    return false;
+}
+
+// run[from, to) is one physical frame, preceded by the frames inlined into it,
+// all of which share its registers.
+bool StackTrace::appendRunFrames(std::vector<StackFrame>& run, size_t from,
+                                 size_t to, const Registers& regs,
+                                 StackUnwinder& unwinder, size_t maxFrames) {
+    Debugger* debugger = thread->getDebugger();
+    for (size_t i = from; i < to; ++i) {
+        if (frames.size() >= maxFrames) return false;
+        auto frame = std::make_unique<StackFrame>(std::move(run[i]));
         frame->registers = regs;
         frame->hasRegisters = true;
         frame->thread = thread;
-        frame->unwinder = unwinder;
+        frame->unwinder = &unwinder;
         frame->prev = frames.empty() ? nullptr : frames.back().get();
-        
-        // Let the unwinder fill in the frame's description
-        unwinder->process(*frame, debugger);
-
-        if (!frame->metadata) {
-            appendInlinedFrames(*frame, regs.ip(),
-                                inlinedFramesAt(inlineFrames, regs, debugger),
-                                maxFrames);
-            frame->prev = frames.empty() ? nullptr : frames.back().get();
-        }
-
-        // Recover caller registers without clobbering the stored frame.
-        // unwind() modifies frame->registers in-place, so we save/restore
-        // to keep the frame's own register context intact.
-        Registers savedRegs = frame->registers;
-        Status unwound = unwinder->unwind(*frame, debugger);
-        regs = frame->registers;           // caller state for next iteration
-        frame->registers = savedRegs;      // restore this frame's own state
-        
+        if (!frame->inlined) unwinder.process(*frame, debugger);
         frames.push_back(std::move(frame));
-        
-        if (unwound != Status::Ok)
-            break;
     }
-    
-    return Status::Ok;
+    return true;
+}
+
+// One frame, unwound by its unwinder, preceded by the functions inlined at it.
+bool StackTrace::appendFrame(StackUnwinder& unwinder, Registers& regs,
+                             size_t maxFrames) {
+    Debugger* debugger = thread->getDebugger();
+    auto frame = std::make_unique<StackFrame>();
+    frame->registers = regs;
+    frame->hasRegisters = true;
+    frame->thread = thread;
+    frame->unwinder = &unwinder;
+    frame->prev = frames.empty() ? nullptr : frames.back().get();
+    unwinder.process(*frame, debugger);
+
+    appendInlinedFrames(*frame, regs.ip(), unwinder.inlinedAt(*frame, debugger),
+                        maxFrames);
+    frame->prev = frames.empty() ? nullptr : frames.back().get();
+
+    // unwind() writes the caller's registers into the frame, which keeps its own.
+    Registers own = frame->registers;
+    Status unwound = unwinder.unwind(*frame, debugger);
+    regs = frame->registers;
+    frame->registers = own;
+
+    frames.push_back(std::move(frame));
+    return unwound == Status::Ok;
+}
+
+// A null ip does not end the stack: a call through a null pointer leaves one
+// with callers above it. A caller identical to its callee does, as unwinding
+// it again would only find it again.
+bool StackTrace::shouldKeepUnwinding(const Registers& regs,
+                                     const Registers& previous,
+                                     size_t maxFrames) const {
+    if (frames.size() >= maxFrames) return false;
+    if (frames.empty()) return true;
+    return regs.ip() != previous.ip() || regs.sp() != previous.sp()
+           || regs.fp() != previous.fp();
 }
 
 std::unique_ptr<StackFrame> StackTrace::inlinedFrameFor(

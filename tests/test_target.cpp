@@ -43,6 +43,30 @@ static void workload_loop(int iterations) {
     }
 }
 
+// "deep" mode: the main thread and kWorkerThreads workers each recurse
+// kDeepFrames levels and then wait, so tests get deep stacks on several threads.
+static const int kDeepFrames = 30;
+static const int kWorkerThreads = 4;
+
+// noinline, and the result is used after the call, so the optimizer keeps one
+// frame per level instead of turning the recursion into a loop.
+static SMALLDBG_NOINLINE int recurse(int depth, void (*atBottom)()) {
+    if (depth <= 0) {
+        atBottom();
+        return 0;
+    }
+    return recurse(depth - 1, atBottom) + depth;
+}
+
+static void park() {
+    for (int i = 0; i < 200; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+static void deep_worker() {
+    g_test_value += recurse(kDeepFrames, park);
+}
+
 static void do_a_crash() {
     // intentionally cause an unhandled exception (only used explicitly)
     throw std::runtime_error("test-app: intentional crash");
@@ -68,6 +92,16 @@ int main(int argc, char **argv) {
 
     // Clear and reuse global value so memory read/write tests have deterministic state
     g_test_value = 100;
+
+    // The workers never return, so they are not joined.
+    if (mode == "deep") {
+        for (int i = 0; i < kWorkerThreads; ++i)
+            std::thread(deep_worker).detach();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        g_test_value += recurse(kDeepFrames, break_here);
+        park();
+        return 0;
+    }
 
     // Known function to place a breakpoint on
     break_here();

@@ -5,16 +5,9 @@
 #include <string>
 #include <vector>
 #include <memory>
-#include <map>
-#include <utility>
 #include <cstdint>
 
 namespace smalldbg {
-
-/// Inline frames for a whole stack, keyed by the (ip, fp) of the physical
-/// frame that holds them. Asking per frame costs a stack walk each time.
-using InlineFrameMap =
-    std::map<std::pair<Address, Address>, std::vector<InlineFrameInfo>>;
 
 class Debugger;
 
@@ -36,6 +29,16 @@ public:
     size_t getFrameCount() const { return frames.size(); }
 
 private:
+    bool appendFramesFrom(Registers& regs, size_t maxFrames);
+    bool appendRun(std::vector<StackFrame>& run, StackUnwinder& unwinder,
+                   Registers& regs, size_t maxFrames);
+    bool appendRunFrames(std::vector<StackFrame>& run, size_t from, size_t to,
+                         const Registers& regs, StackUnwinder& unwinder,
+                         size_t maxFrames);
+    bool appendFrame(StackUnwinder& unwinder, Registers& regs, size_t maxFrames);
+    bool shouldKeepUnwinding(const Registers& regs, const Registers& previous,
+                             size_t maxFrames) const;
+
     // A physical frame can stand for several logical calls when the compiler
     // inlined them. Emit those above it, innermost first, so the frame list
     // matches what the engine's own backtrace shows.
