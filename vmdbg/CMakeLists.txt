@@ -25,3 +25,5 @@ target_include_directories(vmdbg PUBLIC
 )
 
 target_link_libraries(vmdbg PUBLIC smalldbg)
+
+add_subdirectory(tests)
