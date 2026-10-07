@@ -8,6 +8,7 @@ add_executable(vmdbg_tests
     test_smalltalk_inspector.cpp
     test_address_table.cpp
     test_method_parser.cpp
+    test_frame_unwinder.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 
