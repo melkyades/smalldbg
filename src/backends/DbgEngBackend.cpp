@@ -521,6 +521,8 @@ Status DbgEngBackend::resume() {
         stopReason = StopReason::None;
         stepRequested = false;
         startFailed = false;
+        interruptRequested = false;
+        interruptRaised = false;
         pendingExecStatus = DEBUG_STATUS_GO;
         continueRequested = true;
     }
@@ -591,10 +593,22 @@ void DbgEngBackend::requestResume(ULONG execStatus) {
         stepRequested = false;
         stopped = false;
         stopReason = StopReason::None;
+        interruptRequested = false;
+        interruptRaised = false;
         pendingExecStatus = execStatus;
         continueRequested = true;
     }
     cv.notify_all();
+}
+
+// How long a suspend waits for the engine to actually halt the target.
+static constexpr int kSuspendTimeoutMs = 3000;
+
+// Clears a break request the stop has already answered. One left pending makes
+// the engine fail every later memory read with STATUS_CONTROL_C_EXIT, while
+// registers, which come from the stop, still read.
+void DbgEngBackend::consumePendingInterrupt() const {
+    for (int i = 0; i < 8 && control->GetInterrupt() == S_OK; i++) {}
 }
 
 Status DbgEngBackend::suspend() {
@@ -616,12 +630,21 @@ Status DbgEngBackend::suspend() {
         }
     }
 
-    HRESULT hr = control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
-    if (FAILED(hr) && log)
-        log("(dbgeng) suspend: SetInterrupt failed hr=" + toHex((unsigned long)hr));
-
+    // The engine thread raises the break, once, between event waits. Each
+    // break-in suspends the target once more and a resume repays only one, so
+    // a second break would leave the target suspended for good.
+    interruptRequested = true;
     if (log) log("(dbgeng) suspend requested");
-    return Status::Ok;
+
+    // Returns once the target has actually halted, so the caller never reads
+    // threads and frames off a running process.
+    std::unique_lock<std::mutex> lock(mutex);
+    if (cv.wait_for(lock, std::chrono::milliseconds(kSuspendTimeoutMs),
+                    [this] { return stopped; }))
+        return Status::Ok;
+
+    if (log) log("(dbgeng) suspend: target did not halt");
+    return Status::Error;
 }
 
 // Start the event loop in `mode` and block until it has opened the target.
@@ -1602,11 +1625,29 @@ bool DbgEngBackend::beginExecution(ULONG& execStatus) {
     return true;
 }
 
+// How often a run looks up to see whether someone asked it to stop.
+static constexpr ULONG kInterruptPollMs = 200;
+
 void DbgEngBackend::pumpEvents(ULONG execStatus) {
     while (running) {
-        HRESULT hr = control->WaitForEvent(0, INFINITE);
+        HRESULT hr = control->WaitForEvent(0, kInterruptPollMs);
 
-        if (hr == S_FALSE) continue;  // should not happen with INFINITE
+        // No event in this slice. A requested stop is raised here, as only the
+        // thread that owns the engine may interrupt it. The request stays set
+        // until the stop arrives: the engine also reports BREAK when a wait
+        // merely times out.
+        if (hr == S_FALSE) {
+            if (interruptRequested && !interruptRaised.exchange(true)) {
+                // The engine only breaks into a target it is executing, and
+                // after a timeout it may not be, so it is set going first.
+                ULONG status = 0;
+                control->GetExecutionStatus(&status);
+                if (status != DEBUG_STATUS_GO)
+                    control->SetExecutionStatus(DEBUG_STATUS_GO);
+                control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
+            }
+            continue;
+        }
 
         if (FAILED(hr)) {
             if (log) log("(dbgeng) event loop: WaitForEvent failed hr="
@@ -1669,6 +1710,15 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
         }
         signalStopped();
         return EventAction::EndOfTrace;
+    }
+
+    // The break a suspend asked for arrives as a breakpoint nobody set, which
+    // would otherwise be continued as uninteresting.
+    if (interruptRequested.exchange(false)) {
+        interruptRaised = false;
+        consumePendingInterrupt();
+        std::lock_guard<std::mutex> lock(mutex);
+        stopReason = StopReason::Breakpoint;
     }
 
     // Classify stop reason from engine state if not already set by callback.

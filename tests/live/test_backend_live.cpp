@@ -21,9 +21,11 @@
 
 #include "util.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 
 using namespace smalldbg;
 
@@ -244,6 +246,27 @@ TEST_CASE("attaching to a running process finds the modules it already loaded") 
     dbg.detach();
     target.release();
     CHECK(target.waitForExit(5000) == 0);
+}
+
+// test_target's "deep" mode keeps running while a debugger holds it, which
+// gives a suspend something to stop. It is done several times over, as a
+// break-in that is not matched by a resume leaves the target suspended.
+TEST_CASE("suspending a running target stops it, every time") {
+    Debugger dbg(Mode::External, X64::instance());
+    logWhenAsked(dbg);
+    REQUIRE(dbg.launch(test::testTargetPath(), {"deep"}) == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
+
+    for (int i = 0; i < 5; ++i) {
+        REQUIRE(dbg.resume() == Status::Ok);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        REQUIRE(dbg.suspend() == Status::Ok);
+        REQUIRE(dbg.isStopped());
+        Registers r;
+        CHECK(dbg.getRegisters(r) == Status::Ok);
+    }
+
+    dbg.detach();
 }
 
 TEST_CASE("resuming runs the target to a clean exit") {

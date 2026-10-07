@@ -243,6 +243,11 @@ protected:
     // Set when the engine refused to start execution, so resume() can answer
     // truthfully rather than leave the caller believing the target runs.
     bool startFailed = false;
+    // A stop requested by suspend() and not answered yet, and whether the
+    // engine thread has raised it, which it does once.
+    mutable std::atomic<bool> interruptRequested{false};
+    mutable std::atomic<bool> interruptRaised{false};
+    void consumePendingInterrupt() const;  // clear a break the stop answered
 
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;
