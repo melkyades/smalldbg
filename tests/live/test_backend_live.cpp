@@ -229,6 +229,30 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
     dbg.detach();
 }
 
+TEST_CASE("a thread keeps its stack trace until the target moves") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    auto thread = dbg.getCurrentThread();
+    REQUIRE(thread.get() != nullptr);
+
+    StackTrace* trace = thread->getStackTrace(16);
+    REQUIRE(trace != nullptr);
+    CHECK(thread->getStackTrace(16) == trace);
+    CHECK(thread->getStackTrace(4) == trace);
+
+    StackTrace* deeper = thread->getStackTrace(64);
+    REQUIRE(deeper != nullptr);
+    CHECK(deeper != trace);
+
+    REQUIRE(dbg.step() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::SingleStep, 15000) == StopReason::SingleStep);
+    StackTrace* moved = thread->getStackTrace(64);
+    REQUIRE(moved != nullptr);
+    CHECK(moved != deeper);
+
+    dbg.detach();
+}
+
 // A process attached to has loaded its modules already, and the engine hears
 // of them only from the events queued behind the attach's first one.
 TEST_CASE("attaching to a running process finds the modules it already loaded") {

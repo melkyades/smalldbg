@@ -45,7 +45,6 @@ static void printStackTrace(Debugger& dbg, Thread* thread) {
         std::cout << "Failed to get stack trace" << std::endl;
         return;
     }
-    st->unwind(10);
     const auto& frames = st->getFrames();
     std::cout << "Stack trace (" << frames.size() << " frames):" << std::endl;
     for (size_t i = 0; i < frames.size() && i < 10; i++) {
