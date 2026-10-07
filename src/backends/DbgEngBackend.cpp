@@ -267,6 +267,13 @@ HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::Breakpoint(IDebugBreakpoint* bp)
     return DEBUG_STATUS_BREAK;
 }
 
+// Whether an exception other than a breakpoint or a single step stops the
+// target. The program gets the first chance to handle it; one it leaves
+// unhandled stops the target.
+static bool stopsTarget(ULONG firstChance) {
+    return !firstChance;
+}
+
 HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::Exception(EXCEPTION_RECORD64* ex, ULONG firstChance) {
     DWORD code = ex->ExceptionCode;
 
@@ -295,12 +302,14 @@ HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::Exception(EXCEPTION_RECORD64* ex
         return DEBUG_STATUS_BREAK;
     }
 
-    // All other exceptions: break so the event loop has control, and tell it
-    // how to auto-continue (like WindowsBackend's ContinueDebugEvent).
-    ULONG contStatus = firstChance
-        ? DEBUG_STATUS_GO_NOT_HANDLED   // let SEH handle it
-        : DEBUG_STATUS_GO;              // mark handled, avoid termination
-    backend->setPendingExceptionContinue(contStatus);
+    if (stopsTarget(firstChance)) {
+        backend->onUnhandledException(*ex);
+        backend->setPendingExceptionContinue(0);
+        return DEBUG_STATUS_BREAK;
+    }
+
+    // The event loop gets control and passes the exception on to the program.
+    backend->setPendingExceptionContinue(DEBUG_STATUS_GO_NOT_HANDLED);
     return DEBUG_STATUS_BREAK;
 }
 
@@ -523,7 +532,12 @@ Status DbgEngBackend::resume() {
         startFailed = false;
         interruptRequested = false;
         interruptRaised = false;
-        pendingExecStatus = DEBUG_STATUS_GO;
+        // An unhandled exception goes back to the program unhandled, which
+        // ends the process; going on as if handled would rerun the code that
+        // raised it.
+        pendingExecStatus = stoppedOnUnhandledException
+            ? DEBUG_STATUS_GO_NOT_HANDLED : DEBUG_STATUS_GO;
+        stoppedOnUnhandledException = false;
         continueRequested = true;
     }
     cv.notify_all();
@@ -1897,6 +1911,12 @@ void DbgEngBackend::onException(DWORD code, ULONG64 address) {
     }
     stopAddress = static_cast<Address>(address);
     if (log) log("(dbgeng) EXCEPTION code=" + toHex(code) + " at " + toHex(address));
+}
+
+void DbgEngBackend::onUnhandledException(const EXCEPTION_RECORD64& record) {
+    onException(record.ExceptionCode, record.ExceptionAddress);
+    std::lock_guard<std::mutex> lock(mutex);
+    stoppedOnUnhandledException = true;
 }
 
 bool DbgEngBackend::onThreadCreated() {

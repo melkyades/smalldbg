@@ -286,6 +286,21 @@ TEST_CASE("a caller is refused while another waits on the engine") {
     dbg.detach();
 }
 
+// test_target's "crash" mode throws an exception nothing catches. The target
+// stops on it, and resuming then lets the process end.
+TEST_CASE("an unhandled exception stops the target") {
+    Debugger dbg(Mode::External, X64::instance());
+    logWhenAsked(dbg);
+    REQUIRE(dbg.launch(test::testTargetPath(), {"crash"}) == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
+
+    REQUIRE(dbg.resume() == Status::Ok);
+    CHECK(dbg.waitForEvent(StopReason::Exception, 15000) == StopReason::Exception);
+
+    REQUIRE(dbg.resume() == Status::Ok);
+    CHECK(dbg.waitForEvent(StopReason::ProcessExit, 15000) == StopReason::ProcessExit);
+}
+
 TEST_CASE("resuming runs the target to a clean exit") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);

@@ -115,6 +115,7 @@ public:
     // Callbacks invoked by the DbgEngEventCallbacks helper (friend).
     void onBreakpoint(ULONG64 offset);
     void onException(DWORD code, ULONG64 address);
+    void onUnhandledException(const EXCEPTION_RECORD64& record);
 
     // Called by Exception callback to tell the event loop how to continue
     // uninteresting exceptions (GO_NOT_HANDLED for first-chance, GO for
@@ -244,6 +245,9 @@ protected:
     // Set when the engine refused to start execution, so resume() can answer
     // truthfully rather than leave the caller believing the target runs.
     bool startFailed = false;
+    // Set when the target stopped on an exception the program left unhandled,
+    // which the next resume passes back to it unhandled.
+    bool stoppedOnUnhandledException = false;
     // A stop requested by suspend() and not answered yet, and whether the
     // engine thread has raised it, which it does once.
     mutable std::atomic<bool> interruptRequested{false};
