@@ -1441,16 +1441,29 @@ bool DbgEngBackend::initOpenDump() {
     return true;
 }
 
+void DbgEngBackend::collectThreadIds(std::vector<ThreadId>& out) const {
+    ULONG count = 0;
+    if (FAILED(sysObjects->GetNumberThreads(&count)) || count == 0) return;
+
+    std::vector<ULONG> engineIds(count), systemIds(count);
+    if (FAILED(sysObjects->GetThreadIdsByIndex(0, count, engineIds.data(),
+                                               systemIds.data())))
+        return;
+    for (ULONG i = 0; i < count; ++i)
+        out.push_back(static_cast<ThreadId>(systemIds[i]));
+}
+
+std::vector<ThreadId> DbgEngBackend::enumerateThreads() const {
+    std::vector<ThreadId> threads;
+    if (!attached) return threads;
+    (void)runOnEngineThread([&]{ collectThreadIds(threads); });
+    return threads;
+}
+
 void DbgEngBackend::enumerateInitialThreads() {
-    ULONG numThreads = 0;
-    sysObjects->GetNumberThreads(&numThreads);
-    std::vector<ULONG> ids(numThreads), sysIds(numThreads);
-    if (numThreads > 0) {
-        sysObjects->GetThreadIdsByIndex(0, numThreads, ids.data(), sysIds.data());
-        for (ULONG i = 0; i < numThreads; ++i)
-            process->registerThread(static_cast<ThreadId>(sysIds[i]));
-    }
-    if (log) log("(dbgeng) enumerated " + std::to_string(numThreads) + " threads");
+    refreshThreads();
+    if (log) log("(dbgeng) enumerated " + std::to_string(process->threads().size())
+                 + " threads");
 }
 
 bool DbgEngBackend::initArchAndRegisters() {

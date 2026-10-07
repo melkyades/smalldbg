@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace smalldbg;
 
@@ -40,9 +41,9 @@ void logWhenAsked(Debugger& dbg) {
 
 // Launch test_target and return a debugger already stopped at the initial
 // breakpoint. On failure the returned debugger is not attached.
-void launchAtInitialStop(Debugger& dbg) {
+void launchAtInitialStop(Debugger& dbg, const std::vector<std::string>& args = {}) {
     logWhenAsked(dbg);
-    REQUIRE(dbg.launch(test::testTargetPath()) == Status::Ok);
+    REQUIRE(dbg.launch(test::testTargetPath(), args) == Status::Ok);
     // initSession() leaves the backend stopped at the loader breakpoint.
     StopReason reason = dbg.waitForEvent(StopReason::None, 5000);
     REQUIRE(reason != StopReason::None);
@@ -53,8 +54,8 @@ void launchAtInitialStop(Debugger& dbg) {
 // resolved symbol. Startup module loads intervene between the loader stop
 // and user code, so tests that need real code (e.g. single-stepping) must
 // reach this point first rather than stepping from the loader breakpoint.
-Symbol launchAtBreakHere(Debugger& dbg) {
-    launchAtInitialStop(dbg);
+Symbol launchAtBreakHere(Debugger& dbg, const std::vector<std::string>& args = {}) {
+    launchAtInitialStop(dbg, args);
 
     auto* symbols = dbg.getSymbolProvider();
     REQUIRE(symbols != nullptr);
@@ -326,6 +327,24 @@ TEST_CASE("a debugger whose target exited leaves the engine to the next one") {
     CHECK(second.readMemory(r.sp(), buffer, sizeof(buffer)) == Status::Ok);
 
     second.detach();
+}
+
+// test_target's "threads" mode starts threads that end before break_here.
+// Once refreshed, the thread list holds only threads the target still has,
+// each of which can be read.
+TEST_CASE("refreshing the thread list drops threads that have ended") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg, {"threads"});
+
+    dbg.refreshThreads();
+    auto threads = dbg.getProcess()->threads();
+    REQUIRE_FALSE(threads.empty());
+    for (const auto& thread : threads) {
+        Registers r;
+        CHECK(dbg.getRegisters(thread.get(), r) == Status::Ok);
+    }
+
+    dbg.detach();
 }
 
 // Reading the target leaves the state version alone; moving it changes it.

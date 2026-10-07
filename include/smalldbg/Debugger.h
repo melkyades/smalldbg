@@ -98,6 +98,10 @@ public:
     // be cached against it.
     uint64_t stateVersion() const { return targetVersion; }
 
+    // Makes the thread list the target's current one, at most once per state
+    // version.
+    void refreshThreads();
+
     // Process/Thread abstraction
     std::shared_ptr<Process> getProcess();
     std::shared_ptr<Thread> getCurrentThread();
@@ -154,6 +158,7 @@ private:
     Mode mode;                  // kept to build a replacement backend
     const Arch* initialArch;
     mutable uint64_t targetVersion{1};
+    uint64_t threadsVersion{0};  // targetVersion the thread list is from
 };
 
 } // namespace smalldbg

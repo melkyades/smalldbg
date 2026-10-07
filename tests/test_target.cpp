@@ -116,6 +116,16 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    // "threads" mode: threads that have ended by the time break_here runs.
+    if (mode == "threads") {
+        std::vector<std::thread> workers;
+        for (int i = 0; i < kWorkerThreads; ++i)
+            workers.emplace_back([] {});
+        for (auto& worker : workers) worker.join();
+        break_here();
+        return 0;
+    }
+
     // Known function to place a breakpoint on
     break_here();
 

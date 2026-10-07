@@ -40,7 +40,14 @@ public:
     // Internal: called by backend when thread is created
     void registerThread(ThreadId tid);
 
+    // Makes the thread list the target's current one: threads it no longer has
+    // are dropped and new ones added; the objects of those that stay are kept.
+    void syncThreads(const std::vector<ThreadId>& live);
+
 private:
+    void dropDeadThreads(const std::vector<ThreadId>& live);
+    void registerNewThreads(const std::vector<ThreadId>& live);
+
     Debugger* debugger{nullptr};
     uintptr_t pid;
     std::map<ThreadId, std::shared_ptr<Thread>> threadMap;

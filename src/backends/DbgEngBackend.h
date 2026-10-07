@@ -109,6 +109,9 @@ public:
     // Execute a raw DbgEng command (e.g. "kb", "lm") and return output.
     std::string executeCommand(const std::string& cmd) const override;
 
+    // The threads the engine has at the position it is on.
+    std::vector<ThreadId> enumerateThreads() const override;
+
     // Access to underlying DbgEng interfaces (for potential symbol backend use)
     IDebugSymbols3* getDbgEngSymbols() const { return symbols; }
     IDebugDataSpaces4* getDbgEngDataSpaces() const { return dataSpaces; }
@@ -197,6 +200,7 @@ protected:
     bool initArchAndRegisters();  // validate target arch, resolve register indices
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
+    void collectThreadIds(std::vector<ThreadId>& out) const;
 
     void drainSyntheticEvents(uintptr_t targetPid);  // resume briefly to flush queued thread/module events
 

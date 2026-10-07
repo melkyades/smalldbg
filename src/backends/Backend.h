@@ -113,6 +113,19 @@ public:
     // Default implementation returns an empty list.
     virtual std::vector<ModuleInfo> enumerateModules() const { return {}; }
 
+    // The threads the target has right now. Returns an empty list for a backend
+    // that learns of threads only from create and exit events.
+    virtual std::vector<ThreadId> enumerateThreads() const { return {}; }
+
+    // Brings the process's thread list in line with the target. A backend that
+    // cannot enumerate leaves the list to the events it reports.
+    void refreshThreads() {
+        if (!process) return;
+        auto live = enumerateThreads();
+        if (live.empty()) return;
+        process->syncThreads(live);
+    }
+
     // The target's architecture, updated once the backend has identified it.
     const Arch* getArch() const { return arch; }
 

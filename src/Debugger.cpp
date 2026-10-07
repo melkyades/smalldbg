@@ -124,6 +124,13 @@ Status Debugger::suspend() {
     return backend->suspend();
 }
 
+// Enumerating costs an engine round trip, so it is done only after a move.
+void Debugger::refreshThreads() {
+    if (threadsVersion == targetVersion) return;
+    threadsVersion = targetVersion;
+    backend->refreshThreads();
+}
+
 // --- TTD (Time Travel Debugging) ---
 // Replay is a different backend, not a mode of the live one, and which it is
 // only becomes known here — the constructor has no target to look at yet.
