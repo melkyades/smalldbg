@@ -1234,26 +1234,12 @@ bool DbgEngBackend::initAttach() {
         return false;
     }
 
-    // We attached to someone else's process, so it must outlive us. Windows
-    // kills a debuggee when its debugger exits unless told otherwise, which
-    // turns a crash -- or a plain kill of this server -- into killing the
-    // program under study. Launched targets keep the default: we own those.
-    hr = client->SetProcessOptions(DEBUG_PROCESS_DETACH_ON_EXIT);
-    if (FAILED(hr) && log)
-        log("(dbgeng) SetProcessOptions(DETACH_ON_EXIT) failed hr="
-            + toHex((unsigned long)hr));
-
     // Create the Process right away so that synthetic CREATE_THREAD
     // callbacks (fired during the first WaitForEvent) can register threads.
     attached = true;
     initProcess(static_cast<uintptr_t>(attachPid));
 
     bool wow64 = isWow64Process(static_cast<ULONG>(attachPid));
-    if (wow64) {
-        effectiveTypeSync = EffectiveTypeSync::wow64();
-        effectiveTypeSync->sync(control, log);
-        if (log) log("(dbgeng) WoW64 target detected (pid=" + std::to_string(attachPid) + ")");
-    }
 
     // The first WaitForEvent returns at the CREATE_PROCESS event
     // (our callback returns DEBUG_STATUS_BREAK).  Synthetic
@@ -1266,6 +1252,25 @@ bool DbgEngBackend::initAttach() {
         attached = false;
         process.reset();
         return false;
+    }
+
+    // A process we attached to must outlive us: by default Windows kills a
+    // debuggee when its debugger exits. Launched targets keep that default.
+    // The option needs the process the first event made current; set before
+    // it, it fails with E_UNEXPECTED.
+    hr = client->SetProcessOptions(DEBUG_PROCESS_DETACH_ON_EXIT);
+    if (FAILED(hr) && log)
+        log("(dbgeng) SetProcessOptions(DETACH_ON_EXIT) failed hr="
+            + toHex((unsigned long)hr));
+
+    // A 32-bit target under an x64 engine needs the engine told which machine
+    // its registers and stacks are for. Done before the first event, this
+    // faults inside the engine and takes the debuggee down with it.
+    if (wow64) {
+        effectiveTypeSync = EffectiveTypeSync::wow64();
+        effectiveTypeSync->sync(control, log);
+        if (log) log("(dbgeng) WoW64 target detected (pid="
+                     + std::to_string(attachPid) + ")");
     }
 
     if (wow64) drainSyntheticEvents(attachPid);
