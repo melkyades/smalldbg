@@ -82,6 +82,8 @@ public:
         std::vector<SmalltalkFrame> frames;
     };
 
+    std::shared_ptr<smalldbg::Thread> vmThread() const override;
+
     /// Refresh the list of green threads by reading the evaluator state.
     void refreshGreenThreads() override;
 

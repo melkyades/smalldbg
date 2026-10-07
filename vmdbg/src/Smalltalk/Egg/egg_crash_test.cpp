@@ -49,9 +49,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto thread = process->primaryThread();
+    auto thread = dbg.getCurrentThread();
     if (!thread) {
-        std::cerr << "No primary thread" << std::endl;
+        std::cerr << "No current thread" << std::endl;
         return 1;
     }
 

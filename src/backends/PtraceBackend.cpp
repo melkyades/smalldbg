@@ -99,7 +99,7 @@ Status PtraceBackend::launch(const std::string &path, const std::vector<std::str
     stopped = true;
     stopReason = StopReason::ProcessCreated;
     stopAddress = 0;
-    selectPrimaryThread();
+    selectProcessThread();
 
     // Register the DWARF symbol backend
     auto dwarf = std::make_unique<DwarfBackend>(this);
@@ -145,7 +145,7 @@ Status PtraceBackend::attach(uintptr_t pid) {
     stopped = true;
     stopReason = StopReason::InitialBreakpoint;
     stopAddress = 0;
-    selectPrimaryThread();
+    selectProcessThread();
 
     auto dwarf = std::make_unique<DwarfBackend>(this);
     debugger->getSymbolProvider()->addBackend(std::move(dwarf));
@@ -446,7 +446,7 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
                 if (getRegisters(threadOpt->get(), regs) == Status::Ok)
                     stopAddress = regs.ip();
             } else {
-                selectPrimaryThread();
+                selectProcessThread();
             }
             if (eventCallback) eventCallback(stopReason, stopAddress);
             return stopReason;
@@ -502,13 +502,13 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
             stopReason = StopReason::Exception;
             stopAddress = 0;
             if (log) log("(ptrace) SIGSTOP received");
-            selectPrimaryThread();
+            selectProcessThread();
         } else {
             stopped = true;
             stopReason = StopReason::Exception;
             stopAddress = 0;
             if (log) log("(ptrace) signal " + std::to_string(sig) + " received");
-            selectPrimaryThread();
+            selectProcessThread();
         }
 
         if (eventCallback) {
@@ -535,12 +535,13 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
 // Breakpoint hit handling
 // ---------------------------------------------------------------------------
 
-void PtraceBackend::selectPrimaryThread() {
-    auto primary = process->primaryThread();
-    if (!primary) return;
-    debugger->setCurrentThread(primary);
+// Under ptrace the thread a process starts on has the process's own id.
+void PtraceBackend::selectProcessThread() {
+    auto thread = process->getThread(static_cast<ThreadId>(process->getPid()));
+    if (!thread) return;
+    debugger->setCurrentThread(*thread);
     Registers regs{};
-    if (getRegisters(primary.get(), regs) == Status::Ok)
+    if (getRegisters(thread->get(), regs) == Status::Ok)
         stopAddress = regs.ip();
 }
 

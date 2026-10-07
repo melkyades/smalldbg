@@ -157,6 +157,10 @@ struct LiveSession : WebsideSession {
     bool isActive() const override { return dbg && dbg->isAttached(); }
     smalldbg::Debugger* getDebugger() const override { return dbg.get(); }
     vmdbg::VMInspector* getInspector() const override { return nullptr; }
+    // The target runs no VM; the thread it stopped on stands in for one.
+    std::shared_ptr<smalldbg::Thread> vmThread() const override {
+        return dbg ? dbg->getCurrentThread() : nullptr;
+    }
 
     bool attach(int) override { return false; }
     void detach() override { if (dbg) dbg->detach(); }
@@ -207,7 +211,7 @@ TEST_CASE("listFrames returns real frames for a launched target") {
     REQUIRE(s.launch(WEBSIDE_TEST_TARGET));
     REQUIRE(s.getDebugger()->waitForEvent(smalldbg::StopReason::None, 5000) != smalldbg::StopReason::None);
 
-    auto thread = s.primaryThread();
+    auto thread = s.vmThread();
     REQUIRE(thread);
 
     const std::string json = s.listFrames(*thread);

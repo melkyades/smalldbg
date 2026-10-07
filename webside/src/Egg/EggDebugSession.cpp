@@ -762,6 +762,12 @@ std::string EggDebugSession::buildFrameDetailJson(const smalldbg::StackFrame& f,
 
 // ---- Green thread management ----
 
+// The evaluator's stack is on the heap, so only the native frame of its loop
+// tells which thread runs it.
+std::shared_ptr<smalldbg::Thread> EggDebugSession::vmThread() const {
+    return threadRunning("Egg::Evaluator::evaluate");
+}
+
 void EggDebugSession::refreshGreenThreads() {
     greenThreads.clear();
 

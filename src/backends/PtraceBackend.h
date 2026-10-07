@@ -88,7 +88,7 @@ private:
     void handlePendingReinsert();
 
     // Select the primary thread as the current thread and read its stop address
-    void selectPrimaryThread();
+    void selectProcessThread();
 };
 
 } // namespace smalldbg

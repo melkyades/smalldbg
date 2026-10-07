@@ -61,6 +61,7 @@ public:
 
     smalldbg::Debugger* getDebugger() const override { return nullptr; }
     vmdbg::VMInspector* getInspector() const override { return nullptr; }
+    std::shared_ptr<smalldbg::Thread> vmThread() const override { return nullptr; }
 };
 
 } // namespace webside

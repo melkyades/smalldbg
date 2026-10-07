@@ -23,7 +23,6 @@ public:
     // Thread enumeration
     std::vector<std::shared_ptr<Thread>> threads();
     std::optional<std::shared_ptr<Thread>> getThread(ThreadId tid);
-    std::shared_ptr<Thread> primaryThread();
     
     // Memory operations
     Status readMemory(Address address, void* outBuf, size_t size) const;
@@ -51,7 +50,6 @@ private:
     Debugger* debugger{nullptr};
     uintptr_t pid;
     std::map<ThreadId, std::shared_ptr<Thread>> threadMap;
-    std::shared_ptr<Thread> firstThread;
 };
 
 } // namespace smalldbg

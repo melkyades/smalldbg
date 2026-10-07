@@ -130,13 +130,13 @@ std::string WebsideServer::listFrames() const {
         smalldbg::markEngineBusy();
         return "[]";
     }
-    auto thread = session->primaryThread();
+    auto thread = session->vmThread();
     if (!thread) return "[]";
     return session->listFrames(*thread);
 }
 
 std::string WebsideServer::getFrameDetail(int index) const {
-    auto thread = session->primaryThread();
+    auto thread = session->vmThread();
     if (!thread) return "{}";
     smalldbg::StackTrace trace(thread.get());
     if (trace.unwind(256) != smalldbg::Status::Ok) return "{}";
@@ -146,7 +146,7 @@ std::string WebsideServer::getFrameDetail(int index) const {
 }
 
 std::string WebsideServer::getFrameBindings(int index) const {
-    auto thread = session->primaryThread();
+    auto thread = session->vmThread();
     if (!thread) return "[]";
     smalldbg::StackTrace trace(thread.get());
     if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
@@ -156,7 +156,7 @@ std::string WebsideServer::getFrameBindings(int index) const {
 }
 
 std::string WebsideServer::getFrameRegisters(int index) const {
-    auto thread = session->primaryThread();
+    auto thread = session->vmThread();
     if (!thread) return "[]";
     smalldbg::StackTrace trace(thread.get());
     if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
@@ -167,7 +167,7 @@ std::string WebsideServer::getFrameRegisters(int index) const {
 
 std::string WebsideServer::stackDescriptors(int selectedIndex, uint64_t from,
                                            int slots) const {
-    auto thread = session->primaryThread();
+    auto thread = session->vmThread();
     if (!thread) return "[]";
     smalldbg::StackTrace trace(thread.get());
     if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
@@ -539,7 +539,7 @@ WebsideServer::nativeThreads() const {
     auto proc = dbg->getProcess();
     if (!proc) return {};
 
-    auto primary = proc->primaryThread();
+    auto primary = session->vmThread();
     std::vector<std::shared_ptr<smalldbg::Thread>> ordered;
     if (primary) ordered.push_back(primary);
     for (auto& t : proc->threads()) {

@@ -6,18 +6,13 @@
 
 namespace smalldbg {
 
-Process::Process(Debugger* dbg, uintptr_t p) 
-    : debugger(dbg), pid(p), firstThread(nullptr) {
+Process::Process(Debugger* dbg, uintptr_t p)
+    : debugger(dbg), pid(p) {
 }
 
 void Process::registerThread(ThreadId tid) {
     auto thread = std::make_shared<Thread>(this, tid);
     threadMap[tid] = thread;
-    
-    // First thread becomes primary
-    if (!firstThread) {
-        firstThread = thread;
-    }
 }
 
 static bool contains(const std::vector<ThreadId>& ids, ThreadId tid) {
@@ -41,9 +36,6 @@ void Process::registerNewThreads(const std::vector<ThreadId>& live) {
 void Process::syncThreads(const std::vector<ThreadId>& live) {
     dropDeadThreads(live);
     registerNewThreads(live);
-    // The primary thread stays while it lives; the first live one replaces it.
-    if (firstThread && contains(live, firstThread->getThreadId())) return;
-    firstThread = live.empty() ? nullptr : threadMap[live.front()];
 }
 
 std::vector<std::shared_ptr<Thread>> Process::threads() {
@@ -60,10 +52,6 @@ std::optional<std::shared_ptr<Thread>> Process::getThread(ThreadId tid) {
         return it->second;
     }
     return std::nullopt;
-}
-
-std::shared_ptr<Thread> Process::primaryThread() {
-    return firstThread;
 }
 
 Status Process::readMemory(Address address, void* outBuf, size_t size) const {

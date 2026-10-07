@@ -67,7 +67,8 @@ public:
 
     // ---- thread helpers ----
     std::shared_ptr<smalldbg::Thread> resolveThread(uint64_t threadId) const;
-    std::shared_ptr<smalldbg::Thread> primaryThread() const;
+    /** Returns the OS thread the VM runs on, or null when it cannot be found. **/
+    virtual std::shared_ptr<smalldbg::Thread> vmThread() const = 0;
 
     /// The target's pointer width, or the host's while there is no target.
     size_t pointerSize() const;
@@ -76,6 +77,15 @@ protected:
     /// Runs before a stack walk: an unwind leaves the engine unable to serve
     /// some reads, so a dialect reads what it needs for frames here.
     virtual void prepareFrames() const {}
+
+    /** Returns the thread whose native stack holds a frame of the named
+     *  function, or null when none does or the target is running. It unwinds
+     *  every thread, so the answer is kept until the target moves. **/
+    std::shared_ptr<smalldbg::Thread> threadRunning(const std::string& function) const;
+
+private:
+    mutable std::shared_ptr<smalldbg::Thread> runningThread;
+    mutable uint64_t runningThreadVersion{0};  // debugger stateVersion it is from
 };
 
 } // namespace vmdbg

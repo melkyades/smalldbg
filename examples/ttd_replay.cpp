@@ -220,8 +220,8 @@ int main(int argc, char* argv[]) {
 
     auto proc = dbg.getProcess();
     if (!proc) { std::cerr << "No process" << std::endl; return 1; }
-    auto thread = proc->primaryThread();
-    if (!thread) { std::cerr << "No primary thread" << std::endl; return 1; }
+    auto thread = dbg.getCurrentThread();
+    if (!thread) { std::cerr << "No current thread" << std::endl; return 1; }
 
     std::cout << "\n=== Initial Position ===" << std::endl;
     printRegisters(dbg, thread.get());
