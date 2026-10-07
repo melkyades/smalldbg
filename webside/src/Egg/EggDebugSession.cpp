@@ -243,11 +243,11 @@ bool EggDebugSession::reverseStepOver() {
     auto thread = debugger->getCurrentThread();
     if (!thread) return stepBack();
 
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
+    auto* trace = thread->getStackTrace(2);
+    if (!trace || trace->getFrameCount() < 2)
         return stepBack();
 
-    auto returnAddr = trace.getFrames()[1]->ip();
+    auto returnAddr = trace->getFrames()[1]->ip();
     debugger->setBreakpoint(returnAddr, "__revstepover_tmp");
     bool ok = debugger->reverseResume() == smalldbg::Status::Ok;
     if (ok) {
@@ -262,11 +262,11 @@ bool EggDebugSession::reverseStepOut() {
     auto thread = debugger->getCurrentThread();
     if (!thread) return false;
 
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(2) != smalldbg::Status::Ok || trace.getFrameCount() < 2)
+    auto* trace = thread->getStackTrace(2);
+    if (!trace || trace->getFrameCount() < 2)
         return false;
 
-    auto returnAddr = trace.getFrames()[1]->ip();
+    auto returnAddr = trace->getFrames()[1]->ip();
     debugger->setBreakpoint(returnAddr, "__revstepout_tmp");
     bool ok = debugger->reverseResume() == smalldbg::Status::Ok;
     if (ok) {

@@ -138,29 +138,29 @@ std::string WebsideServer::listFrames() const {
 std::string WebsideServer::getFrameDetail(int index) const {
     auto thread = session->vmThread();
     if (!thread) return "{}";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "{}";
-    const auto& frames = trace.getFrames();
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "{}";
+    const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "{}";
-    return session->getFrameDetail(trace, *frames[index - 1], index);
+    return session->getFrameDetail(*trace, *frames[index - 1], index);
 }
 
 std::string WebsideServer::getFrameBindings(int index) const {
     auto thread = session->vmThread();
     if (!thread) return "[]";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    const auto& frames = trace.getFrames();
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "[]";
+    const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
-    return session->getFrameBindings(trace, *frames[index - 1], index);
+    return session->getFrameBindings(*trace, *frames[index - 1], index);
 }
 
 std::string WebsideServer::getFrameRegisters(int index) const {
     auto thread = session->vmThread();
     if (!thread) return "[]";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    const auto& frames = trace.getFrames();
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "[]";
+    const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
     return session->getFrameRegisters(*frames[index - 1]);
 }
@@ -169,9 +169,9 @@ std::string WebsideServer::stackDescriptors(int selectedIndex, uint64_t from,
                                            int slots) const {
     auto thread = session->vmThread();
     if (!thread) return "[]";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    return session->stackDescriptors(trace, selectedIndex, from, slots);
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "[]";
+    return session->stackDescriptors(*trace, selectedIndex, from, slots);
 }
 
 // =========================================================================
@@ -628,23 +628,23 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
             res.body = Json::object().set("error", "Invalid frame index").dump();
             return res;
         }
-        smalldbg::StackTrace trace(&thread);
-        if (trace.unwind(256) != smalldbg::Status::Ok) {
+        auto* trace = thread.getStackTrace(256);
+        if (!trace) {
             res.body = sub.empty() ? "{}" : "[]";
             return res;
         }
-        const auto& frames = trace.getFrames();
+        const auto& frames = trace->getFrames();
         if (index < 1 || index > static_cast<int>(frames.size())) {
             res.statusCode = 404;
             res.body = Json::object().set("error", "Frame not found").dump();
             return res;
         }
         if (sub == "bindings")
-            res.body = session->getFrameBindings(trace, *frames[index - 1], index);
+            res.body = session->getFrameBindings(*trace, *frames[index - 1], index);
         else if (sub == "registers")
             res.body = session->getFrameRegisters(*frames[index - 1]);
         else
-            res.body = session->getFrameDetail(trace, *frames[index - 1], index);
+            res.body = session->getFrameDetail(*trace, *frames[index - 1], index);
         return res;
     }
 

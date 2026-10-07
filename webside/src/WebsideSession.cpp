@@ -16,20 +16,16 @@ Json WebsideSession::addressHex(uint64_t address) const {
                               : Json::hex(address);
 }
 
-static bool unwindThread(smalldbg::Thread*, smalldbg::StackTrace& trace, size_t maxFrames) {
-    return trace.unwind(std::max(maxFrames, size_t(64))) == smalldbg::Status::Ok;
-}
-
 // =========================================================================
 // Public frame API — takes real debugger objects, delegates formatting to hooks
 // =========================================================================
 
 std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrames) const {
     prepareFrames();
-    smalldbg::StackTrace trace(&thread);
-    if (!unwindThread(&thread, trace, maxFrames)) return "[]";
+    auto* trace = thread.getStackTrace(std::max(maxFrames, size_t(64)));
+    if (!trace) return "[]";
 
-    const auto& frames = trace.getFrames();
+    const auto& frames = trace->getFrames();
     auto arr = Json::array();
     for (size_t i = 0; i < frames.size(); i++) {
         const smalldbg::StackFrame& frame = *frames[i];

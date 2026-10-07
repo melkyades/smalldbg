@@ -22,9 +22,9 @@ std::shared_ptr<smalldbg::Thread> VMSession::resolveThread(uint64_t threadId) co
 }
 
 static bool hasFrameOf(smalldbg::Thread& thread, smalldbg::Address function) {
-    smalldbg::StackTrace trace(&thread);
-    if (trace.unwind(256) != smalldbg::Status::Ok) return false;
-    for (const auto& frame : trace.getFrames())
+    auto* trace = thread.getStackTrace(256);
+    if (!trace) return false;
+    for (const auto& frame : trace->getFrames())
         if (frame->functionStart == function) return true;
     return false;
 }

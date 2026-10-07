@@ -27,10 +27,10 @@ Status Backend::stepOut(Thread* thread) {
 }
 
 Status Backend::runToFrameReturn(Thread* thread, size_t depth) {
-    StackTrace trace(thread);
-    if (trace.unwind(depth + 1) != Status::Ok || trace.getFrameCount() <= depth)
+    StackTrace* trace = thread->getStackTrace(depth + 1);
+    if (!trace || trace->getFrameCount() <= depth)
         return Status::NotFound;
-    return runTo(trace.getFrames()[depth]->ip());
+    return runTo(trace->getFrames()[depth]->ip());
 }
 
 Status Backend::runTo(Address address) {
