@@ -1160,11 +1160,7 @@ bool DbgEngBackend::initSession() {
     registerSymbolBackend();
     captureStopState();
 
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        stopped = true;
-    }
-    cv.notify_all();
+    signalStopped();
 
     signalInit(true);
     return true;
@@ -1435,18 +1431,16 @@ void DbgEngBackend::runPendingEngineTasks(std::unique_lock<std::mutex>& lock) {
     }
 }
 
+// Waits on the engine thread until the target is to run again, running the
+// work other threads queue meanwhile. Returns false when the session ends.
 bool DbgEngBackend::waitForResumeSignal() {
     std::unique_lock<std::mutex> lock(mutex);
-    // Parked here, and only here, the engine can service work for other
-    // threads. The flag is cleared before leaving, under the lock, so nothing
-    // can be queued for an engine that is about to stop draining.
-    engineIdle = true;
     for (;;) {
         cv.wait(lock, [this]{
             return continueRequested || !engineTasks.empty() || !running.load();
         });
         if (!running) {
-            engineIdle = false;
+            acceptsEngineWork = false;
             return false;
         }
 
@@ -1455,22 +1449,31 @@ bool DbgEngBackend::waitForResumeSignal() {
 
         continueRequested = false;
         stopReason = StopReason::None;
-        engineIdle = false;
+        // From here this thread runs the target and accepts no more work. The
+        // flag drops under the same lock as the last drain, so nothing can be
+        // queued in between and left waiting.
+        acceptsEngineWork = false;
         return true;
     }
 }
 
-// The engine thread services tasks only while it is parked waiting for a
-// resume, which is to say only while the debuggee is stopped. Once it enters
-// WaitForEvent nothing is drained until the target stops again, so a task
-// queued then would wait for an event that may never come.
-//
-// Rather than let a caller block on that, the task is refused. The check and
-// the queueing both happen under `mutex`, and the flag is cleared under the
-// same lock after the last drain, so a task is never accepted by an engine
-// that has stopped listening. Refusing is the only safe answer: the callers
-// capture their results by reference, so a queued task can never be abandoned
-// after the fact.
+// Records that the target stopped: wakes whoever waits for it, and lets other
+// threads queue engine work from now on.
+void DbgEngBackend::signalStopped() {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stopped = true;
+        stepPending = false;
+        // Work is accepted from now on, not only once this thread parks: a
+        // caller woken by the stop reads registers at once, and its work
+        // waits in waitForResumeSignal, which is all this thread does next.
+        acceptsEngineWork = true;
+    }
+    cv.notify_all();
+}
+
+// Runs `fn` on the engine thread and waits for it. Returns false without
+// running it while the target runs, as the engine thread takes no work then.
 bool DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     if (!running || std::this_thread::get_id() == eventThreadId) {
         fn();
@@ -1481,7 +1484,10 @@ bool DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     auto future = done.get_future();
     {
         std::lock_guard<std::mutex> lock(mutex);
-        if (!engineIdle) {
+        // Refused rather than queued: queued work would wait for a stop that
+        // may never come, and `fn` holds its caller's locals by reference, so
+        // it cannot be left behind.
+        if (!acceptsEngineWork) {
             markEngineBusy();
             return false;
         }
@@ -1606,10 +1612,8 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
             std::lock_guard<std::mutex> lock(mutex);
             stopAddress = static_cast<Address>(pc);
             stopReason = StopReason::EndOfTrace;
-            stopped = true;
-            stepPending = false;
         }
-        cv.notify_all();
+        signalStopped();
         return EventAction::EndOfTrace;
     }
 
@@ -1651,13 +1655,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
         return EventAction::Continue;
     }
 
-    // Stopped — notify waiters.
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        stopped = true;
-        stepPending = false;
-    }
-    cv.notify_all();
+    signalStopped();
     return EventAction::Stop;
 }
 

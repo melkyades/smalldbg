@@ -200,6 +200,7 @@ protected:
 
     // Phase 2: main loop helpers
     bool waitForResumeSignal();  // wait for resume/step, false → exit
+    void signalStopped();        // record a stop; take engine work from now on
     void runPendingEngineTasks(std::unique_lock<std::mutex>& lock);
     void beginExecution(ULONG& execStatus);  // set execution status on engine
     void pumpEvents(ULONG execStatus);       // inner WaitForEvent pump
@@ -233,9 +234,10 @@ protected:
 
     // Closures marshaled to the event-loop thread (drained in waitForResumeSignal).
     mutable std::deque<std::function<void()>> engineTasks;
-    // Whether the engine thread is parked where it can drain engineTasks.
-    // Guarded by `mutex`; see runOnEngineThread.
-    bool engineIdle = false;
+    // Whether the engine thread accepts engineTasks: from a recorded stop until
+    // it leaves waitForResumeSignal to run the target. Guarded by `mutex`; see
+    // runOnEngineThread.
+    bool acceptsEngineWork = false;
 
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;
