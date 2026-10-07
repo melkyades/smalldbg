@@ -82,16 +82,18 @@ Status Debugger::detach() {
 }
 
 Status Debugger::resume() {
+    targetMoved();
     return backend->resume();
 }
 
 Status Debugger::step() {
     auto proc = backend->getProcess();
     auto thread = selectedThread ? selectedThread : proc->primaryThread();
-    return backend->step(thread.get());
+    return step(thread.get());
 }
 
 Status Debugger::step(Thread* thread) {
+    targetMoved();
     return backend->step(thread);
 }
 
@@ -102,6 +104,7 @@ Status Debugger::stepOver() {
 }
 
 Status Debugger::stepOver(Thread* thread) {
+    targetMoved();
     return backend->stepOver(thread);
 }
 
@@ -112,10 +115,12 @@ Status Debugger::stepOut() {
 }
 
 Status Debugger::stepOut(Thread* thread) {
+    targetMoved();
     return backend->stepOut(thread);
 }
 
 Status Debugger::suspend() {
+    targetMoved();
     return backend->suspend();
 }
 
@@ -132,18 +137,21 @@ Status Debugger::openTrace(const std::string& tracePath) {
 Status Debugger::stepBack() {
     auto proc = backend->getProcess();
     auto thread = selectedThread ? selectedThread : proc->primaryThread();
-    return backend->stepBack(thread.get());
+    return stepBack(thread.get());
 }
 
 Status Debugger::stepBack(Thread* thread) {
+    targetMoved();
     return backend->stepBack(thread);
 }
 
 Status Debugger::reverseStepOver(Thread* thread) {
+    targetMoved();
     return backend->reverseStepOver(thread);
 }
 
 Status Debugger::reverseResume() {
+    targetMoved();
     return backend->reverseResume();
 }
 
@@ -159,7 +167,10 @@ bool Debugger::isDumpFile() const {
     return backend->isDumpFile();
 }
 
+// A command may run or seek the target, and telling which would mean parsing
+// the command language, so it counts as a move.
 std::string Debugger::executeCommand(const std::string& cmd) const {
+    targetMoved();
     return backend->executeCommand(cmd);
 }
 
@@ -236,7 +247,9 @@ void Debugger::setLogCallback(std::function<void(const std::string &)> cb) { bac
 
 void Debugger::setEventCallback(std::function<bool(StopReason, Address)> cb) { backend->setEventCallback(std::move(cb)); }
 
+// The target stops somewhere new, so the wait counts as a move.
 StopReason Debugger::waitForEvent(StopReason reason, int timeout_ms) {
+    targetMoved();
     return backend->waitForEvent(reason, timeout_ms);
 }
 

@@ -93,6 +93,11 @@ public:
     bool isAttached() const;
     std::optional<uintptr_t> attachedPid() const;
 
+    // A number that changes whenever the target may have moved: run, stepped,
+    // suspended, waited on or sent a command. Anything read off the target can
+    // be cached against it.
+    uint64_t stateVersion() const { return targetVersion; }
+
     // Process/Thread abstraction
     std::shared_ptr<Process> getProcess();
     std::shared_ptr<Thread> getCurrentThread();
@@ -138,6 +143,9 @@ private:
     /// Install a backend, taking ownership and discarding the previous one.
     void useBackend(Backend* newBackend);
 
+    // Called by everything that may move the target.
+    void targetMoved() const { targetVersion++; }
+
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
@@ -145,6 +153,7 @@ private:
     std::unique_ptr<Disassembler> disassembler; // disassembler instance
     Mode mode;                  // kept to build a replacement backend
     const Arch* initialArch;
+    mutable uint64_t targetVersion{1};
 };
 
 } // namespace smalldbg

@@ -328,6 +328,24 @@ TEST_CASE("a debugger whose target exited leaves the engine to the next one") {
     second.detach();
 }
 
+// Reading the target leaves the state version alone; moving it changes it.
+TEST_CASE("the state version changes when the target moves, not when it is read") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+    uint64_t before = dbg.stateVersion();
+
+    Registers r;
+    REQUIRE(dbg.getRegisters(r) == Status::Ok);
+    uint8_t byte = 0;
+    CHECK(dbg.readMemory(r.sp(), &byte, 1) == Status::Ok);
+    CHECK(dbg.stateVersion() == before);
+
+    REQUIRE(dbg.step() == Status::Ok);
+    CHECK(dbg.stateVersion() != before);
+
+    dbg.detach();
+}
+
 TEST_CASE("resuming runs the target to a clean exit") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
