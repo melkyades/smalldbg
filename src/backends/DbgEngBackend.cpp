@@ -18,6 +18,7 @@
 #include "DbgEngUnwinder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -519,10 +520,23 @@ Status DbgEngBackend::resume() {
         stopped = false;
         stopReason = StopReason::None;
         stepRequested = false;
+        startFailed = false;
         pendingExecStatus = DEBUG_STATUS_GO;
         continueRequested = true;
     }
     cv.notify_all();
+
+    // Whether the engine accepts the request is only known once the event loop
+    // has tried, so wait for it to either start or refuse.
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait_for(lock, std::chrono::milliseconds(500),
+                    [this]{ return startFailed || !continueRequested; });
+        if (startFailed) {
+            if (log) log("(dbgeng) resume: engine refused to start execution");
+            return Status::Error;
+        }
+    }
 
     if (log) log("(dbgeng) resume");
     return Status::Ok;
@@ -1073,16 +1087,19 @@ Status DbgEngBackend::recoverCallerRegisters(Registers& regs) const {
 // ---------------------------------------------------------------------------
 
 StopReason DbgEngBackend::waitForEvent(StopReason reason, int timeout_ms) {
-    if (!attached) return StopReason::None;
-
     std::unique_lock<std::mutex> lock(mutex);
 
     auto pred = [this, reason]() {
         return stopped && (reason == StopReason::None || stopReason == reason);
     };
 
+    // A stop already recorded is the answer even when the process has gone
+    // since: a target that exits quickly is detached before anyone asks.
+    if (pred()) return stopReason;
+    if (!attached) return StopReason::None;
+
     if (timeout_ms == 0) {
-        return pred() ? stopReason : StopReason::None;
+        return StopReason::None;
     } else if (timeout_ms < 0) {
         cv.wait(lock, pred);
         return stopReason;
@@ -1114,7 +1131,16 @@ void DbgEngBackend::eventLoop() {
         if (!waitForResumeSignal()) break;
 
         ULONG execStatus = DEBUG_STATUS_GO;
-        beginExecution(execStatus);
+        // Nothing is running if the engine would not start it, so go back to
+        // waiting instead of pumping events that will never come.
+        if (!beginExecution(execStatus)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                startFailed = true;
+            }
+            signalStopped();
+            continue;
+        }
         pumpEvents(execStatus);
     }
 
@@ -1475,6 +1501,8 @@ bool DbgEngBackend::waitForResumeSignal() {
         // flag drops under the same lock as the last drain, so nothing can be
         // queued in between and left waiting.
         acceptsEngineWork = false;
+        // resume() waits to hear that the request was taken.
+        cv.notify_all();
         return true;
     }
 }
@@ -1536,7 +1564,7 @@ void DbgEngBackend::selectThreadOnEngine(Thread& thread) const {
     (void)runOnEngineThread([&]{ (void)selectThread(thread); });
 }
 
-void DbgEngBackend::beginExecution(ULONG& execStatus) {
+bool DbgEngBackend::beginExecution(ULONG& execStatus) {
     DWORD stepTid = 0;
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -1566,8 +1594,12 @@ void DbgEngBackend::beginExecution(ULONG& execStatus) {
     }
 
     HRESULT hr = control->SetExecutionStatus(execStatus);
-    if (FAILED(hr) && log)
-        log("(dbgeng) SetExecutionStatus(" + std::to_string(execStatus) + ") failed");
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) SetExecutionStatus(" + std::to_string(execStatus)
+                     + ") failed hr=" + toHex((unsigned long)hr));
+        return false;
+    }
+    return true;
 }
 
 void DbgEngBackend::pumpEvents(ULONG execStatus) {

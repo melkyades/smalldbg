@@ -202,7 +202,9 @@ protected:
     bool waitForResumeSignal();  // wait for resume/step, false → exit
     void signalStopped();        // record a stop; take engine work from now on
     void runPendingEngineTasks(std::unique_lock<std::mutex>& lock);
-    void beginExecution(ULONG& execStatus);  // set execution status on engine
+    // Sets the execution status on the engine. Returns false when the engine
+    // refuses it.
+    bool beginExecution(ULONG& execStatus);
     void pumpEvents(ULONG execStatus);       // inner WaitForEvent pump
     enum class EventAction { Continue, Stop, EndOfTrace, SessionEnded };
     EventAction handleDebugEvent(ULONG execStatus, ULONG64 pc);  // classify & act on one event
@@ -238,6 +240,9 @@ protected:
     // it leaves waitForResumeSignal to run the target. Guarded by `mutex`; see
     // runOnEngineThread.
     bool acceptsEngineWork = false;
+    // Set when the engine refused to start execution, so resume() can answer
+    // truthfully rather than leave the caller believing the target runs.
+    bool startFailed = false;
 
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;
