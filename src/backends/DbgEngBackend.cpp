@@ -1217,11 +1217,12 @@ bool DbgEngBackend::initLaunch() {
     attached = true;
     initProcess(static_cast<uintptr_t>(sysPid));
 
+    // No drain, unlike an attach: a launched process reports its modules as it
+    // loads them, and draining would set it running.
     if (isWow64Process(sysPid)) {
         effectiveTypeSync = EffectiveTypeSync::wow64();
         effectiveTypeSync->sync(control, log);
         if (log) log("(dbgeng) WoW64 target detected (pid=" + std::to_string(sysPid) + ")");
-        drainSyntheticEvents(static_cast<uintptr_t>(sysPid));
     }
     return true;
 }
@@ -1273,13 +1274,18 @@ bool DbgEngBackend::initAttach() {
                      + std::to_string(attachPid) + ")");
     }
 
-    if (wow64) drainSyntheticEvents(attachPid);
+    // The modules mapped before the attach reach the engine only as events
+    // queued behind the first one; undrained, its module list holds the image
+    // alone.
+    drainSyntheticEvents(attachPid);
     return true;
 }
 
 void DbgEngBackend::drainSyntheticEvents(uintptr_t targetPid) {
-    control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
+    // The engine only breaks into a target it is executing, so the target is
+    // set going before the break is asked for.
     control->SetExecutionStatus(DEBUG_STATUS_GO);
+    control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
     HRESULT hr = control->WaitForEvent(0, 2000);
     if (log) log("(dbgeng) WaitForEvent (drain) hr=" + toHex((unsigned long)hr));
 

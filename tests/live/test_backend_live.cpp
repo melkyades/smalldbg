@@ -29,12 +29,17 @@ using namespace smalldbg;
 
 namespace {
 
-// Launch test_target and return a debugger already stopped at the initial
-// breakpoint. On failure the returned debugger is not attached.
-void launchAtInitialStop(Debugger& dbg) {
+// Sends the backend's log to stderr when SMALLDBG_TEST_LOG is set.
+void logWhenAsked(Debugger& dbg) {
     if (std::getenv("SMALLDBG_TEST_LOG")) {
         dbg.setLogCallback([](const std::string& m){ fprintf(stderr, "LOG %s\n", m.c_str()); });
     }
+}
+
+// Launch test_target and return a debugger already stopped at the initial
+// breakpoint. On failure the returned debugger is not attached.
+void launchAtInitialStop(Debugger& dbg) {
+    logWhenAsked(dbg);
     REQUIRE(dbg.launch(test::testTargetPath()) == Status::Ok);
     // initSession() leaves the backend stopped at the loader breakpoint.
     StopReason reason = dbg.waitForEvent(StopReason::None, 5000);
@@ -220,6 +225,26 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
     CHECK(reachedThreadStart);
 
     dbg.detach();
+}
+
+// A process attached to has loaded its modules already, and the engine hears
+// of them only from the events queued behind the attach's first one.
+TEST_CASE("attaching to a running process finds the modules it already loaded") {
+    test::WaitingTarget target;
+    REQUIRE(target.pid() != 0);
+
+    Debugger dbg(Mode::External, X64::instance());
+    logWhenAsked(dbg);
+    REQUIRE(dbg.attach(target.pid()) == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
+
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+    CHECK(symbols->getSymbolByName("kernel32!CreateFileW").has_value());
+
+    dbg.detach();
+    target.release();
+    CHECK(target.waitForExit(5000) == 0);
 }
 
 TEST_CASE("resuming runs the target to a clean exit") {
