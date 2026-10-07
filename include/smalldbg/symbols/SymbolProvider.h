@@ -83,7 +83,10 @@ public:
     // Set options and pass to all backends
     void setOptions(const SymbolOptions& options);
     const SymbolOptions& getOptions() const { return symbolOptions; }
-    
+
+    void setSearchPath(const std::string& path);
+    std::string searchPath() const;
+
     void shutdown();
     
     // Add a symbol backend (takes ownership)

@@ -19,7 +19,10 @@ public:
     // Initialization
     Status initialize(void* processHandle, const SymbolOptions& options) override;
     void shutdown() override;
-    
+
+    void setSearchPath(const std::string& path) override;
+    std::string searchPath() const override { return symbolSearchPath; }
+
     // Symbol lookup
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
     std::optional<Symbol> getSymbolByAddress(Address addr) override;

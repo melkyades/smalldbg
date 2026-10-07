@@ -90,6 +90,15 @@ Status DbgHelpBackend::initialize(void* procHandle, const SymbolOptions& options
     return Status::Ok;
 }
 
+void DbgHelpBackend::setSearchPath(const std::string& path) {
+    symbolOptions.searchPath = path;
+    if (!initialized) return;
+
+    symbolSearchPath = buildSymbolSearchPath();
+    SymSetSearchPath(processHandle, symbolSearchPath.c_str());
+    SymRefreshModuleList(processHandle);
+}
+
 std::string DbgHelpBackend::buildSymbolSearchPath() {
     std::string path;
     

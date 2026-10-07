@@ -30,6 +30,9 @@ public:
     Status initialize(void* processHandle, const SymbolOptions& opts) override;
     void shutdown() override;
 
+    void setSearchPath(const std::string& path) override;
+    std::string searchPath() const override;
+
     // Symbol lookup
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
     std::optional<Symbol> getSymbolByAddress(Address addr) override;
@@ -48,6 +51,8 @@ public:
     bool isInitialized() const override { return initialized; }
 
 private:
+    void applySearchPath(const std::string& callerPath);
+
     IDebugSymbols3* symbols = nullptr;
     IDebugControl4* control = nullptr;
     SymbolOptions options;

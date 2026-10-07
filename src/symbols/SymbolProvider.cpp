@@ -24,6 +24,20 @@ void SymbolProvider::setOptions(const SymbolOptions& options) {
     }
 }
 
+void SymbolProvider::setSearchPath(const std::string& path) {
+    symbolOptions.searchPath = path;
+    for (auto& backend : backends)
+        backend->setSearchPath(path);
+}
+
+std::string SymbolProvider::searchPath() const {
+    for (const auto& backend : backends) {
+        std::string path = backend->searchPath();
+        if (!path.empty()) return path;
+    }
+    return symbolOptions.searchPath;
+}
+
 void SymbolProvider::shutdown() {
     // Shutdown all backends
     for (auto& backend : backends) {

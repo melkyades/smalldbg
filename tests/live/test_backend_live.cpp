@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -171,6 +172,19 @@ TEST_CASE("breakpoints can be set, listed and cleared") {
 
     REQUIRE(dbg.clearBreakpoint(addr) == Status::Ok);
     CHECK(dbg.listBreakpoints().size() == before);
+
+    dbg.detach();
+}
+
+TEST_CASE("a symbol search path that is set is searched first") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+    const std::string dir = std::filesystem::temp_directory_path().string();
+    symbols->setSearchPath(dir);
+    CHECK(symbols->searchPath().rfind(dir, 0) == 0);
 
     dbg.detach();
 }

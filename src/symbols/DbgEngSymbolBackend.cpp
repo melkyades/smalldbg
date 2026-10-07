@@ -19,46 +19,55 @@ DbgEngSymbolBackend::~DbgEngSymbolBackend() {
     shutdown();
 }
 
+// Sets the engine's path to the caller's directories, then the path it already
+// had, then the symbol server. The caller's go first because a same-named pdb
+// from elsewhere would otherwise load, with every symbol at the wrong address.
+void DbgEngSymbolBackend::applySearchPath(const std::string& callerPath) {
+    if (callerPath.empty() && !options.useSymbolServer) return;
+
+    std::string symPath = callerPath;
+
+    char existingPath[2048] = {};
+    ULONG pathSize = 0;
+    symbols->GetSymbolPath(existingPath, sizeof(existingPath), &pathSize);
+    if (existingPath[0]) {
+        if (!symPath.empty()) symPath += ";";
+        symPath += existingPath;
+    }
+
+    if (options.useSymbolServer) {
+        std::string srv = "srv*";
+        if (!options.cacheDirectory.empty()) srv += options.cacheDirectory;
+        srv += "*" + options.symbolServerUrl;
+        if (symPath.find(srv) == std::string::npos) {
+            if (!symPath.empty()) symPath += ";";
+            symPath += srv;
+        }
+    }
+
+    symbols->SetSymbolPath(symPath.c_str());
+}
+
 Status DbgEngSymbolBackend::initialize(void* /*processHandle*/, const SymbolOptions& opts) {
     options = opts;
     if (!symbols) return Status::Error;
 
-    // Configure symbol path if provided.
-    if (!opts.searchPath.empty() || opts.useSymbolServer) {
-        std::string symPath;
-
-        // The caller's own path goes first: a same-named pdb from the cache
-        // or the symbol server would otherwise answer, and load successfully
-        // with every symbol at the wrong address.
-        if (!opts.searchPath.empty())
-            symPath = opts.searchPath;
-
-        char existingPath[2048] = {};
-        ULONG pathSize = 0;
-        symbols->GetSymbolPath(existingPath, sizeof(existingPath), &pathSize);
-        if (existingPath[0]) {
-            if (!symPath.empty()) symPath += ";";
-            symPath += existingPath;
-        }
-
-        // Append symbol server
-        if (opts.useSymbolServer) {
-            std::string srv = "srv*";
-            if (!opts.cacheDirectory.empty()) {
-                srv += opts.cacheDirectory;
-            }
-            srv += "*" + opts.symbolServerUrl;
-            if (symPath.find(srv) == std::string::npos) {
-                if (!symPath.empty()) symPath += ";";
-                symPath += srv;
-            }
-        }
-
-        symbols->SetSymbolPath(symPath.c_str());
-    }
+    applySearchPath(opts.searchPath);
 
     initialized = true;
     return Status::Ok;
+}
+
+std::string DbgEngSymbolBackend::searchPath() const {
+    if (!symbols) return {};
+    char path[4096] = {};
+    if (FAILED(symbols->GetSymbolPath(path, sizeof(path), nullptr))) return {};
+    return path;
+}
+
+void DbgEngSymbolBackend::setSearchPath(const std::string& path) {
+    options.searchPath = path;
+    if (symbols) applySearchPath(path);
 }
 
 void DbgEngSymbolBackend::shutdown() {

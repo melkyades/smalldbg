@@ -29,7 +29,13 @@ public:
     // Initialization - called when process is attached
     virtual Status initialize(void* processHandle, const SymbolOptions& options) = 0;
     virtual void shutdown() = 0;
-    
+
+    /** Directories to search for symbol files before anywhere else. **/
+    virtual void setSearchPath(const std::string& /*path*/) {}
+
+    /** Everywhere the backend will look, including what it added itself. **/
+    virtual std::string searchPath() const { return {}; }
+
     // Symbol lookup
     virtual std::optional<Symbol> getSymbolByName(const std::string& name) = 0;
     virtual std::optional<Symbol> getSymbolByAddress(Address addr) = 0;
