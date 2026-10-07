@@ -27,38 +27,33 @@ void clearEngineBusy() { engineBusy = false; }
 
 bool engineWasBusy() { return engineBusy; }
 
-Debugger::Debugger(Mode m, const Arch* arch)
-    : backend(nullptr), symbolProvider(nullptr), mode(m),
-      initialArch(arch ? arch : X64::instance()) {
-#ifdef _WIN32
-  #ifdef SMALLDBG_USE_DBGENG
-    useBackend(new DbgEngBackend(this, mode, initialArch));
-  #else
-    useBackend(new WindowsBackend(this, mode, initialArch));
-  #endif
+// The one backend this Debugger will have, chosen for what it debugs.
+static Backend* backendFor(Debugger* debugger, Mode mode, const Arch* arch,
+                           Debuggee debuggee) {
+#if defined(_WIN32) && defined(SMALLDBG_USE_DBGENG)
+    if (debuggee == Debuggee::Trace) return new TTDBackend(debugger, mode, arch);
+    return new DbgEngBackend(debugger, mode, arch);
+#elif defined(_WIN32)
+    (void)debuggee;
+    return new WindowsBackend(debugger, mode, arch);
 #else
-    useBackend(new PtraceBackend(this, mode, initialArch));
+    (void)debuggee;
+    return new PtraceBackend(debugger, mode, arch);
 #endif
+}
 
-    disassembler = std::make_unique<Disassembler>(initialArch);
-
+Debugger::Debugger(Mode mode, const Arch* arch, Debuggee debuggee)
+    : backend(backendFor(this, mode, arch ? arch : X64::instance(), debuggee)),
+      symbolProvider(std::make_unique<SymbolProvider>(backend)),
+      disassembler(std::make_unique<Disassembler>(backend->getArch())) {
     // The backend's unwinder handles any frame, so it has the lowest priority.
     unwinders.push_back(backend->createUnwinder());
 }
 
 Debugger::~Debugger(){ delete backend; }
 
-// Symbol resolution is tied to the backend, so it is rebuilt alongside it.
-// Backends register their own symbol backends during session init.
-void Debugger::useBackend(Backend* newBackend) {
-    delete backend;
-    backend = newBackend;
-    if (!unwinders.empty()) unwinders.back() = backend->createUnwinder();
-    symbolProvider = std::make_unique<SymbolProvider>(backend);
-}
-
 const Arch* Debugger::arch() const {
-    return backend ? backend->getArch() : initialArch;
+    return backend->getArch();
 }
 
 void Debugger::updateArch(const Arch* arch) {
@@ -129,12 +124,7 @@ void Debugger::refreshThreads() {
 }
 
 // --- TTD (Time Travel Debugging) ---
-// Replay is a different backend, not a mode of the live one, and which it is
-// only becomes known here — the constructor has no target to look at yet.
 Status Debugger::openTrace(const std::string& tracePath) {
-#if defined(_WIN32) && defined(SMALLDBG_USE_DBGENG)
-    useBackend(new TTDBackend(this, mode, initialArch));
-#endif
     return backend->openTrace(tracePath);
 }
 

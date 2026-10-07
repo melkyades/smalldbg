@@ -185,11 +185,11 @@ static void testReverseWatchpoint(Debugger& dbg, Thread* thread) {
 
 static Debugger createDebugger() {
 #if defined(_M_ARM64)
-    return Debugger(Mode::External, ARM64::instance());
+    return Debugger(Mode::External, ARM64::instance(), Debuggee::Trace);
 #elif defined(_M_X64)
-    return Debugger(Mode::External, X64::instance());
+    return Debugger(Mode::External, X64::instance(), Debuggee::Trace);
 #else
-    return Debugger(Mode::External, X86::instance());
+    return Debugger(Mode::External, X86::instance(), Debuggee::Trace);
 #endif
 }
 

@@ -109,6 +109,12 @@ std::string obtainTrace() {
 
 } // namespace
 
+TEST_CASE("a Debugger built for a process does not open a trace") {
+    Debugger dbg(Mode::External, X64::instance());
+    CHECK(dbg.openTrace("missing.run") == Status::NotSupported);
+    CHECK_FALSE(dbg.isTTDTrace());
+}
+
 TEST_CASE("TTD trace replays and steps backwards") {
     std::string trace = obtainTrace();
     if (trace.empty()) {
@@ -117,7 +123,7 @@ TEST_CASE("TTD trace replays and steps backwards") {
         return;
     }
 
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External, X64::instance(), Debuggee::Trace);
     if (std::getenv("SMALLDBG_TEST_LOG"))
         dbg.setLogCallback([](const std::string& m){ fprintf(stderr, "LOG %s\n", m.c_str()); });
 

@@ -29,7 +29,10 @@ bool engineWasBusy();
 
 class Debugger {
 public:
-    explicit Debugger(Mode m, const Arch* arch = nullptr);
+    // The backend is chosen here, for what the Debugger is to debug, and kept
+    // until it is destroyed: debugging something else takes another Debugger.
+    explicit Debugger(Mode m, const Arch* arch = nullptr,
+                      Debuggee debuggee = Debuggee::Process);
     ~Debugger();
 
     // attach/launch lifecycle
@@ -50,7 +53,9 @@ public:
     Status stepOut(Thread* thread);
     
     // --- Reverse debugging (TTD) ---
-    Status openTrace(const std::string& tracePath);  // Open a TTD trace file (.run)
+    // Open a TTD trace file (.run). Returns NotSupported unless the Debugger
+    // was built for a trace.
+    Status openTrace(const std::string& tracePath);
     Status stepBack();              // Step backwards on the current thread
     Status stepBack(Thread* thread); // Step backwards on specific thread
     Status reverseStepOver(Thread* thread); // Step backwards over calls on specific thread
@@ -145,9 +150,6 @@ public:
     void updateArch(const Arch* arch);
 
 private:
-    /// Install a backend, taking ownership and discarding the previous one.
-    void useBackend(Backend* newBackend);
-
     // Called by everything that may move the target.
     void targetMoved() const { targetVersion++; }
 
@@ -156,8 +158,6 @@ private:
     std::unique_ptr<SymbolProvider> symbolProvider; // symbol resolution
     std::vector<std::unique_ptr<StackUnwinder>> unwinders; // highest priority first
     std::unique_ptr<Disassembler> disassembler; // disassembler instance
-    Mode mode;                  // kept to build a replacement backend
-    const Arch* initialArch;
     mutable uint64_t targetVersion{1};
     uint64_t threadsVersion{0};  // targetVersion the thread list is from
 };
