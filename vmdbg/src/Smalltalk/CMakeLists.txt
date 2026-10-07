@@ -13,6 +13,7 @@ set(SMALLTALK_COMMON
     ${SMALLTALK_MODEL}
     ${CMAKE_CURRENT_SOURCE_DIR}/ObjectNamer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Inspector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/MethodParser.cpp
 )
 
 set(DIALECT_SOURCES "")
