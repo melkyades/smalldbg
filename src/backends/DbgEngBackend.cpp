@@ -1546,11 +1546,22 @@ void DbgEngBackend::signalStopped() {
 }
 
 // Runs `fn` on the engine thread and waits for it. Returns false without
-// running it while the target runs, as the engine thread takes no work then.
+// running it while the target runs, as the engine thread takes no work then,
+// and while another caller is waiting on the engine thread.
 bool DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     if (!running || std::this_thread::get_id() == eventThreadId) {
         fn();
         return true;
+    }
+
+    // One caller at a time waits on the engine; another is refused rather than
+    // queued, so one slow engine call cannot hold every caller's thread.
+    // Queued work could not be walked away from either, as it writes into its
+    // caller's locals.
+    std::unique_lock<std::mutex> callerTurn(engineCallMutex, std::try_to_lock);
+    if (!callerTurn.owns_lock()) {
+        markEngineBusy();
+        return false;
     }
 
     std::promise<void> done;

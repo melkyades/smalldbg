@@ -240,6 +240,7 @@ protected:
     // it leaves waitForResumeSignal to run the target. Guarded by `mutex`; see
     // runOnEngineThread.
     bool acceptsEngineWork = false;
+    mutable std::mutex engineCallMutex;  // held by the caller waiting on the engine
     // Set when the engine refused to start execution, so resume() can answer
     // truthfully rather than leave the caller believing the target runs.
     bool startFailed = false;

@@ -269,6 +269,23 @@ TEST_CASE("suspending a running target stops it, every time") {
     dbg.detach();
 }
 
+// The engine thread serves one caller at a time; another caller is told the
+// engine is busy rather than left waiting behind the first.
+TEST_CASE("a caller is refused while another waits on the engine") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+
+    std::thread slow([&] { dbg.executeCommand(".sleep 250"); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    Registers r;
+    CHECK(dbg.getRegisters(r) == Status::Busy);
+    slow.join();
+    CHECK(dbg.getRegisters(r) == Status::Ok);
+
+    dbg.detach();
+}
+
 TEST_CASE("resuming runs the target to a clean exit") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
