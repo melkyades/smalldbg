@@ -12,6 +12,10 @@
 
 #include "platform/Platform.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 volatile int g_test_value = 42;
 
 // Marked noinline: tests set a breakpoint on this function's own symbol
@@ -58,8 +62,17 @@ static SMALLDBG_NOINLINE int recurse(int depth, void (*atBottom)()) {
     return recurse(depth - 1, atBottom) + depth;
 }
 
+#ifdef _WIN32
+static bool debuggerAttached() { return ::IsDebuggerPresent() != 0; }
+#else
+static bool debuggerAttached() { return true; }
+#endif
+
+// Waits while a debugger holds the process, so its stacks stay put for as long
+// as a test looks at them, and returns once the debugger lets go. At most ten
+// seconds, for a debugger that never does.
 static void park() {
-    for (int i = 0; i < 200; ++i)
+    for (int i = 0; i < 200 && debuggerAttached(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
 
