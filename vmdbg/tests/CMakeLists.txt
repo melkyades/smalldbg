@@ -1,11 +1,12 @@
-# Unit tests for vmdbg, with no target to debug: the inspectors, and the
-# Smalltalk object model on a heap the test lays out as a snapshot.
+# Unit tests for vmdbg, with no target to debug. What reads a heap or a stack
+# reads one the test lays out as a snapshot.
 find_package(doctest REQUIRED)
 
 add_executable(vmdbg_tests
     test_smalltalk_model.cpp
     test_vm_inspector.cpp
     test_smalltalk_inspector.cpp
+    test_address_table.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 
