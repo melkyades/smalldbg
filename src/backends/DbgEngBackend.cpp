@@ -366,6 +366,10 @@ DbgEngBackend::~DbgEngBackend() {
         // The event loop thread must still be joined before the std::thread
         // member is destroyed, otherwise its destructor calls std::terminate.
         joinEventThread();
+        // The engine is shared by every client in this process, and a session
+        // whose process exited stays open in it until ended: the next debugger
+        // would find the old process there.
+        if (client) client->EndSession(DEBUG_END_PASSIVE);
     }
     releaseInterfaces();
 }

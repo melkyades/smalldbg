@@ -307,6 +307,27 @@ TEST_CASE("an unhandled exception stops the target") {
     CHECK_FALSE(dbg.getStopException().has_value());
 }
 
+// The engine is shared by every debugger in a process. One whose target ran to
+// its end must close its session with it, or the next debugger reads through
+// the old one.
+TEST_CASE("a debugger whose target exited leaves the engine to the next one") {
+    {
+        Debugger first(Mode::External, X64::instance());
+        launchAtInitialStop(first);
+        REQUIRE(first.resume() == Status::Ok);
+        REQUIRE(first.waitForEvent(StopReason::ProcessExit, 15000) == StopReason::ProcessExit);
+    }
+
+    Debugger second(Mode::External, X64::instance());
+    launchAtInitialStop(second);
+    Registers r;
+    REQUIRE(second.getRegisters(r) == Status::Ok);
+    uint8_t buffer[32] = {};
+    CHECK(second.readMemory(r.sp(), buffer, sizeof(buffer)) == Status::Ok);
+
+    second.detach();
+}
+
 TEST_CASE("resuming runs the target to a clean exit") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
