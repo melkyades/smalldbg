@@ -37,10 +37,11 @@ public:
     Status launch(const std::string &path, const std::vector<std::string> &args = {});
     Status detach();
 
-    // run control
+    // run control. The steps without a thread act on the current one, and
+    // return NotFound when there is none.
     Status resume();
-    Status step();              // Step using selectedThread or primaryThread
-    Status step(Thread* thread); // Step specific thread
+    Status step();
+    Status step(Thread* thread);
     Status suspend(); // Interrupt/break into running process
 
     Status stepOver();
@@ -50,7 +51,7 @@ public:
     
     // --- Reverse debugging (TTD) ---
     Status openTrace(const std::string& tracePath);  // Open a TTD trace file (.run)
-    Status stepBack();              // Step backwards using selectedThread or primaryThread
+    Status stepBack();              // Step backwards on the current thread
     Status stepBack(Thread* thread); // Step backwards on specific thread
     Status reverseStepOver(Thread* thread); // Step backwards over calls on specific thread
     Status reverseResume();         // Run backwards until breakpoint/start

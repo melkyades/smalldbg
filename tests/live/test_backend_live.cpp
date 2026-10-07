@@ -181,7 +181,7 @@ TEST_CASE("stack unwinds to at least one frame at the initial stop") {
 
     auto process = dbg.getProcess();
     REQUIRE(process.get() != nullptr);
-    auto thread = process->primaryThread();
+    auto thread = dbg.getCurrentThread();
     REQUIRE(thread.get() != nullptr);
 
     StackTrace trace(thread.get());
@@ -210,7 +210,7 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
     REQUIRE(dbg.resume() == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::Breakpoint, 20000) == StopReason::Breakpoint);
 
-    auto thread = dbg.getProcess()->primaryThread();
+    auto thread = dbg.getCurrentThread();
     REQUIRE(thread.get() != nullptr);
 
     StackTrace trace(thread.get());

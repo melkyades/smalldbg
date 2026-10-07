@@ -200,6 +200,7 @@ protected:
     bool initArchAndRegisters();  // validate target arch, resolve register indices
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
+    void selectEventThread();
     void collectThreadIds(std::vector<ThreadId>& out) const;
 
     void drainSyntheticEvents(uintptr_t targetPid);  // resume briefly to flush queued thread/module events

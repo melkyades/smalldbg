@@ -87,9 +87,8 @@ Status Debugger::resume() {
 }
 
 Status Debugger::step() {
-    auto proc = backend->getProcess();
-    auto thread = selectedThread ? selectedThread : proc->primaryThread();
-    return step(thread.get());
+    if (!selectedThread) return Status::NotFound;
+    return step(selectedThread.get());
 }
 
 Status Debugger::step(Thread* thread) {
@@ -98,9 +97,8 @@ Status Debugger::step(Thread* thread) {
 }
 
 Status Debugger::stepOver() {
-    auto proc = backend->getProcess();
-    auto thread = selectedThread ? selectedThread : proc->primaryThread();
-    return stepOver(thread.get());
+    if (!selectedThread) return Status::NotFound;
+    return stepOver(selectedThread.get());
 }
 
 Status Debugger::stepOver(Thread* thread) {
@@ -109,9 +107,8 @@ Status Debugger::stepOver(Thread* thread) {
 }
 
 Status Debugger::stepOut() {
-    auto proc = backend->getProcess();
-    auto thread = selectedThread ? selectedThread : proc->primaryThread();
-    return stepOut(thread.get());
+    if (!selectedThread) return Status::NotFound;
+    return stepOut(selectedThread.get());
 }
 
 Status Debugger::stepOut(Thread* thread) {
@@ -142,9 +139,8 @@ Status Debugger::openTrace(const std::string& tracePath) {
 }
 
 Status Debugger::stepBack() {
-    auto proc = backend->getProcess();
-    auto thread = selectedThread ? selectedThread : proc->primaryThread();
-    return stepBack(thread.get());
+    if (!selectedThread) return Status::NotFound;
+    return stepBack(selectedThread.get());
 }
 
 Status Debugger::stepBack(Thread* thread) {

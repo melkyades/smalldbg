@@ -1231,6 +1231,7 @@ bool DbgEngBackend::initSession() {
     }
 
     enumerateInitialThreads();
+    selectEventThread();
 
     if (!initArchAndRegisters()) {
         signalInit(false);
@@ -1458,6 +1459,15 @@ std::vector<ThreadId> DbgEngBackend::enumerateThreads() const {
     if (!attached) return threads;
     (void)runOnEngineThread([&]{ collectThreadIds(threads); });
     return threads;
+}
+
+// Makes the thread the last event happened on the debugger's current thread.
+void DbgEngBackend::selectEventThread() {
+    if (!process) return;
+    ULONG sysId = 0;
+    if (FAILED(sysObjects->GetCurrentThreadSystemId(&sysId))) return;
+    auto thread = process->getThread(static_cast<ThreadId>(sysId));
+    if (thread) debugger->setCurrentThread(*thread);
 }
 
 void DbgEngBackend::enumerateInitialThreads() {
@@ -1787,15 +1797,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
         return EventAction::Continue;
     }
 
-    // Set the current thread on the debugger.
-    if (process) {
-        ULONG sysId = 0;
-        sysObjects->GetCurrentThreadSystemId(&sysId);
-        auto threadOpt = process->getThread(static_cast<ThreadId>(sysId));
-        if (threadOpt) {
-            debugger->setCurrentThread(*threadOpt);
-        }
-    }
+    selectEventThread();
 
     // Invoke user event callback.
     if (eventCallback && eventCallback(stopReason, stopAddress)) {
