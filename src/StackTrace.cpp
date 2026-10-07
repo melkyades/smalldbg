@@ -57,8 +57,8 @@ Status StackTrace::unwind(size_t maxFrames) {
 }
 
 // Appends the frame whose registers are `regs`, or the run of frames starting
-// at it. Leaves in `regs` the registers of the frame to go on from; false when
-// the stack ends.
+// at it. Leaves in `regs` the registers of the frame to go on from. Returns
+// false when the stack ends.
 bool StackTrace::appendFramesFrom(Registers& regs, size_t maxFrames) {
     Debugger* debugger = thread->getDebugger();
     StackUnwinder* unwinder = unwinderFor(regs, debugger);
@@ -71,10 +71,10 @@ bool StackTrace::appendFramesFrom(Registers& regs, size_t maxFrames) {
 }
 
 // Takes the frames of a run up to the first one a higher-priority unwinder
-// handles, and leaves that one in `regs` for it. False when the run is not
-// cut, as nothing past it is known. A run does not end there by
+// handles, and leaves that one in `regs` for it. A run does not end there by
 // itself: a backend's walk carries on through code it has no unwind data for,
-// and what it reports past that point is not the stack.
+// and what it reports past that point is not the stack. Returns false when the
+// run is not cut, as nothing past it is known.
 bool StackTrace::appendRun(std::vector<StackFrame>& run, StackUnwinder& unwinder,
                            Registers& regs, size_t maxFrames) {
     Debugger* debugger = thread->getDebugger();

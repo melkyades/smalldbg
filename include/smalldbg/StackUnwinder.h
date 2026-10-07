@@ -37,8 +37,8 @@ public:
     // The frames from the one at `regs` on, innermost first, as far as this
     // unwinder can follow them in one go, at most maxFrames. Functions inlined
     // into a frame come just before it, as frames flagged `inlined`. Only ip,
-    // sp and fp are set in each frame's registers. Empty for an unwinder that
-    // goes one frame at a time, through unwind().
+    // sp and fp are set in each frame's registers. Returns an empty list for an
+    // unwinder that goes one frame at a time, through unwind().
     virtual std::vector<StackFrame> unwindRun(const Registers& regs,
                                               size_t maxFrames,
                                               Debugger* debugger) {
