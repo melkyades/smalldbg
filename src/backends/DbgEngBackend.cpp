@@ -59,11 +59,16 @@ static HMODULE g_dbgengModule = nullptr;
 static PFN_DebugCreate g_pfnDebugCreate = nullptr;
 static bool g_usingWinDbgPreview = false;
 
-// Load dbgeng.dll dynamically - prefer SDK version for normal use
+static bool loadPackagedDbgEng();
+
+// Loads dbgeng.dll, preferring the packaged WinDbg engine to the one in
+// System32, which has neither the symbol-server client (symsrv.dll) nor the
+// command extensions (winext). Returns false when neither loads.
 static bool ensureDbgEngLoaded() {
     if (g_pfnDebugCreate) return true;
-    
-    // Try loading the system/SDK dbgeng.dll
+
+    if (loadPackagedDbgEng()) return true;
+
     g_dbgengModule = LoadLibraryA("dbgeng.dll");
     if (g_dbgengModule) {
         g_pfnDebugCreate = (PFN_DebugCreate)GetProcAddress(g_dbgengModule, "DebugCreate");
@@ -143,12 +148,12 @@ static bool isWow64Process(ULONG pid) {
     return result;
 }
 
-namespace smalldbg {
-
-// Load a TTD-capable dbgeng.dll from the first location that has one. The DLLs
-// are placed out-of-band by tools/pack_windbg_dlls.sh; this never copies them
-// (loading in-process from the MSIX WinDbg package is ACL-blocked).
-bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
+// Loads the packaged dbgeng.dll from the first place that has one:
+// SMALLDBG_DBGENG_DIR, windbg_dlls beside the executable, or where
+// tools/pack_windbg_dlls.sh installs it for the user. That script copies the
+// DLLs out of the WinDbg package, whose ACLs block loading them from there.
+// Returns false when none loads.
+static bool loadPackagedDbgEng() {
     if (g_usingWinDbgPreview && g_pfnDebugCreate) return true;
 
     wchar_t envDir[MAX_PATH];
@@ -162,6 +167,12 @@ bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
     }
 
     return tryLoadDbgEngFrom(userDbgEngDir());
+}
+
+namespace smalldbg {
+
+bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
+    return loadPackagedDbgEng();
 }
 
 // ---------------------------------------------------------------------------
