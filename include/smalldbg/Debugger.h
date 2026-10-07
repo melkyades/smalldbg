@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Types.h"
+#include "Snapshot.h"
 #include "StackTrace.h"      // InlineFrameInfo
 #include "symbols/SymbolProvider.h"  // Need full definition for SymbolOptions default parameter
 #include <functional>
@@ -65,6 +66,10 @@ public:
     // --- Post-mortem crash-dump loading ---
     Status openDump(const std::string& dumpPath);  // Open a crash/WER dump (.dmp)
     bool isDumpFile() const;        // Check if we're inspecting a crash dump
+
+    // --- Snapshots: memory read from files or buffers, which never runs ---
+    // Returns NotSupported unless the Debugger was built for a snapshot.
+    Status openSnapshot(const std::vector<SnapshotRegion>& regions);
     
     // Execute a raw engine command (DbgEng: "kb", "lm", etc.) and return output.
     // Empty string on backends that don't support it.

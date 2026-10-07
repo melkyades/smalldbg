@@ -4,6 +4,7 @@
 #include "../../include/smalldbg/Process.h"
 #include "../../include/smalldbg/StackTrace.h"
 #include "../../include/smalldbg/NativeUnwinder.h"
+#include "../../include/smalldbg/Snapshot.h"
 #include <functional>
 #include <vector>
 #include <optional>
@@ -47,6 +48,9 @@ public:
     // Default returns NotSupported; override in backends that support it.
     virtual Status openDump(const std::string& dumpPath) { (void)dumpPath; return Status::NotSupported; }
     virtual bool isDumpFile() const { return false; }
+
+    // Memory laid out by the caller, which never runs.
+    virtual Status openSnapshot(const std::vector<SnapshotRegion>&) { return Status::NotSupported; }
 
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
     virtual Status clearBreakpoint(Address addr) = 0;

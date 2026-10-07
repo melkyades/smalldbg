@@ -17,12 +17,14 @@ enum class Mode {
     InProcess,  // operate inside the target process (helper thread)
 };
 
-// What a Debugger is built to debug: a process, running or saved in a dump,
-// or a recorded trace to replay.
+// What a Debugger is built to debug: a process, running or saved in a dump, a
+// recorded trace to replay, or a snapshot of memory that never runs.
 enum class Debuggee {
     Process,
     Trace,
+    Snapshot,
 };
+
 enum class Status {
     Ok,
     Error,

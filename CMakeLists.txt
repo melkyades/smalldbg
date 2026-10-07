@@ -44,6 +44,7 @@ add_library(smalldbg STATIC
     src/bindings/CAPI.cpp
     src/Disassembler.cpp
     src/backends/Backend.cpp
+    src/backends/SnapshotBackend.cpp
 )
 
 target_link_libraries(smalldbg PRIVATE capstone::capstone)

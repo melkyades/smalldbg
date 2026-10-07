@@ -7,6 +7,7 @@ add_executable(unit_tests
     unit/doctest_main.cpp
     unit/test_disassembler.cpp
     unit/test_arch.cpp
+    unit/test_snapshot.cpp
 )
 target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
 

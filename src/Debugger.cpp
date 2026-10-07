@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "backends/Backend.h"
+#include "backends/SnapshotBackend.h"
 #ifdef _WIN32
 #include "backends/WindowsBackend.h"
 #include "backends/DbgEngBackend.h"
@@ -30,14 +31,13 @@ bool engineWasBusy() { return engineBusy; }
 // The one backend this Debugger will have, chosen for what it debugs.
 static Backend* backendFor(Debugger* debugger, Mode mode, const Arch* arch,
                            Debuggee debuggee) {
+    if (debuggee == Debuggee::Snapshot) return new SnapshotBackend(debugger, mode, arch);
 #if defined(_WIN32) && defined(SMALLDBG_USE_DBGENG)
     if (debuggee == Debuggee::Trace) return new TTDBackend(debugger, mode, arch);
     return new DbgEngBackend(debugger, mode, arch);
 #elif defined(_WIN32)
-    (void)debuggee;
     return new WindowsBackend(debugger, mode, arch);
 #else
-    (void)debuggee;
     return new PtraceBackend(debugger, mode, arch);
 #endif
 }
@@ -158,6 +158,10 @@ Status Debugger::openDump(const std::string& dumpPath) {
 
 bool Debugger::isDumpFile() const {
     return backend->isDumpFile();
+}
+
+Status Debugger::openSnapshot(const std::vector<SnapshotRegion>& regions) {
+    return backend->openSnapshot(regions);
 }
 
 // A command may run or seek the target, and telling which would mean parsing
