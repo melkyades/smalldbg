@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace smalldbg {
@@ -8,7 +9,15 @@ namespace test {
 // Absolute path to the test_target executable that sits next to the test
 // binary, so the live tests work regardless of ctest's working directory.
 // Defined per-platform in util-win32.cpp / util-posix.cpp.
-std::string testTargetPath();
+std::string defaultTestTargetPath();
+
+// The test_target the live tests run: the one SMALLDBG_TEST_TARGET names when
+// it is set, so a 32-bit build runs the same tests against a WoW64 target, and
+// the one next to the test binary otherwise.
+inline std::string testTargetPath() {
+    if (const char* other = std::getenv("SMALLDBG_TEST_TARGET")) return other;
+    return defaultTestTargetPath();
+}
 
 /** test_target started as an ordinary process in "wait" mode, for tests that
  *  attach to it. The constructor returns once the target is waiting on its

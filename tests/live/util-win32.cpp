@@ -6,7 +6,7 @@
 namespace smalldbg {
 namespace test {
 
-std::string testTargetPath() {
+std::string defaultTestTargetPath() {
     char buf[MAX_PATH] = {};
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
     std::string self(buf);

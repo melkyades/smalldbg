@@ -12,7 +12,7 @@
 namespace smalldbg {
 namespace test {
 
-std::string testTargetPath() {
+std::string defaultTestTargetPath() {
     std::string self;
 #if defined(__APPLE__)
     char buf[PATH_MAX] = {};

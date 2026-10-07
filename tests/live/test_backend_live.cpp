@@ -127,11 +127,10 @@ TEST_CASE("registers are readable and sane at the initial stop") {
 
     Registers r;
     REQUIRE(dbg.getRegisters(r) == Status::Ok);
-    CHECK(r.arch == X64::instance());
+    CHECK(r.arch == dbg.arch());
     CHECK(r.ip() != 0);
     CHECK(r.sp() != 0);
-    // Stack pointer is at least 8-byte aligned on x64.
-    CHECK((r.sp() & 0x7) == 0);
+    CHECK(r.sp() % r.pointerSize() == 0);
 
     dbg.detach();
 }
