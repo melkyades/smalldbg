@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -23,12 +24,14 @@ std::string read(Debugger& dbg, Address address, size_t size) {
     return out;
 }
 
-// A file of known contents, removed when the test is done with it.
+// A file of known contents, removed when the test is done with it. The name is
+// random, so two runs of the suite at once, from two builds, do not share it.
 struct TempFile {
     std::filesystem::path path;
 
     explicit TempFile(const std::string& contents)
-        : path(std::filesystem::temp_directory_path() / "smalldbg_snapshot_test.bin") {
+        : path(std::filesystem::temp_directory_path()
+               / ("smalldbg_snapshot_" + std::to_string(std::random_device{}()) + ".bin")) {
         std::ofstream(path, std::ios::binary) << contents;
     }
     ~TempFile() { std::filesystem::remove(path); }
