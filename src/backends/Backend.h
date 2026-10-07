@@ -86,6 +86,9 @@ public:
     virtual StopReason getStopReason() const = 0;
     virtual bool isStopped() const = 0;
     virtual Address getStopAddress() const = 0;
+    // The exception the target is stopped on. Returns nothing when the stop
+    // was not an exception, or when the backend cannot tell.
+    virtual std::optional<ExceptionInfo> getStopException() const { return std::nullopt; }
     
     // Wait for debugger to stop with a specific reason (or any reason if None)
     // Returns the actual stop reason, or None if timeout/error

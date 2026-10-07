@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <optional>
+#include <vector>
 #include "arch/X86Registers.h"
 #include "arch/X64Registers.h"
 #include "arch/ARM64Registers.h"
@@ -44,6 +45,15 @@ enum class StopReason {
 
 using Address = uint64_t;
 using ThreadId = uint64_t;
+
+/** The exception a target stopped on. **/
+struct ExceptionInfo {
+    uint32_t code{0};                   // e.g. 0xC0000005 for an access violation
+    Address address{0};                 // where it was raised
+    uint32_t flags{0};
+    std::vector<uint64_t> parameters;
+    std::string description;            // the engine's own words, when it has any
+};
 
 struct Breakpoint {
     Address addr{0};

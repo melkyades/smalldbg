@@ -528,6 +528,7 @@ Status DbgEngBackend::resume() {
 
         stopped = false;
         stopReason = StopReason::None;
+        stopException.reset();
         stepRequested = false;
         startFailed = false;
         interruptRequested = false;
@@ -595,6 +596,7 @@ void DbgEngBackend::requestStep(ULONG execStatus, Thread& thread) {
         stepThreadId = static_cast<DWORD>(thread.getThreadId());
         stopped = false;
         stopReason = StopReason::None;
+        stopException.reset();
         pendingExecStatus = execStatus;
         continueRequested = true;
     }
@@ -607,6 +609,7 @@ void DbgEngBackend::requestResume(ULONG execStatus) {
         stepRequested = false;
         stopped = false;
         stopReason = StopReason::None;
+        stopException.reset();
         interruptRequested = false;
         interruptRaised = false;
         pendingExecStatus = execStatus;
@@ -1815,6 +1818,19 @@ std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
 // captureStopState — fill stopReason from engine's last event information.
 // ---------------------------------------------------------------------------
 
+// The exception in `record`, with the engine's description of it.
+static ExceptionInfo exceptionFrom(const EXCEPTION_RECORD64& record,
+                                   const std::string& description) {
+    ExceptionInfo info;
+    info.code = record.ExceptionCode;
+    info.address = record.ExceptionAddress;
+    info.flags = record.ExceptionFlags;
+    for (ULONG i = 0; i < record.NumberParameters && i < EXCEPTION_MAXIMUM_PARAMETERS; ++i)
+        info.parameters.push_back(record.ExceptionInformation[i]);
+    info.description = description;
+    return info;
+}
+
 void DbgEngBackend::captureStopState() {
     effectiveTypeSync->sync(control, log);
 
@@ -1833,9 +1849,10 @@ void DbgEngBackend::captureStopState() {
     char desc[256] = {};
     ULONG descUsed = 0;
     ULONG extraSize = 0;
+    EXCEPTION_RECORD64 record = {};
     HRESULT hr = control->GetLastEventInformation(
         &eventType, &processId, &threadId,
-        nullptr, 0, &extraSize,
+        &record, sizeof(record), &extraSize,
         desc, sizeof(desc), &descUsed);
 
     if (SUCCEEDED(hr)) {
@@ -1849,6 +1866,9 @@ void DbgEngBackend::captureStopState() {
             if (stepPending) {
                 stopReason = StopReason::SingleStep;
             } else {
+                // A dump holds the exception it was taken on only here.
+                if (extraSize >= sizeof(record))
+                    stopException = exceptionFrom(record, descUsed > 1 ? desc : "");
                 // If a callback wanted to break it would have already set
                 // stopReason.  Getting here means the exception was
                 // internally handled — treat as "keep going".
@@ -1917,6 +1937,12 @@ void DbgEngBackend::onUnhandledException(const EXCEPTION_RECORD64& record) {
     onException(record.ExceptionCode, record.ExceptionAddress);
     std::lock_guard<std::mutex> lock(mutex);
     stoppedOnUnhandledException = true;
+    stopException = exceptionFrom(record, {});
+}
+
+std::optional<ExceptionInfo> DbgEngBackend::getStopException() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return stopException;
 }
 
 bool DbgEngBackend::onThreadCreated() {

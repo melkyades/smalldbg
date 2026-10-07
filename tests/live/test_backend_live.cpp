@@ -286,8 +286,9 @@ TEST_CASE("a caller is refused while another waits on the engine") {
     dbg.detach();
 }
 
-// test_target's "crash" mode throws an exception nothing catches. The target
-// stops on it, and resuming then lets the process end.
+// test_target's "crash" mode throws a C++ exception nothing catches. The
+// target stops on it, says which exception it was, and resuming then lets the
+// process end.
 TEST_CASE("an unhandled exception stops the target") {
     Debugger dbg(Mode::External, X64::instance());
     logWhenAsked(dbg);
@@ -296,9 +297,14 @@ TEST_CASE("an unhandled exception stops the target") {
 
     REQUIRE(dbg.resume() == Status::Ok);
     CHECK(dbg.waitForEvent(StopReason::Exception, 15000) == StopReason::Exception);
+    auto exception = dbg.getStopException();
+    REQUIRE(exception.has_value());
+    CHECK(exception->code == 0xE06D7363);  // the code every C++ throw raises
+    CHECK(exception->address != 0);
 
     REQUIRE(dbg.resume() == Status::Ok);
     CHECK(dbg.waitForEvent(StopReason::ProcessExit, 15000) == StopReason::ProcessExit);
+    CHECK_FALSE(dbg.getStopException().has_value());
 }
 
 TEST_CASE("resuming runs the target to a clean exit") {
@@ -319,6 +325,7 @@ TEST_CASE("a breakpoint on a known function is hit when the target runs") {
     REQUIRE(dbg.getRegisters(r) == Status::Ok);
     CHECK(r.ip() >= sym.address);
     CHECK(r.ip() < sym.address + (sym.size ? sym.size : 64));
+    CHECK_FALSE(dbg.getStopException().has_value());
 
     dbg.detach();
 }

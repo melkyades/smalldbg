@@ -68,6 +68,9 @@ public:
     StopReason getStopReason() const;
     bool isStopped() const;
     Address getStopAddress() const;
+    // The exception the target is stopped on, with its code, address and
+    // parameters. Returns nothing when the stop was not an exception.
+    std::optional<ExceptionInfo> getStopException() const;
     
     // Wait for debugger to stop with a specific reason (or any reason if None)
     // Returns the actual stop reason, or None if timeout/error

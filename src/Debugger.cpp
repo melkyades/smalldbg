@@ -228,6 +228,10 @@ bool Debugger::isStopped() const { return backend->isStopped(); }
 
 Address Debugger::getStopAddress() const { return backend->getStopAddress(); }
 
+std::optional<ExceptionInfo> Debugger::getStopException() const {
+    return backend->getStopException();
+}
+
 void Debugger::setLogCallback(std::function<void(const std::string &)> cb) { backend->setLogCallback(std::move(cb)); }
 
 void Debugger::setEventCallback(std::function<bool(StopReason, Address)> cb) { backend->setEventCallback(std::move(cb)); }

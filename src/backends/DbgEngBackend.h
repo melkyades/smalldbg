@@ -101,6 +101,7 @@ public:
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
     Address getStopAddress() const override { return stopAddress; }
+    std::optional<ExceptionInfo> getStopException() const override;
     StopReason waitForEvent(StopReason reason = StopReason::None, int timeout_ms = -1) override;
 
     bool isAttached() const override { return attached; }
@@ -271,6 +272,7 @@ protected:
     bool stopped          = false;
     StopReason stopReason = StopReason::None;
     Address stopAddress   = 0;
+    std::optional<ExceptionInfo> stopException;  // the exception of this stop
     bool continueRequested= false;
     bool stepRequested    = false;
     DWORD stepThreadId    = 0;
