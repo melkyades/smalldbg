@@ -4,6 +4,10 @@
 // GetLineByOffset, GetOffsetByName) to implement the SymbolBackend interface.
 
 #include "DbgEngSymbolBackend.h"
+#include "ModuleKey.h"
+
+// The SYMOPT_ flags IDebugSymbols shares with DbgHelp are declared there.
+#include <dbghelp.h>
 
 #include <sstream>
 #include <algorithm>
@@ -68,6 +72,65 @@ std::string DbgEngSymbolBackend::searchPath() const {
 void DbgEngSymbolBackend::setSearchPath(const std::string& path) {
     options.searchPath = path;
     if (symbols) applySearchPath(path);
+}
+
+// The image file name is what a reload accepts: the engine may report an
+// executable's module name as "test_target" yet look it up only as
+// "test_target_exe".
+bool DbgEngSymbolBackend::findModule(const std::string& module, ULONG64& base,
+                                     std::string& imageFile) {
+    ULONG loaded = 0, unloaded = 0;
+    if (FAILED(symbols->GetNumberModules(&loaded, &unloaded))) return false;
+
+    std::string wanted = moduleKey(module);
+    for (ULONG i = 0; i < loaded; ++i) {
+        char image[512] = {};
+        char name[256] = {};
+        symbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, i, 0, image, sizeof(image), nullptr);
+        symbols->GetModuleNameString(DEBUG_MODNAME_MODULE, i, 0, name, sizeof(name), nullptr);
+        if (moduleKey(image) != wanted && moduleKey(name) != wanted) continue;
+        if (FAILED(symbols->GetModuleByIndex(i, &base))) return false;
+        std::string path = image;
+        imageFile = path.substr(path.find_last_of("\\/") + 1);
+        return true;
+    }
+    return false;
+}
+
+bool DbgEngSymbolBackend::hasSymbolFile(ULONG64 base) {
+    DEBUG_MODULE_PARAMETERS params = {};
+    if (FAILED(symbols->GetModuleParameters(1, &base, 0, &params))) return false;
+
+    switch (params.SymbolType) {
+    case DEBUG_SYMTYPE_PDB:
+    case DEBUG_SYMTYPE_DIA:
+    case DEBUG_SYMTYPE_CODEVIEW:
+    case DEBUG_SYMTYPE_COFF:
+    case DEBUG_SYMTYPE_SYM:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Reloads the module and checks a symbol file came in. With Nearest, a file
+// that is not an exact match is accepted, and stays accepted for the session:
+// requiring exact matches again would unload it at the next reload.
+bool DbgEngSymbolBackend::loadModuleSymbols(const std::string& module,
+                                            SymbolMatch match) {
+    if (!symbols) return false;
+    ULONG64 base = 0;
+    std::string imageFile;
+    if (!findModule(module, base, imageFile)) return false;
+
+    if (match == SymbolMatch::Nearest) {
+        symbols->RemoveSymbolOptions(SYMOPT_EXACT_SYMBOLS);
+        symbols->AddSymbolOptions(SYMOPT_LOAD_ANYTHING);
+    }
+
+    std::string spec = match == SymbolMatch::Nearest ? "/i /f " : "/f ";
+    symbols->Reload((spec + imageFile).c_str());
+    return hasSymbolFile(base);
 }
 
 void DbgEngSymbolBackend::shutdown() {

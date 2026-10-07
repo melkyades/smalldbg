@@ -99,6 +99,48 @@ void DbgHelpBackend::setSearchPath(const std::string& path) {
     SymRefreshModuleList(processHandle);
 }
 
+DWORD64 DbgHelpBackend::moduleBaseNamed(const std::string& module) {
+    struct Wanted {
+        std::string name;
+        DWORD64 base{0};
+    } wanted{module, 0};
+
+    SymEnumerateModules64(processHandle,
+        [](PCSTR name, DWORD64 base, PVOID context) -> BOOL {
+            auto* looking = static_cast<Wanted*>(context);
+            if (_stricmp(name, looking->name.c_str()) != 0) return TRUE;
+            looking->base = base;
+            return FALSE;
+        }, &wanted);
+    return wanted.base;
+}
+
+// DbgHelp cannot reload one module, so the match is set as options and the
+// module list refreshed. SYMOPT_LOAD_ANYTHING has no effect while
+// SYMOPT_EXACT_SYMBOLS is set.
+bool DbgHelpBackend::loadModuleSymbols(const std::string& module,
+                                       SymbolMatch match) {
+    if (module.empty() || !initialized) return false;
+
+    DWORD wanted = SymGetOptions();
+    if (match == SymbolMatch::Nearest)
+        wanted = (wanted & ~SYMOPT_EXACT_SYMBOLS) | SYMOPT_LOAD_ANYTHING;
+    else
+        wanted = (wanted & ~SYMOPT_LOAD_ANYTHING) | SYMOPT_EXACT_SYMBOLS;
+    SymSetOptions(wanted);
+    SymRefreshModuleList(processHandle);
+
+    DWORD64 base = moduleBaseNamed(module);
+    if (base == 0) return false;
+
+    IMAGEHLP_MODULE64 info = {};
+    info.SizeOfStruct = sizeof(info);
+    if (!SymGetModuleInfo64(processHandle, base, &info)) return false;
+    return info.SymType == SymPdb || info.SymType == SymCv
+        || info.SymType == SymCoff || info.SymType == SymSym
+        || info.SymType == SymDia;
+}
+
 std::string DbgHelpBackend::buildSymbolSearchPath() {
     std::string path;
     

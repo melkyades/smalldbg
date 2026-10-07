@@ -18,6 +18,11 @@ struct LocalVariable;
 struct StackFrame;
 struct NativeTypeInfo;
 
+/** How closely a symbol file must match its module to be accepted. Exact is
+ *  the only setting under which an address read through a symbol is certainly
+ *  that symbol's; Nearest also accepts a file from a nearby build. **/
+enum class SymbolMatch { Exact, Nearest };
+
 // Abstract interface for symbol backends (DbgHelp, DWARF, user-defined, etc.)
 class SymbolBackend {
 public:
@@ -35,6 +40,11 @@ public:
 
     /** Everywhere the backend will look, including what it added itself. **/
     virtual std::string searchPath() const { return {}; }
+
+    /** Loads one module's symbols now. Returns false when no symbol file was
+     *  loaded. **/
+    virtual bool loadModuleSymbols(const std::string& /*module*/,
+                                   SymbolMatch /*match*/) { return false; }
 
     // Symbol lookup
     virtual std::optional<Symbol> getSymbolByName(const std::string& name) = 0;

@@ -22,6 +22,7 @@ public:
 
     void setSearchPath(const std::string& path) override;
     std::string searchPath() const override { return symbolSearchPath; }
+    bool loadModuleSymbols(const std::string& module, SymbolMatch match) override;
 
     // Symbol lookup
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
@@ -56,6 +57,9 @@ private:
     bool tryDownloadWithHTTP(const char* pdbName, const char* signature);
     void addPdbDirectoryToSearchPath(const std::string& pdbDir);
     std::string buildSymbolSearchPath();
+
+    /** Returns the base DbgHelp has `module` at, or 0 when it has none. **/
+    DWORD64 moduleBaseNamed(const std::string& module);
     
     HANDLE processHandle{NULL};
     bool initialized{false};

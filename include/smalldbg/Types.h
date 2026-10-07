@@ -79,6 +79,15 @@ struct ModuleInfo {
     Address endAddress{0};    // Upper bound of text segment
     Address slide{0};         // ASLR slide (loadAddress - preferredBase)
     uint64_t symbolCount{0};  // Number of resolved symbols
+
+    /** Returns true when the module has a symbol file, rather than only its
+     *  export table or nothing loaded yet. When the symbol type is unknown,
+     *  any symbols count. **/
+    bool hasSymbolFile() const {
+        if (symbolType.empty()) return symbolCount > 0;
+        return symbolType != "none" && symbolType != "deferred"
+            && symbolType != "export";
+    }
 };
 
 struct Registers {

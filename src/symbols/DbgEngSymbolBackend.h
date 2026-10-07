@@ -32,6 +32,7 @@ public:
 
     void setSearchPath(const std::string& path) override;
     std::string searchPath() const override;
+    bool loadModuleSymbols(const std::string& module, SymbolMatch match) override;
 
     // Symbol lookup
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
@@ -52,6 +53,15 @@ public:
 
 private:
     void applySearchPath(const std::string& callerPath);
+
+    /** The base and image file name of the module whose image or module name
+     *  is `module`. Returns false when none matches. **/
+    bool findModule(const std::string& module, ULONG64& base, std::string& imageFile);
+
+    /** Returns true when the module at `base` has a symbol file rather than
+     *  its export table. A reload succeeds either way, so it cannot tell. **/
+    bool hasSymbolFile(ULONG64 base);
+
 
     IDebugSymbols3* symbols = nullptr;
     IDebugControl4* control = nullptr;

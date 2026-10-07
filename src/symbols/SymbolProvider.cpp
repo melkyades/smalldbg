@@ -1,6 +1,7 @@
 #include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackTrace.h"
 #include "backends/Backend.h"
+#include "ModuleKey.h"
 
 namespace smalldbg {
 
@@ -36,6 +37,21 @@ std::string SymbolProvider::searchPath() const {
         if (!path.empty()) return path;
     }
     return symbolOptions.searchPath;
+}
+
+bool SymbolProvider::loadModuleSymbols(const std::string& module,
+                                       SymbolMatch match) {
+    for (auto& backend : backends)
+        if (backend->loadModuleSymbols(module, match)) return true;
+    return false;
+}
+
+ModuleInfo SymbolProvider::moduleNamed(const std::string& module) {
+    std::string wanted = moduleKey(module);
+    for (const auto& known : getModules())
+        if (moduleKey(known.shortName) == wanted || moduleKey(known.path) == wanted)
+            return known;
+    return {};
 }
 
 void SymbolProvider::shutdown() {

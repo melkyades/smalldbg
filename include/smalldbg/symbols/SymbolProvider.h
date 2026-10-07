@@ -87,6 +87,15 @@ public:
     void setSearchPath(const std::string& path);
     std::string searchPath() const;
 
+    /** Loads one module's symbols through the first backend that can. Returns
+     *  false when none could. **/
+    bool loadModuleSymbols(const std::string& module,
+                           SymbolMatch match = SymbolMatch::Exact);
+
+    /** The module named `module`, ignoring case and any extension. Returns an
+     *  empty ModuleInfo when there is none. **/
+    ModuleInfo moduleNamed(const std::string& module);
+
     void shutdown();
     
     // Add a symbol backend (takes ownership)

@@ -189,6 +189,21 @@ TEST_CASE("a symbol search path that is set is searched first") {
     dbg.detach();
 }
 
+TEST_CASE("a module's symbols load on request, and any spelling finds it") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+    CHECK(symbols->loadModuleSymbols("test_target"));
+    CHECK(symbols->moduleNamed("TEST_TARGET.exe").hasSymbolFile());
+
+    CHECK(symbols->moduleNamed("no_such_module").shortName.empty());
+    CHECK_FALSE(symbols->loadModuleSymbols("no_such_module"));
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
