@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+namespace smalltalk { class Inspector; }
+
 namespace vmdbg {
 
 /** A named address range in the target: an object space, a code zone, a
@@ -53,6 +55,10 @@ public:
     /** The name of the region holding `address`. Returns an empty name when
      *  none does. **/
     std::string classifyAddress(uint64_t address) const;
+
+    /** The Smalltalk view of this inspector, null when it inspects something
+     *  else. Declared here so a server can ask without a downcast. **/
+    virtual smalltalk::Inspector* smalltalkView() { return nullptr; }
 
 protected:
     void clearRegions() { regionTable.clear(); }

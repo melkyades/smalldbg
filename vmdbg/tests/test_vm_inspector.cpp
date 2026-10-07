@@ -48,4 +48,5 @@ TEST_CASE("an inspector that does not look for regions has none") {
     TestInspector inspector;
     CHECK_FALSE(inspector.refreshRegions());
     CHECK(inspector.regions().empty());
+    CHECK(inspector.smalltalkView() == nullptr);
 }

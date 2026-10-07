@@ -5,6 +5,7 @@ find_package(doctest REQUIRED)
 add_executable(vmdbg_tests
     test_smalltalk_model.cpp
     test_vm_inspector.cpp
+    test_smalltalk_inspector.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 
