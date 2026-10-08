@@ -5,11 +5,14 @@ add_executable(webside_tests
     test_websidesession.cpp
     test_http_server.cpp
     test_main.cpp
+    test_smalltalk_session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Workspace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smalltalk/Session.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smalltalk/InspectorJson.cpp
 )
 target_include_directories(webside_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(webside_tests PRIVATE vmdbg httplib::httplib doctest::doctest)
