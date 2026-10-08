@@ -26,15 +26,16 @@ TEST_CASE("a disconnected session reports no active target") {
 
     CHECK_FALSE(session.isActive());
     CHECK_FALSE(session.getPid().has_value());
-    CHECK(session.getDebugger() == nullptr);
+    CHECK_FALSE(session.debugger().isAttached());
 }
 
 TEST_CASE("a disconnected session ignores debug requests safely") {
     DisconnectedSession session;
 
-    CHECK_FALSE(session.launch("some-target"));
-    CHECK_FALSE(session.attach(1234));
-    session.detach();  // no-op — must not crash
+    vmdbg::TargetSpec spec;
+    spec.path = "some-target";
+    CHECK_FALSE(session.open(spec));
+    CHECK_FALSE(session.debugger().isAttached());
 }
 
 TEST_CASE("a disconnected session refuses run control and reports empty state") {
@@ -148,32 +149,24 @@ TEST_CASE("frame registers JSON reflects the x64 register set") {
 // interface stubs.
 namespace {
 struct LiveSession : WebsideSession {
-    std::unique_ptr<smalldbg::Debugger> dbg;
+    std::unique_ptr<smalldbg::Debugger> dbg{
+        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External, smalldbg::X64::instance())};
 
-    bool launch(const std::string& target, const std::vector<std::string>& = {}) override {
-        dbg = std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External, smalldbg::X64::instance());
-        return dbg->launch(target) == smalldbg::Status::Ok;
+    struct NoInspector : vmdbg::VMInspector {
+        StackRegion evaluatorStack() const override { return {}; }
+    } noInspector;
+
+    bool isActive() const override { return dbg->isAttached(); }
+    smalldbg::Debugger& debugger() const override { return *dbg; }
+    vmdbg::VMInspector& inspector() const override {
+        return const_cast<NoInspector&>(noInspector);
     }
-    bool isActive() const override { return dbg && dbg->isAttached(); }
-    smalldbg::Debugger* getDebugger() const override { return dbg.get(); }
-    vmdbg::VMInspector* getInspector() const override { return nullptr; }
     // The target runs no VM; the thread it stopped on stands in for one.
     std::shared_ptr<smalldbg::Thread> vmThread() const override {
-        return dbg ? dbg->getCurrentThread() : nullptr;
+        return dbg->getCurrentThread();
     }
-
-    bool attach(int) override { return false; }
-    void detach() override { if (dbg) dbg->detach(); }
+    bool onTargetOpened(const vmdbg::TargetSpec&) override { return true; }
     std::optional<int> getPid() const override { return std::nullopt; }
-    bool resume() override { return false; }
-    bool suspend() override { return false; }
-    bool step() override { return false; }
-    bool stepOver() override { return false; }
-    bool stepOver(int) override { return false; }
-    bool stepOut() override { return false; }
-    bool stepBack() override { return false; }
-    bool reverseStepOver() override { return false; }
-    bool reverseStepOut() override { return false; }
     std::string getStopReason() const override { return ""; }
     std::string getRegisters() const override { return "{}"; }
     void refreshGreenThreads() override {}
@@ -197,8 +190,6 @@ struct LiveSession : WebsideSession {
     std::string getMethods(const std::string&) const override { return "[]"; }
     std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
     std::string search(const std::string&, bool, const std::string&, const std::string&) const override { return "[]"; }
-    bool setBreakpoint(uint64_t, const std::string&) override { return false; }
-    bool clearBreakpoint(uint64_t) override { return false; }
     std::string listBreakpoints() const override { return "[]"; }
     std::string readMemory(uint64_t, size_t) const override { return "{}"; }
     std::string waitForEvent(int) override { return "{}"; }
@@ -208,8 +199,10 @@ struct LiveSession : WebsideSession {
 
 TEST_CASE("listFrames returns real frames for a launched target") {
     LiveSession s;
-    REQUIRE(s.launch(WEBSIDE_TEST_TARGET));
-    REQUIRE(s.getDebugger()->waitForEvent(smalldbg::StopReason::None, 5000) != smalldbg::StopReason::None);
+    vmdbg::TargetSpec spec;
+    spec.path = WEBSIDE_TEST_TARGET;
+    REQUIRE(s.open(spec));
+    REQUIRE(s.debugger().waitForEvent(smalldbg::StopReason::None, 5000) != smalldbg::StopReason::None);
 
     auto thread = s.vmThread();
     REQUIRE(thread);
@@ -219,5 +212,5 @@ TEST_CASE("listFrames returns real frames for a launched target") {
     CHECK(json.find("\"index\"") != std::string::npos);
     CHECK(json.find("\"label\"") != std::string::npos);
 
-    s.getDebugger()->detach();
+    s.debugger().detach();
 }

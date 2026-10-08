@@ -29,39 +29,14 @@ public:
     EggDebugSession();
     ~EggDebugSession() override;
 
-    /// Launch the egg executable and attach the debugger.
-    bool launch(const std::string& eggPath,
-                const std::vector<std::string>& args = {}) override;
-
-    /// Attach to an already-running egg process.
-    bool attach(int pid) override;
-
-    /// Detach from the target process.
-    void detach() override;
-
     bool isActive() const override;
     std::optional<int> getPid() const override;
-
-    // ---- Debug control ----
-    bool resume() override;
-    bool suspend() override;
-    bool step() override;
-    bool stepOver() override;
-    bool stepOver(int frameIndex) override;
-    bool stepOut() override;
-
-    // ---- Reverse debug control (TTD) ----
-    bool stepBack() override;
-    bool reverseStepOver() override;
-    bool reverseStepOut() override;
 
     // ---- State queries ----
     std::string getStopReason() const override;
     std::string getRegisters() const override;
 
     // ---- Breakpoints / memory / events / objects (interface stubs) ----
-    bool setBreakpoint(uint64_t address, const std::string& name = "") override;
-    bool clearBreakpoint(uint64_t address) override;
     std::string listBreakpoints() const override;
     std::string readMemory(uint64_t address, size_t size) const override;
     std::string waitForEvent(int timeoutMs = 5000) override;
@@ -107,8 +82,8 @@ public:
 
     // ---- Class browsing (delegates to inspector + JSON formatting) ----
     bool discoverClasses() override {
-        inspector->locateRuntime();
-        return inspector->discoverClasses();
+        ownedInspector->locateRuntime();
+        return ownedInspector->discoverClasses();
     }
     std::string listClasses(const std::string& root = "",
                             bool namesOnly = false,
@@ -130,20 +105,24 @@ public:
                        const std::string& condition,
                        const std::string& type) const override;
 
-    /// Underlying debugger (for low-level access).
-    smalldbg::Debugger* getDebugger() const override { return debugger.get(); }
-
-    /// Access the Egg VM inspector (covariant override of WebsideSession).
-    egg::EggInspector* getInspector() const override { return inspector.get(); }
+    smalldbg::Debugger& debugger() const override { return *ownedDebugger; }
+    vmdbg::VMInspector& inspector() const override { return *ownedInspector; }
+    egg::EggInspector& eggInspector() const { return *ownedInspector; }
 
 protected:
+    bool onTargetOpened(const vmdbg::TargetSpec& target) override;
+    const char* dialectTag() const override { return "egg"; }
+    vmdbg::VMModule vmModule() const override {
+        return {"egg", true, "Egg's runtime is read through globals it does not export."};
+    }
+
     /// Native frame detail enriched with source text and the IP interval.
     std::string buildFrameDetailJson(const smalldbg::StackFrame& frame,
                                      int index) const override;
 
 private:
-    std::unique_ptr<smalldbg::Debugger> debugger;
-    std::unique_ptr<egg::EggInspector> inspector;
+    std::unique_ptr<smalldbg::Debugger> ownedDebugger;
+    std::unique_ptr<egg::EggInspector> ownedInspector;
 
     // ---- Green thread list ----
     std::vector<GreenThread> greenThreads;

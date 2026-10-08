@@ -45,13 +45,13 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
 
 std::string WebsideSession::getFrameDetail(smalldbg::StackTrace& trace,
                                            const smalldbg::StackFrame& frame, int index) const {
-    trace.resolveFrameDetails(index - 1, getDebugger());
+    trace.resolveFrameDetails(index - 1, &debugger());
     return buildFrameDetailJson(frame, index);
 }
 
 std::string WebsideSession::getFrameBindings(smalldbg::StackTrace& trace,
                                              const smalldbg::StackFrame& frame, int index) const {
-    trace.resolveFrameDetails(index - 1, getDebugger());
+    trace.resolveFrameDetails(index - 1, &debugger());
     return buildFrameBindingsJson(frame, index);
 }
 
@@ -63,7 +63,7 @@ std::string WebsideSession::stackDescriptors(const smalldbg::StackTrace& trace,
                                              int selectedIndex,
                                              uint64_t from, int slots) const {
     uint64_t to = from + static_cast<uint64_t>(slots) * pointerSize();
-    return buildStackDescriptorsJson(getDebugger(), trace, selectedIndex, from, to);
+    return buildStackDescriptorsJson(&debugger(), trace, selectedIndex, from, to);
 }
 
 // =========================================================================

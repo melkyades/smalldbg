@@ -16,7 +16,7 @@ std::unique_ptr<WebsideSession> EggWebsideServer::createSession() {
 // EggDebugSession has.
 std::string EggWebsideServer::inspectJson(uint64_t oop, int maxSlots) const {
     auto& egg = static_cast<const EggDebugSession&>(*session);
-    return inspectEggObject(*egg.getInspector(), oop, maxSlots);
+    return inspectEggObject(egg.eggInspector(), oop, maxSlots);
 }
 
 } // namespace webside

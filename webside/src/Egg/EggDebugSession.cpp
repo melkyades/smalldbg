@@ -142,139 +142,45 @@ static MethodNames parseMethodHeader(const std::string& src) {
 // ---- Construction / Destruction ----
 
 EggDebugSession::EggDebugSession() {
-    debugger = std::make_unique<smalldbg::Debugger>(
+    ownedDebugger = std::make_unique<smalldbg::Debugger>(
         smalldbg::Mode::External, smalldbg::hostArch());
 
-    debugger->setLogCallback([](const std::string& msg) {
+    ownedDebugger->setLogCallback([](const std::string& msg) {
         std::cerr << "[dbg] " << msg << std::endl;
     });
 
-    inspector = std::make_unique<egg::EggInspector>(debugger.get());
+    ownedInspector = std::make_unique<egg::EggInspector>(ownedDebugger.get());
 }
 
 EggDebugSession::~EggDebugSession() {
-    if (debugger && debugger->isAttached())
-        debugger->detach();
+    if (ownedDebugger && ownedDebugger->isAttached())
+        ownedDebugger->detach();
 }
 
 // ---- Launch / Attach ----
 
-bool EggDebugSession::launch(const std::string& eggPath,
-                             const std::vector<std::string>& args) {
-    std::cerr << "[egg] launching: " << eggPath << std::endl;
-    auto status = debugger->launch(eggPath, args);
-    if (status != smalldbg::Status::Ok) {
-        std::cerr << "[egg] launch failed" << std::endl;
-        return false;
-    }
-    std::cerr << "[egg] launched, pid=" << debugger->attachedPid().value_or(0) << std::endl;
+bool EggDebugSession::onTargetOpened(const vmdbg::TargetSpec&) {
+    std::cerr << "[egg] opened, pid=" << ownedDebugger->attachedPid().value_or(0) << std::endl;
     return true;
-}
-
-bool EggDebugSession::attach(int pid) {
-    auto status = debugger->attach(static_cast<uintptr_t>(pid));
-    if (status != smalldbg::Status::Ok)
-        return false;
-
-    discoverClasses();
-    return true;
-}
-
-void EggDebugSession::detach() {
-    if (debugger)
-        debugger->detach();
 }
 
 bool EggDebugSession::isActive() const {
-    if (!debugger) return false;
+    if (!ownedDebugger) return false;
     // Drain pending kernel events (non-blocking) so a just-exited child reads
     // as detached rather than stale-attached.
-    if (debugger->isAttached())
-        debugger->waitForEvent(smalldbg::StopReason::None, 0);
-    return debugger->isAttached();
+    if (ownedDebugger->isAttached())
+        ownedDebugger->waitForEvent(smalldbg::StopReason::None, 0);
+    return ownedDebugger->isAttached();
 }
 
 std::optional<int> EggDebugSession::getPid() const {
-    if (!debugger) return std::nullopt;
-    auto p = debugger->attachedPid();
+    if (!ownedDebugger) return std::nullopt;
+    auto p = ownedDebugger->attachedPid();
     if (p) return static_cast<int>(*p);
     return std::nullopt;
 }
 
 // ---- Debug control ----
-
-bool EggDebugSession::resume() {
-    return debugger->resume() == smalldbg::Status::Ok;
-}
-
-bool EggDebugSession::suspend() {
-    if (debugger->isStopped())
-        return true;
-
-    if (debugger->suspend() != smalldbg::Status::Ok)
-        return false;
-
-    auto reason = debugger->waitForEvent(smalldbg::StopReason::None, 5000);
-    if (reason == smalldbg::StopReason::None && !debugger->isStopped())
-        return false;
-
-    return true;
-}
-
-bool EggDebugSession::step() {
-    return debugger->step() == smalldbg::Status::Ok;
-}
-
-bool EggDebugSession::stepOver() {
-    return debugger->stepOver() == smalldbg::Status::Ok;
-}
-
-bool EggDebugSession::stepOut() {
-    return debugger->stepOut() == smalldbg::Status::Ok;
-}
-
-bool EggDebugSession::stepBack() {
-    return debugger->stepBack() == smalldbg::Status::Ok;
-}
-
-bool EggDebugSession::reverseStepOver() {
-    // Reverse step over: step backwards, skipping over calls.
-    // Use the caller's IP as a reverse breakpoint target.
-    auto thread = debugger->getCurrentThread();
-    if (!thread) return stepBack();
-
-    auto* trace = thread->getStackTrace(2);
-    if (!trace || trace->getFrameCount() < 2)
-        return stepBack();
-
-    auto returnAddr = trace->getFrames()[1]->ip();
-    debugger->setBreakpoint(returnAddr, "__revstepover_tmp");
-    bool ok = debugger->reverseResume() == smalldbg::Status::Ok;
-    if (ok) {
-        debugger->waitForEvent(smalldbg::StopReason::None, -1);
-    }
-    debugger->clearBreakpoint(returnAddr);
-    return ok;
-}
-
-bool EggDebugSession::reverseStepOut() {
-    // Reverse step out: run backwards until we re-enter the current frame.
-    auto thread = debugger->getCurrentThread();
-    if (!thread) return false;
-
-    auto* trace = thread->getStackTrace(2);
-    if (!trace || trace->getFrameCount() < 2)
-        return false;
-
-    auto returnAddr = trace->getFrames()[1]->ip();
-    debugger->setBreakpoint(returnAddr, "__revstepout_tmp");
-    bool ok = debugger->reverseResume() == smalldbg::Status::Ok;
-    if (ok) {
-        debugger->waitForEvent(smalldbg::StopReason::None, -1);
-    }
-    debugger->clearBreakpoint(returnAddr);
-    return ok;
-}
 
 // ---- State queries ----
 
@@ -294,9 +200,9 @@ std::string EggDebugSession::stopReasonStr(smalldbg::StopReason r) const {
 
 std::string EggDebugSession::getStopReason() const {
     // Drain pending kernel events (non-blocking) so the reported state is live.
-    if (debugger && debugger->isAttached())
-        debugger->waitForEvent(smalldbg::StopReason::None, 0);
-    return stopReasonStr(debugger->getStopReason());
+    if (ownedDebugger && ownedDebugger->isAttached())
+        ownedDebugger->waitForEvent(smalldbg::StopReason::None, 0);
+    return stopReasonStr(ownedDebugger->getStopReason());
 }
 
 // ---- Class browsing API ----
@@ -356,7 +262,7 @@ std::string EggDebugSession::determinePackage(const ClassEntry& entry) const {
 std::string EggDebugSession::listClasses(const std::string& root,
                                           bool namesOnly,
                                           bool /*tree*/, int /*depth*/) const {
-    auto& cache = inspector->getClassCache();
+    auto& cache = ownedInspector->getClassCache();
     if (cache.empty()) return "[]";
 
     std::vector<const ClassEntry*> classes;
@@ -367,7 +273,7 @@ std::string EggDebugSession::listClasses(const std::string& root,
             auto it = cache.find(name);
             if (it == cache.end()) return;
             classes.push_back(&it->second);
-            inspector->collectSubclassesOf(name, collectSubtree);
+            ownedInspector->collectSubclassesOf(name, collectSubtree);
         };
         collectSubtree(root);
     } else {
@@ -386,7 +292,7 @@ std::string EggDebugSession::listClasses(const std::string& root,
 }
 
 std::string EggDebugSession::getClass(const std::string& name) const {
-    auto& cache = inspector->getClassCache();
+    auto& cache = ownedInspector->getClassCache();
 
     // Handle metaclass names (e.g. "Array class")
     const std::string suffix = " class";
@@ -424,7 +330,7 @@ std::string EggDebugSession::getClass(const std::string& name) const {
 }
 
 std::string EggDebugSession::getSubclasses(const std::string& name) const {
-    auto& cache = inspector->getClassCache();
+    auto& cache = ownedInspector->getClassCache();
     auto arr = Json::array();
     for (auto& [childName, entry] : cache) {
         if (entry.superclassName == name)
@@ -434,7 +340,7 @@ std::string EggDebugSession::getSubclasses(const std::string& name) const {
 }
 
 std::string EggDebugSession::getSuperclasses(const std::string& name) const {
-    auto& cache = inspector->getClassCache();
+    auto& cache = ownedInspector->getClassCache();
     auto arr = Json::array();
     std::string current = name;
     std::set<std::string> visited;
@@ -456,7 +362,7 @@ std::string EggDebugSession::getSuperclasses(const std::string& name) const {
 }
 
 std::string EggDebugSession::getVariables(const std::string& name) const {
-    auto& cache = inspector->getClassCache();
+    auto& cache = ownedInspector->getClassCache();
     auto arr = Json::array();
 
     // Collect all instance variables from the class and its superclass chain
@@ -487,7 +393,7 @@ std::string EggDebugSession::getVariables(const std::string& name) const {
 }
 
 std::string EggDebugSession::getInstanceVariables(const std::string& name) const {
-    auto* entry = inspector->findClassByName(name);
+    auto* entry = ownedInspector->findClassByName(name);
     if (!entry) return "[]";
 
     auto ivars = entry->species.instanceVariableNames();
@@ -514,10 +420,10 @@ std::string EggDebugSession::getUsedCategories(const std::string& name) const {
 }
 
 std::string EggDebugSession::getSelectors(const std::string& name) const {
-    auto* entry = inspector->findClassByName(name);
+    auto* entry = ownedInspector->findClassByName(name);
     if (!entry) return "[]";
 
-    auto methodEntries = inspector->readMethodDictionary(entry->species);
+    auto methodEntries = ownedInspector->readMethodDictionary(entry->species);
     auto arr = Json::array();
     for (auto& [sel, method] : methodEntries)
         arr.add(sel);
@@ -525,10 +431,10 @@ std::string EggDebugSession::getSelectors(const std::string& name) const {
 }
 
 std::string EggDebugSession::getMethods(const std::string& name) const {
-    auto* entry = inspector->findClassByName(name);
+    auto* entry = ownedInspector->findClassByName(name);
     if (!entry) return "[]";
 
-    auto methodEntries = inspector->readMethodDictionary(entry->species);
+    auto methodEntries = ownedInspector->readMethodDictionary(entry->species);
     auto arr = Json::array();
     for (auto& [sel, method] : methodEntries) {
         arr.add(Json::object()
@@ -545,10 +451,10 @@ std::string EggDebugSession::getMethods(const std::string& name) const {
 
 std::string EggDebugSession::getMethod(const std::string& className,
                                         const std::string& selector) const {
-    auto* entry = inspector->findClassByName(className);
+    auto* entry = ownedInspector->findClassByName(className);
     if (!entry) return "{}";
 
-    auto methodEntries = inspector->readMethodDictionary(entry->species);
+    auto methodEntries = ownedInspector->readMethodDictionary(entry->species);
     for (auto& [sel, method] : methodEntries) {
         if (sel == selector) {
             return Json::object()
@@ -588,7 +494,7 @@ std::string EggDebugSession::search(const std::string& text, bool ignoreCase,
                                      const std::string& type) const {
     if (text.empty()) return "[]";
 
-    auto& cache = inspector->getClassCache();
+    auto& cache = ownedInspector->getClassCache();
     auto arr = Json::array();
     bool searchClasses = (type == "all" || type == "class");
     bool searchSelectors = (type == "all" || type == "selector");
@@ -603,7 +509,7 @@ std::string EggDebugSession::search(const std::string& text, bool ignoreCase,
     if (searchSelectors) {
         std::set<std::string> seen;
         for (auto& [name, entry] : cache) {
-            auto methods = inspector->readMethodDictionary(entry.species);
+            auto methods = ownedInspector->readMethodDictionary(entry.species);
             for (auto& [sel, method] : methods) {
                 if (seen.count(sel)) continue;
                 if (matchCondition(sel, text, condition, ignoreCase)) {
@@ -771,14 +677,14 @@ std::shared_ptr<smalldbg::Thread> EggDebugSession::vmThread() const {
 void EggDebugSession::refreshGreenThreads() {
     greenThreads.clear();
 
-    auto st = inspector->readEvaluatorState();
+    auto st = ownedInspector->readEvaluatorState();
     if (!st.valid) return;
 
     GreenThread gt;
     gt.id = 1;
     gt.name = "main";
     gt.state = st;
-    gt.frames = inspector->walkSmalltalkFrames(st);
+    gt.frames = ownedInspector->walkSmalltalkFrames(st);
 
     greenThreads.push_back(std::move(gt));
 }
@@ -817,10 +723,10 @@ std::string EggDebugSession::listSmalltalkFrames(int threadIndex) const {
 
     // Expose the Evaluator's result/receiver register at the suspend point.
     if (gt.state.regR != 0) {
-        auto regRObj = inspector->objectAt(gt.state.regR);
+        auto regRObj = ownedInspector->objectAt(gt.state.regR);
         arr.add(Json::object()
             .set("index", static_cast<int>(gt.frames.size()) + 1)
-            .set("label", "<regR: " + inspector->describeRemoteObject(regRObj) + ">"));
+            .set("label", "<regR: " + ownedInspector->describeRemoteObject(regRObj) + ">"));
     }
 
     return arr.dump();
@@ -883,11 +789,11 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
     // (e.g. during a doesNotUnderstand or an undermessage).
     auto selfObj = f.receiver;
     if (frameIndex == 1 && gt.state.regR != 0)
-        selfObj = inspector->objectAt(gt.state.regR);
+        selfObj = ownedInspector->objectAt(gt.state.regR);
 
     arr.add(Json::object()
         .set("name", "self")
-        .set("value", inspector->describeRemoteObject(selfObj))
+        .set("value", ownedInspector->describeRemoteObject(selfObj))
         .set("oop", Json::hex(selfObj ? selfObj.oop() : 0))
         .set("type", "special"));
 
@@ -901,30 +807,30 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
 
     // Arguments: _stack[bp + FRAME_TO_FIRST_ARG_DELTA + i - 1] (0-based)
     for (int i = 0; i < argCount && i < 20; i++) {
-        uint64_t argVal = inspector->readStackSlot(gt.state,
+        uint64_t argVal = ownedInspector->readStackSlot(gt.state,
             f.bp + FRAME_TO_FIRST_ARG_DELTA + i);
         std::string name = (i < static_cast<int>(names.args.size()))
             ? names.args[i]
             : "arg" + std::to_string(i + 1);
         arr.add(Json::object()
             .set("name", name)
-            .set("value", inspector->describeRemoteObject(
-                              inspector->objectAt(argVal)))
+            .set("value", ownedInspector->describeRemoteObject(
+                              ownedInspector->objectAt(argVal)))
             .set("oop", Json::hex(argVal))
             .set("type", "argument"));
     }
 
     // Temporaries: _stack[bp - FRAME_TO_FIRST_TEMP_DELTA - i - 1] (0-based)
     for (int i = 0; i < tempCount && i < 20; i++) {
-        uint64_t tempVal = inspector->readStackSlot(gt.state,
+        uint64_t tempVal = ownedInspector->readStackSlot(gt.state,
             f.bp - FRAME_TO_FIRST_TEMP_DELTA - i);
         std::string name = (i < static_cast<int>(names.temps.size()))
             ? names.temps[i]
             : "temp" + std::to_string(i + 1);
         arr.add(Json::object()
             .set("name", name)
-            .set("value", inspector->describeRemoteObject(
-                              inspector->objectAt(tempVal)))
+            .set("value", ownedInspector->describeRemoteObject(
+                              ownedInspector->objectAt(tempVal)))
             .set("oop", Json::hex(tempVal))
             .set("type", "temporary"));
     }
@@ -935,14 +841,11 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
 std::string EggDebugSession::getSmalltalkStackContents(int threadIndex) const {
     if (threadIndex < 0 || threadIndex >= static_cast<int>(greenThreads.size()))
         return "[]";
-    return eggStackContentsJson(*inspector, greenThreads[threadIndex].state);
+    return eggStackContentsJson(*ownedInspector, greenThreads[threadIndex].state);
 }
 
 // ---- Interface stubs (not yet wired; low-level ops go through the routes) ----
-bool EggDebugSession::stepOver(int /*frameIndex*/) { return stepOver(); }
 std::string EggDebugSession::getRegisters() const { return "{}"; }
-bool EggDebugSession::setBreakpoint(uint64_t, const std::string&) { return false; }
-bool EggDebugSession::clearBreakpoint(uint64_t) { return false; }
 std::string EggDebugSession::listBreakpoints() const { return "[]"; }
 std::string EggDebugSession::readMemory(uint64_t, size_t) const { return "{}"; }
 std::string EggDebugSession::waitForEvent(int) { return "{}"; }

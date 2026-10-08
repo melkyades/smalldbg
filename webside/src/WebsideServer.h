@@ -117,7 +117,7 @@ protected:
     // Native OS threads ordered with the primary thread first (id = index+1).
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;
 
-    // ---- VM inspector routes (delegate to session->getInspector()) ----
+    // ---- VM inspector routes (delegate to session->inspector()) ----
     virtual HttpResponse handleRegions(const HttpRequest& req) const;
     virtual HttpResponse handleClassify(const HttpRequest& req) const;
     virtual HttpResponse handleInspect(const HttpRequest& req) const;

@@ -2,29 +2,19 @@
 
 #include "WebsideSession.h"
 
+#include <smalldbg/Debugger.h>
+
+#include <memory>
+
 namespace webside {
 
-/// Null-object session used when no target process is attached.
-///
-/// Answers every query with a safe "disconnected" value (false, no pid, no
-/// debugger), so callers never need to null-check the session pointer.
+/** A DisconnectedSession stands in for a session while no target is open. It
+ *  never opens one: every query gets an empty answer, and run control fails.
+ **/
 class DisconnectedSession : public WebsideSession {
 public:
-    bool launch(const std::string&, const std::vector<std::string>& = {}) override { return false; }
-    bool attach(int) override { return false; }
-    void detach() override {}
     bool isActive() const override { return false; }
     std::optional<int> getPid() const override { return std::nullopt; }
-
-    bool resume() override { return false; }
-    bool suspend() override { return false; }
-    bool step() override { return false; }
-    bool stepOver() override { return false; }
-    bool stepOver(int) override { return false; }
-    bool stepOut() override { return false; }
-    bool stepBack() override { return false; }
-    bool reverseStepOver() override { return false; }
-    bool reverseStepOut() override { return false; }
 
     std::string getStopReason() const override { return ""; }
     std::string getRegisters() const override { return "{}"; }
@@ -52,16 +42,28 @@ public:
     std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
     std::string search(const std::string&, bool, const std::string&, const std::string&) const override { return "[]"; }
 
-    bool setBreakpoint(uint64_t, const std::string&) override { return false; }
-    bool clearBreakpoint(uint64_t) override { return false; }
     std::string listBreakpoints() const override { return "[]"; }
     std::string readMemory(uint64_t, size_t) const override { return "{}"; }
     std::string waitForEvent(int) override { return "{}"; }
     std::string describeObject(uint64_t, size_t) const override { return "{}"; }
 
-    smalldbg::Debugger* getDebugger() const override { return nullptr; }
-    vmdbg::VMInspector* getInspector() const override { return nullptr; }
+    smalldbg::Debugger& debugger() const override { return *ownedDebugger; }
+    vmdbg::VMInspector& inspector() const override { return *ownedInspector; }
     std::shared_ptr<smalldbg::Thread> vmThread() const override { return nullptr; }
+
+protected:
+    // Nothing is opened in the debugger, and no target is accepted.
+    bool readsWithoutEngine(const vmdbg::TargetSpec&) const override { return true; }
+    bool onTargetOpened(const vmdbg::TargetSpec&) override { return false; }
+
+private:
+    struct NoInspector : vmdbg::VMInspector {
+        StackRegion evaluatorStack() const override { return {}; }
+    };
+
+    std::unique_ptr<smalldbg::Debugger> ownedDebugger{
+        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External)};
+    std::unique_ptr<vmdbg::VMInspector> ownedInspector{std::make_unique<NoInspector>()};
 };
 
 } // namespace webside
