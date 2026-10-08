@@ -1,6 +1,7 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "Json.h"
 #include "StubSession.h"
 #include "WebsideSession.h"
 #include "Workspace.h"
@@ -21,6 +22,7 @@ struct HookProbe : StubSession {
     using WebsideSession::buildFrameDetailJson;
     using WebsideSession::buildFrameBindingsJson;
     using WebsideSession::buildFrameRegistersJson;
+    using WebsideSession::describeFrameSlots;
 };
 
 // Opens a StubSession for any target whose path is not "unopenable".
@@ -181,7 +183,8 @@ TEST_CASE("listFrames returns real frames for a launched target") {
     vmdbg::TargetSpec spec;
     spec.path = WEBSIDE_TEST_TARGET;
     REQUIRE(s.open(spec));
-    REQUIRE(s.debugger().waitForEvent(smalldbg::StopReason::None, 5000) != smalldbg::StopReason::None);
+    REQUIRE(s.debugger().waitForEvent(smalldbg::StopReason::None, 5000)
+            != smalldbg::StopReason::None);
 
     auto thread = s.vmThread();
     REQUIRE(thread);
@@ -190,6 +193,27 @@ TEST_CASE("listFrames returns real frames for a launched target") {
     CHECK(json != "[]");
     CHECK(json.find("\"index\"") != std::string::npos);
     CHECK(json.find("\"label\"") != std::string::npos);
+    Json frames = Json::parse(json);
+    CHECK(frames[0]["stackPointer"].isString());
+    CHECK(frames[0]["framePointer"].isString());
+    CHECK(frames[0]["module"].isString());
 
     s.debugger().detach();
+}
+
+TEST_CASE("every slot a frame owns is described, with the roles it has") {
+    HookProbe s;
+    smalldbg::StackFrame frame;  // arch defaults to x64
+    frame.registers.setSp(0x1000);
+    frame.registers.setFp(0x1020);
+
+    Json out = Json::array();
+    s.describeFrameSlots(out, frame, 1, 1, 8, 0x0ff8, 0x1040);
+    REQUIRE(out.size() == 6);
+    CHECK(out[0]["address"].asString() == s.addressHex(0x1000).asString());
+    CHECK(out[0]["role"].asString() == "sp");
+    CHECK(out[1]["role"].isNull());
+    CHECK(out[4]["role"].asString() == "fp");
+    CHECK(out[5]["role"].asString() == "retAddr");
+    CHECK(out[5]["frameRel"].asInt() == 0);
 }

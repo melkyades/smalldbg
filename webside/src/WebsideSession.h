@@ -20,10 +20,10 @@ namespace webside {
 
 class Json;             // forward declaration
 
-/// The Webside API over a VM session.
-///
-/// What the runtime holds is vmdbg::VMSession's to say; this turns it into
-/// the documents the Webside client expects.
+/** A WebsideSession answers the Webside API for one VM session, in the
+ *  shapes the Webside client expects. The VM's state comes from
+ *  vmdbg::VMSession; a dialect's subclass describes its own frames, classes
+ *  and objects. **/
 class WebsideSession : public vmdbg::VMSession {
 public:
     // ---- state queries ----

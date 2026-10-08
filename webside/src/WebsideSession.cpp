@@ -35,6 +35,13 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
             .set("ip", addressHex(frame.ip()))
             .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
             .set("functionAddress", addressHex(functionAddressOf(frame)));
+
+        // Where the frame sits, so that a client can show it and go to it
+        // without asking for the frame's detail.
+        entry.set("framePointer", addressHex(frame.fp()))
+             .set("stackPointer", addressHex(frame.sp()));
+        if (!frame.moduleName.empty()) entry.set("module", frame.moduleName);
+
         if (frame.inlined) entry.set("inlined", true);
         std::string args = buildFrameArgumentsJson(frame);
         if (args != "[]") entry.set("arguments", Json::parse(args));
@@ -200,21 +207,34 @@ std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& 
     return arr.dump();
 }
 
+// Every slot a frame owns is described, not only the ones with a role: a
+// client groups slots into frames by frameIndex, and a gap would split one.
 void WebsideSession::describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
                                         int frameIndex, int selectedIndex, size_t slot,
                                         uint64_t from, uint64_t to) const {
     int rel = frameIndex < selectedIndex ? -1 : frameIndex == selectedIndex ? 0 : 1;
-    auto describe = [&](uint64_t address, const char* role) {
-        if (address < from || address >= to) return;
-        out.add(Json::object()
+    uint64_t returnAddress = frame.fp() + slot;
+    // A frame without a frame pointer, such as a leaf, has no known extent,
+    // so only its slots with a role are described.
+    bool extentKnown = returnAddress > frame.sp();
+
+    // The slots are walked from `from`, so that they line up with the ones
+    // the client read from /memory.
+    for (uint64_t address = from; address < to; address += slot) {
+        const char* role = address == returnAddress ? "retAddr"
+                         : address == frame.fp()    ? "fp"
+                         : address == frame.sp()    ? "sp"
+                                                    : nullptr;
+        bool owned = extentKnown && address >= frame.sp() && address <= returnAddress;
+        if (!role && !owned) continue;
+
+        auto entry = Json::object()
             .set("address", addressHex(address))
             .set("frameIndex", frameIndex)
-            .set("frameRel", rel)
-            .set("role", role));
-    };
-    describe(frame.sp(), "sp");
-    describe(frame.fp(), "fp");
-    describe(frame.fp() + slot, "retAddr");
+            .set("frameRel", rel);
+        if (role) entry.set("role", role);
+        out.add(std::move(entry));
+    }
 }
 
 std::string WebsideSession::buildStackDescriptorsJson(smalldbg::Debugger* /*dbg*/,
