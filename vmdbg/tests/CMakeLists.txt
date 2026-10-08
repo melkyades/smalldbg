@@ -10,6 +10,7 @@ add_executable(vmdbg_tests
     test_method_parser.cpp
     test_frame_unwinder.cpp
     test_target_spec.cpp
+    test_tracer.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 
