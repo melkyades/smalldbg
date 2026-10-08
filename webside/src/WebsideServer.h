@@ -2,56 +2,43 @@
 
 #include "HttpServer.h"
 #include "WebsideSession.h"
-#include "DisconnectedSession.h"
+#include "Workspace.h"
 #include <string>
 #include <vector>
 #include <optional>
 #include <memory>
+#include <set>
 
 namespace webside {
 
-/// Base class for Webside-compatible HTTP servers.
-///
-/// Owns a WebsideSession (a DisconnectedSession null-object until a target is
-/// attached) and delegates the Webside API to it. Subclasses supply the session
-/// type via createSession() and override only dialect-specific behavior (VM
-/// inspector routes, native symbols, …).
+/** A WebsideServer serves the Webside API from the session its workspace
+ *  has open. While none is open, it refuses every request but those that do
+ *  not need a target. Each dialect has a subclass, which overrides only what
+ *  is particular to the dialect, such as how its objects are inspected. **/
 class WebsideServer {
 public:
-    explicit WebsideServer(int port);
+    WebsideServer(Workspace& workspace, int port);
     virtual ~WebsideServer() = default;
-
-    /// Create the session, launch the target, then serve.
-    virtual bool launch(const std::string& target,
-                        const std::vector<std::string>& args = {});
 
     /// Resume / suspend the target (also drive startup from main()).
     virtual bool resume();
     virtual bool suspend();
-
-    /// Open a replayable trace (e.g. a TTD .run) instead of launching.
-    /// Base default: unsupported. Dialects that support time-travel override it.
-    virtual bool openTrace(const std::string& tracePath,
-                           const std::string& sourcePath = {});
-
-    /// Open a crash/WER dump (.dmp) as a frozen snapshot instead of launching.
-    /// Base default: unsupported. Dialects that support dumps override it.
-    virtual bool openDump(const std::string& dumpPath);
 
     /// Set up all routes and enter the accept loop (blocks).
     void run();
 
 protected:
     HttpServer server;
-    std::unique_ptr<WebsideSession> session{std::make_unique<DisconnectedSession>()};
+    Workspace& workspace;
+
+    /** Returns the open session. Only a route that needs no target runs
+     *  while none is open, and it does not call this. **/
+    WebsideSession& session() const { return *workspace.session(); }
 
     // ---- identity (subclass must implement) ----
     virtual std::string dialect() const = 0;
     virtual std::string version() const;
     virtual std::string description() const = 0;
-
-    /// Factory — subclass returns the session type for its dialect.
-    virtual std::unique_ptr<WebsideSession> createSession() = 0;
 
     // ---- session state (delegate to the session) ----
     virtual bool isActive() const;
@@ -145,6 +132,10 @@ protected:
     // ---- hook for subclass-specific routes ----
     virtual void setupRoutes();
 
+    /** Adds a route that answers even while no target is open. **/
+    void sessionFreeRoute(const std::string& method, const std::string& path,
+                          HttpHandler handler);
+
     // ---- URL utilities ----
     static std::string urlDecode(const std::string& encoded);
     static std::vector<std::string> splitPath(const std::string& path);
@@ -152,6 +143,10 @@ protected:
 
 private:
     void setupBaseRoutes();
+    HttpResponse answerOrRefuse(const HttpRequest& request,
+                                const HttpHandler& handler) const;
+
+    std::set<std::string> sessionFree;
 };
 
 } // namespace webside

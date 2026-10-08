@@ -42,86 +42,91 @@ static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread&
     return (sym->moduleName.empty() ? "" : sym->moduleName + "!") + sym->name;
 }
 
-WebsideServer::WebsideServer(int port) : server(port) {}
+WebsideServer::WebsideServer(Workspace& workspace, int port)
+    : server(port), workspace(workspace) {}
+
+static HttpResponse refusal(int code, const char* status, const char* message) {
+    HttpResponse response;
+    response.statusCode = code;
+    response.statusMessage = status;
+    response.body = Json::object().set("error", message).dump();
+    return response;
+}
 
 // A refused handler still answers something shaped like the truth, an empty
 // list or a zeroed read, which a client cannot tell from the real thing.
-static HttpResponse answerOrConflict(const HttpRequest& request,
-                                     const HttpHandler& handler) {
+HttpResponse WebsideServer::answerOrRefuse(const HttpRequest& request,
+                                           const HttpHandler& handler) const {
+    if (!workspace.isConnected()
+        && !sessionFree.count(request.method + " " + request.path))
+        return refusal(503, "Service Unavailable", "nothing is open");
+
     smalldbg::clearEngineBusy();
     HttpResponse response = handler(request);
     if (!smalldbg::engineWasBusy()) return response;
+    return refusal(409, "Conflict", "debuggee is running");
+}
 
-    HttpResponse conflict;
-    conflict.statusCode = 409;
-    conflict.statusMessage = "Conflict";
-    conflict.body = "{\"error\":\"debuggee is running\"}";
-    return conflict;
+void WebsideServer::sessionFreeRoute(const std::string& method,
+                                     const std::string& path,
+                                     HttpHandler handler) {
+    sessionFree.insert(method + " " + path);
+    server.route(method, path, std::move(handler));
 }
 
 void WebsideServer::run() {
     setupBaseRoutes();
     setupRoutes();
-    server.setHandlerWrapper(answerOrConflict);
+    server.setHandlerWrapper([this](const HttpRequest& request,
+                                    const HttpHandler& handler) {
+        return answerOrRefuse(request, handler);
+    });
     server.run();
 }
 
 std::string WebsideServer::version() const { return "0.1.0"; }
 
-bool WebsideServer::launch(const std::string& target, const std::vector<std::string>& args) {
-    session = createSession();
-    vmdbg::TargetSpec spec;
-    spec.path = target;
-    spec.args = args;
-    return session->open(spec);
-}
-
 // ---- run control / session state / class browsing: delegate to the session ----
-bool WebsideServer::openTrace(const std::string&, const std::string&) {
-    return false;  // dialects with time-travel support override this
-}
-
-bool WebsideServer::openDump(const std::string&) {
-    return false;  // dialects with dump support override this
-}
 
 bool WebsideServer::resume() {
     onPreResume();
-    return session->resume();
+    return session().resume();
 }
 
 bool WebsideServer::suspend() {
-    if (!session->suspend()) return false;
-    session->discoverClasses();
-    session->refreshGreenThreads();
+    if (!session().suspend()) return false;
+    session().discoverClasses();
+    session().refreshGreenThreads();
     onPostSuspend();
     return true;
 }
 
-bool WebsideServer::isActive() const          { return session->isActive(); }
-std::string WebsideServer::stopReason() const { return session->getStopReason(); }
-std::optional<int> WebsideServer::pid() const { return session->getPid(); }
+bool WebsideServer::isActive() const {
+    return workspace.isConnected() && session().isActive();
+}
+std::string WebsideServer::stopReason() const { return session().getStopReason(); }
+std::optional<int> WebsideServer::pid() const { return session().getPid(); }
 
 std::string WebsideServer::classListData(const std::string& root, bool namesOnly) const {
-    return session->listClasses(root, namesOnly);
+    return session().listClasses(root, namesOnly);
 }
-std::string WebsideServer::classDetailData(const std::string& name) const { return session->getClass(name); }
+std::string WebsideServer::classDetailData(const std::string& name) const { return session().getClass(name); }
 std::string WebsideServer::searchData(const std::string& text, bool ignoreCase,
                                       const std::string& condition, const std::string& type) const {
-    return session->search(text, ignoreCase, condition, type);
+    return session().search(text, ignoreCase, condition, type);
 }
-std::string WebsideServer::subclassesData(const std::string& name) const { return session->getSubclasses(name); }
-std::string WebsideServer::superclassesData(const std::string& name) const { return session->getSuperclasses(name); }
-std::string WebsideServer::variablesData(const std::string& name) const { return session->getVariables(name); }
-std::string WebsideServer::instanceVariablesData(const std::string& name) const { return session->getInstanceVariables(name); }
-std::string WebsideServer::classVariablesData(const std::string& name) const { return session->getClassVariables(name); }
-std::string WebsideServer::categoriesData(const std::string& name) const { return session->getCategories(name); }
-std::string WebsideServer::usedCategoriesData(const std::string& name) const { return session->getUsedCategories(name); }
-std::string WebsideServer::selectorsData(const std::string& name) const { return session->getSelectors(name); }
-std::string WebsideServer::methodsData(const std::string& name) const { return session->getMethods(name); }
+std::string WebsideServer::subclassesData(const std::string& name) const { return session().getSubclasses(name); }
+std::string WebsideServer::superclassesData(const std::string& name) const { return session().getSuperclasses(name); }
+std::string WebsideServer::variablesData(const std::string& name) const { return session().getVariables(name); }
+std::string WebsideServer::instanceVariablesData(const std::string& name) const { return session().getInstanceVariables(name); }
+std::string WebsideServer::classVariablesData(const std::string& name) const { return session().getClassVariables(name); }
+std::string WebsideServer::categoriesData(const std::string& name) const { return session().getCategories(name); }
+std::string WebsideServer::usedCategoriesData(const std::string& name) const { return session().getUsedCategories(name); }
+std::string WebsideServer::selectorsData(const std::string& name) const { return session().getSelectors(name); }
+std::string WebsideServer::methodsData(const std::string& name) const { return session().getMethods(name); }
 std::string WebsideServer::methodDetailData(const std::string& className,
                                             const std::string& selector) const {
-    return session->getMethod(className, selector);
+    return session().getMethod(className, selector);
 }
 
 // ---- frame API: resolve the current thread/frame, then let the session format ----
@@ -129,52 +134,52 @@ std::string WebsideServer::methodDetailData(const std::string& className,
 std::string WebsideServer::listFrames() const {
     // Unwinding a running target blocks in the engine until it stops, so
     // decline the way the engine would rather than answer an empty stack.
-    if (!session->debugger().isStopped()) {
+    if (!session().debugger().isStopped()) {
         smalldbg::markEngineBusy();
         return "[]";
     }
-    auto thread = session->vmThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
-    return session->listFrames(*thread);
+    return session().listFrames(*thread);
 }
 
 std::string WebsideServer::getFrameDetail(int index) const {
-    auto thread = session->vmThread();
+    auto thread = session().vmThread();
     if (!thread) return "{}";
     auto* trace = thread->getStackTrace(256);
     if (!trace) return "{}";
     const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "{}";
-    return session->getFrameDetail(*trace, *frames[index - 1], index);
+    return session().getFrameDetail(*trace, *frames[index - 1], index);
 }
 
 std::string WebsideServer::getFrameBindings(int index) const {
-    auto thread = session->vmThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
     auto* trace = thread->getStackTrace(256);
     if (!trace) return "[]";
     const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
-    return session->getFrameBindings(*trace, *frames[index - 1], index);
+    return session().getFrameBindings(*trace, *frames[index - 1], index);
 }
 
 std::string WebsideServer::getFrameRegisters(int index) const {
-    auto thread = session->vmThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
     auto* trace = thread->getStackTrace(256);
     if (!trace) return "[]";
     const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
-    return session->getFrameRegisters(*frames[index - 1]);
+    return session().getFrameRegisters(*frames[index - 1]);
 }
 
 std::string WebsideServer::stackDescriptors(int selectedIndex, uint64_t from,
                                            int slots) const {
-    auto thread = session->vmThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
     auto* trace = thread->getStackTrace(256);
     if (!trace) return "[]";
-    return session->stackDescriptors(*trace, selectedIndex, from, slots);
+    return session().stackDescriptors(*trace, selectedIndex, from, slots);
 }
 
 // =========================================================================
@@ -201,7 +206,7 @@ static Json symbolToJson(const smalldbg::Symbol& sym) {
 }
 
 std::string WebsideServer::nativeSymbolsData(const std::string& filter) const {
-    auto* provider = session->debugger().getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto symbols = provider->findSymbols(filter);
     auto arr = Json::array();
     for (auto& sym : symbols)
@@ -210,7 +215,7 @@ std::string WebsideServer::nativeSymbolsData(const std::string& filter) const {
 }
 
 std::string WebsideServer::nativeModulesData() const {
-    auto* provider = session->debugger().getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto modules = provider->getModules();
     auto arr = Json::array();
     for (auto& mod : modules) {
@@ -225,7 +230,7 @@ std::string WebsideServer::nativeModulesData() const {
 }
 
 std::string WebsideServer::nativeSymbolDetailData(const std::string& name) const {
-    auto* provider = session->debugger().getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto sym = provider->getSymbolByName(name);
     if (!sym) return "{}";
     return symbolToJson(*sym).dump();
@@ -339,8 +344,8 @@ static const smalldbg::NativeTypeInfo* resolveToStruct(
 }
 
 std::string WebsideServer::nativeInspectData(const std::string& expression) const {
-    auto* provider = session->debugger().getSymbolProvider();
-    auto process = session->debugger().getProcess();
+    auto* provider = session().debugger().getSymbolProvider();
+    auto process = session().debugger().getProcess();
     if (!provider || !process) return "{}";
 
     auto parsed = parseNativeExpression(expression);
@@ -416,10 +421,10 @@ static Json moduleToCodeZone(const smalldbg::ModuleInfo& mod) {
 
 HttpResponse WebsideServer::handleRegions(const HttpRequest&) const {
     HttpResponse res;
-    auto* inspector = &session->inspector();
+    auto* inspector = &session().inspector();
     if (!isActive() || !inspector) { res.body = "{}"; return res; }
 
-    auto* provider = session->debugger().getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto result = Json::object();
 
     auto codeZones = Json::object();
@@ -454,7 +459,7 @@ HttpResponse WebsideServer::handleRegions(const HttpRequest&) const {
 
 HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
     HttpResponse res;
-    auto* inspector = &session->inspector();
+    auto* inspector = &session().inspector();
     if (!isActive() || !inspector) { res.body = "{}"; return res; }
 
     auto addrIt = req.params.find("address");
@@ -465,7 +470,7 @@ HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
     }
 
     uint64_t addr = parseHexParam(addrIt->second);
-    auto* provider = session->debugger().getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
 
     auto result = Json::object();
     result.set("address", Json::hex(addr));
@@ -509,7 +514,7 @@ std::string WebsideServer::inspectJson(uint64_t, int) const { return "{}"; }
 
 HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
     HttpResponse res;
-    auto* inspector = &session->inspector();
+    auto* inspector = &session().inspector();
     if (!isActive() || !inspector) { res.body = "{}"; return res; }
 
     auto oopIt = req.params.find("oop");
@@ -537,12 +542,12 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
 // Primary first, so the id a client remembers stays the main thread.
 std::vector<std::shared_ptr<smalldbg::Thread>>
 WebsideServer::nativeThreads() const {
-    auto* dbg = &session->debugger();
+    auto* dbg = &session().debugger();
     if (!dbg) return {};
     auto proc = dbg->getProcess();
     if (!proc) return {};
 
-    auto primary = session->vmThread();
+    auto primary = session().vmThread();
     std::vector<std::shared_ptr<smalldbg::Thread>> ordered;
     if (primary) ordered.push_back(primary);
     for (auto& t : proc->threads()) {
@@ -583,7 +588,7 @@ HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
         return handleNativeDebuggerRoute(segments, req, *threads[debuggerId - 1], debuggerId);
 
     int threadIndex = debuggerId - nativeCount - 1;  // 0-based green index
-    if (threadIndex < 0 || threadIndex >= session->greenThreadCount()) {
+    if (threadIndex < 0 || threadIndex >= session().greenThreadCount()) {
         res.statusCode = 404;
         res.body = Json::object().set("error", "Debugger not found").dump();
         return res;
@@ -616,7 +621,7 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
 
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
-            res.body = session->listFrames(thread);
+            res.body = session().listFrames(thread);
             return res;
         }
         std::string sub = segments.size() > 4 ? segments[4] : "";
@@ -643,11 +648,11 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
             return res;
         }
         if (sub == "bindings")
-            res.body = session->getFrameBindings(*trace, *frames[index - 1], index);
+            res.body = session().getFrameBindings(*trace, *frames[index - 1], index);
         else if (sub == "registers")
-            res.body = session->getFrameRegisters(*frames[index - 1]);
+            res.body = session().getFrameRegisters(*frames[index - 1]);
         else
-            res.body = session->getFrameDetail(*trace, *frames[index - 1], index);
+            res.body = session().getFrameDetail(*trace, *frames[index - 1], index);
         return res;
     }
 
@@ -665,20 +670,20 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
         res.body = Json::object()
             .set("id", debuggerId)
             .set("description", "Smalltalk: " +
-                session->getGreenThreadName(threadIndex))
+                session().getGreenThreadName(threadIndex))
             .set("status", stopReason())
             .dump();
         return res;
     }
 
     if (segments[2] == "stack") {
-        res.body = session->getSmalltalkStackContents(threadIndex);
+        res.body = session().getSmalltalkStackContents(threadIndex);
         return res;
     }
 
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
-            res.body = session->listSmalltalkFrames(threadIndex);
+            res.body = session().listSmalltalkFrames(threadIndex);
             return res;
         }
         int index = 0;
@@ -689,14 +694,14 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
         }
         std::string sub = segments.size() > 4 ? segments[4] : "";
         if (sub == "bindings") {
-            res.body = session->getSmalltalkFrameBindings(threadIndex, index);
+            res.body = session().getSmalltalkFrameBindings(threadIndex, index);
         } else if (sub == "registers") {
-            res.body = session->getSmalltalkFrameRegisters(threadIndex, index);
+            res.body = session().getSmalltalkFrameRegisters(threadIndex, index);
         } else if (!sub.empty()) {
             res.statusCode = 404;
             res.body = Json::object().set("error", "Unknown sub-route").dump();
         } else {
-            res.body = session->getSmalltalkFrameDetail(threadIndex, index);
+            res.body = session().getSmalltalkFrameDetail(threadIndex, index);
             if (res.body == "{}") {
                 res.statusCode = 404;
                 res.body = Json::object().set("error", "Frame not found").dump();
@@ -786,7 +791,7 @@ HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
     }
     count = std::clamp(count, 1, 4096);
 
-    auto process = session->debugger().getProcess();
+    auto process = session().debugger().getProcess();
     auto result = Json::object();
     result.set("address", Json::hex(addr));
 
@@ -866,7 +871,7 @@ HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) {
     }
     byteCount = std::clamp(byteCount, 1, 4096);
 
-    auto process = session->debugger().getProcess();
+    auto process = session().debugger().getProcess();
     std::vector<uint8_t> buf(byteCount);
     if (process->readMemory(addr, buf.data(), byteCount) != smalldbg::Status::Ok) {
         res.statusCode = 400;
@@ -874,7 +879,7 @@ HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) {
         return res;
     }
 
-    smalldbg::Disassembler* dis = session->debugger().getDisassembler();
+    smalldbg::Disassembler* dis = session().debugger().getDisassembler();
     auto insns = dis->disassemble(buf.data(), buf.size(), addr);
 
     auto instructions = Json::array();
@@ -907,7 +912,7 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
         return res;
     }
 
-    auto* provider = session->debugger().getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto sym = provider->getSymbolByName(nameIt->second);
     if (!sym) {
         res.statusCode = 404;
@@ -918,7 +923,7 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
     auto result = symbolToJson(*sym);
 
     uint64_t value = 0;
-    auto process = session->debugger().getProcess();
+    auto process = session().debugger().getProcess();
     if (process->readMemory(sym->address, &value, 8) == smalldbg::Status::Ok)
         result.set("value", Json::hex(value));
     else
@@ -1037,10 +1042,10 @@ void WebsideServer::setupRoutes() {
                                   + (id == 1 ? " (main)" : ""))
                 .set("status", stopReason()));
         }
-        for (int i = 0; i < session->greenThreadCount(); i++, id++) {
+        for (int i = 0; i < session().greenThreadCount(); i++, id++) {
             arr.add(Json::object()
                 .set("id", id)
-                .set("description", "Smalltalk: " + session->getGreenThreadName(i))
+                .set("description", "Smalltalk: " + session().getGreenThreadName(i))
                 .set("status", stopReason()));
         }
         res.body = arr.dump();
@@ -1050,7 +1055,7 @@ void WebsideServer::setupRoutes() {
     // ---- Threads: native OS threads (+ green threads); debuggerId maps to /debuggers/<id> ----
     server.route("GET", "/threads", [this](const HttpRequest&) {
         HttpResponse res;
-        auto* dbg = &session->debugger();
+        auto* dbg = &session().debugger();
         if (!isActive() || !dbg) { res.body = "[]"; return res; }
         auto current = dbg->getCurrentThread();
         auto arr = Json::array();
@@ -1068,17 +1073,17 @@ void WebsideServer::setupRoutes() {
                 .set("isCurrent", current && current->getThreadId() == threads[i]->getThreadId())
                 .set("status", stopReason());
             std::string green =
-                stopped ? session->greenThreadOn(threads[i]->getThreadId())
+                stopped ? session().greenThreadOn(threads[i]->getThreadId())
                         : std::string();
             if (!green.empty()) entry.set("runs", green);
             arr.add(std::move(entry));
         }
-        for (int i = 0; i < session->greenThreadCount(); i++, id++) {
+        for (int i = 0; i < session().greenThreadCount(); i++, id++) {
             arr.add(Json::object()
                 .set("debuggerId", id)
                 .set("id", std::to_string(i + 1))
                 .set("type", "smalltalk")
-                .set("name", session->getGreenThreadName(i))
+                .set("name", session().getGreenThreadName(i))
                 .set("isMain", false)
                 .set("isCurrent", false)
                 .set("status", stopReason()));
@@ -1107,7 +1112,7 @@ void WebsideServer::setupRoutes() {
         }
 
         if (segments.size() >= 3 && segments[2] == "terminate") {
-            session->debugger().detach();
+            workspace.close();
             res.body = Json::object().set("success", true).dump();
             return res;
         }
@@ -1119,17 +1124,17 @@ void WebsideServer::setupRoutes() {
             // Step the thread this debugger id resolves to, not just primary.
             int debuggerId = 0;
             try { debuggerId = std::stoi(segments[1]); } catch (...) {}
-            auto* dbg = &session->debugger();
+            auto* dbg = &session().debugger();
             auto threads = nativeThreads();
             if (dbg && debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
                 dbg->setCurrentThread(threads[debuggerId - 1]);
 
-            if (action == "stepinto")              success = session->step();
-            else if (action == "stepover")         success = session->stepOver();
-            else if (action == "stepout")          success = session->stepOut();
-            else if (action == "reversestepinto")  success = session->stepBack();
-            else if (action == "reversestepover")  success = session->reverseStepOver();
-            else if (action == "reversestepout")   success = session->reverseStepOut();
+            if (action == "stepinto")              success = session().step();
+            else if (action == "stepover")         success = session().stepOver();
+            else if (action == "stepout")          success = session().stepOut();
+            else if (action == "reversestepinto")  success = session().stepBack();
+            else if (action == "reversestepover")  success = session().reverseStepOver();
+            else if (action == "reversestepout")   success = session().reverseStepOut();
             else {
                 res.statusCode = 404;
                 res.body = Json::object().set("error", "Unknown action: " + action).dump();
@@ -1283,13 +1288,13 @@ HttpResponse WebsideServer::handleClassSubRoute(
 void WebsideServer::setupBaseRoutes() {
     // ---- General ----
 
-    server.route("GET", "/dialect", [this](const HttpRequest&) {
+    sessionFreeRoute("GET", "/dialect", [this](const HttpRequest&) {
         HttpResponse res;
         res.body = Json::string(dialect()).dump();
         return res;
     });
 
-    server.route("GET", "/version", [this](const HttpRequest&) {
+    sessionFreeRoute("GET", "/version", [this](const HttpRequest&) {
         HttpResponse res;
         res.body = Json::string(version()).dump();
         return res;
@@ -1452,7 +1457,7 @@ void WebsideServer::setupBaseRoutes() {
     server.route("GET", "/debug/state", [this](const HttpRequest&) {
         HttpResponse res;
         auto p = pid();
-        auto* debugger = &session->debugger();
+        auto* debugger = &session().debugger();
         res.body = Json::object()
             .set("active", isActive())
             .set("pid", p ? *p : 0)

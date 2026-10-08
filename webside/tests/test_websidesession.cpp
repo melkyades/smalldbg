@@ -2,89 +2,187 @@
 #include <doctest/doctest.h>
 
 #include "WebsideSession.h"
-#include "DisconnectedSession.h"
+#include "VMInspector.h"
+#include "Workspace.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Thread.h"
 
+#include <map>
 #include <memory>
 
 using namespace webside;
 
 namespace {
+
+struct StubInspector : vmdbg::VMInspector {
+    StackRegion evaluatorStack() const override { return {}; }
+};
+
+// Answers every query without a target behind it, so the parts of the session
+// that do not read the debugger can be exercised on their own.
+struct StubSession : WebsideSession {
+    // Nothing is opened in an engine, so a target succeeds unless the test
+    // named the one that must not.
+    bool readsWithoutEngine(const TargetSpec&) const override { return true; }
+    bool onTargetOpened(const TargetSpec& target) override {
+        return target.path != "unopenable";
+    }
+    bool isActive() const override { return false; }
+    std::optional<int> getPid() const override { return std::nullopt; }
+    std::string getStopReason() const override { return ""; }
+    std::string getRegisters() const override { return "{}"; }
+    void refreshGreenThreads() override {}
+    int greenThreadCount() const override { return 0; }
+    std::string getGreenThreadName(int) const override { return ""; }
+    std::string listSmalltalkFrames(int) const override { return "[]"; }
+    std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
+    std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
+    std::string getSmalltalkStackContents(int) const override { return "[]"; }
+    bool discoverClasses() override { return false; }
+    std::string listClasses(const std::string&, bool, bool, int) const override { return "[]"; }
+    std::string getClass(const std::string&) const override { return "{}"; }
+    std::string getSubclasses(const std::string&) const override { return "[]"; }
+    std::string getSuperclasses(const std::string&) const override { return "[]"; }
+    std::string getVariables(const std::string&) const override { return "[]"; }
+    std::string getInstanceVariables(const std::string&) const override { return "[]"; }
+    std::string getClassVariables(const std::string&) const override { return "[]"; }
+    std::string getCategories(const std::string&) const override { return "[]"; }
+    std::string getUsedCategories(const std::string&) const override { return "[]"; }
+    std::string getSelectors(const std::string&) const override { return "[]"; }
+    std::string getMethods(const std::string&) const override { return "[]"; }
+    std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
+    std::string search(const std::string&, bool, const std::string&,
+                       const std::string&) const override { return "[]"; }
+    // The shared implementation would go to a debugger; this records instead,
+    // which is what lets a test see what the workspace re-applied.
+    bool setBreakpoint(uint64_t address, const std::string& name = "") override {
+        applied[address] = name;
+        return true;
+    }
+    bool clearBreakpoint(uint64_t address) override {
+        return applied.erase(address) != 0;
+    }
+    std::string listBreakpoints() const override { return "[]"; }
+    std::string readMemory(uint64_t, size_t) const override { return "{}"; }
+    std::string waitForEvent(int) override { return "{}"; }
+    std::string describeObject(uint64_t, size_t) const override { return "{}"; }
+    std::shared_ptr<smalldbg::Thread> vmThread() const override { return nullptr; }
+    smalldbg::Debugger& debugger() const override { return *ownedDebugger; }
+    vmdbg::VMInspector& inspector() const override { return *ownedInspector; }
+
+    // Never attached and never asked to inspect, but always there, so the
+    // session can hand out the references its interface promises.
+    const std::unique_ptr<smalldbg::Debugger> ownedDebugger{
+        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External)};
+    const std::unique_ptr<vmdbg::VMInspector> ownedInspector{
+        std::make_unique<StubInspector>()};
+
+    std::map<uint64_t, std::string> applied;
+};
+
 // Exposes the protected frame-formatting hooks for direct testing.
-struct HookProbe : DisconnectedSession {
+struct HookProbe : StubSession {
     using WebsideSession::buildFrameLabel;
     using WebsideSession::buildFrameDetailJson;
     using WebsideSession::buildFrameBindingsJson;
     using WebsideSession::buildFrameRegistersJson;
 };
+
+// Opens a StubSession for any target whose path is not "unopenable".
+struct StubWorkspace : Workspace {
+    int opens{0};
+    StubSession* last{nullptr};
+
+    StubWorkspace()
+        : Workspace([this](const TargetSpec&) -> std::unique_ptr<WebsideSession> {
+              ++opens;
+              auto created = std::make_unique<StubSession>();
+              last = created.get();
+              return created;
+          }) {}
+};
+
+TargetSpec specFor(const std::string& path) {
+    TargetSpec spec;
+    spec.path = path;
+    return spec;
 }
 
-TEST_CASE("a disconnected session reports no active target") {
-    DisconnectedSession session;
+} // namespace
 
-    CHECK_FALSE(session.isActive());
-    CHECK_FALSE(session.getPid().has_value());
-    CHECK_FALSE(session.debugger().isAttached());
+TEST_CASE("a fresh workspace has nothing open") {
+    StubWorkspace workspace;
+
+    CHECK_FALSE(workspace.isConnected());
+    CHECK(workspace.session() == nullptr);
 }
 
-TEST_CASE("a disconnected session ignores debug requests safely") {
-    DisconnectedSession session;
+TEST_CASE("opening a workspace gives it a session, closing takes it away") {
+    StubWorkspace workspace;
 
-    vmdbg::TargetSpec spec;
-    spec.path = "some-target";
-    CHECK_FALSE(session.open(spec));
-    CHECK_FALSE(session.debugger().isAttached());
+    REQUIRE(workspace.open(specFor("target")));
+    CHECK(workspace.isConnected());
+    CHECK(workspace.session() != nullptr);
+    CHECK(workspace.target().path == "target");
+
+    workspace.close();
+    CHECK_FALSE(workspace.isConnected());
+    CHECK(workspace.session() == nullptr);
 }
 
-TEST_CASE("a disconnected session refuses run control and reports empty state") {
-    DisconnectedSession session;
+TEST_CASE("a target that will not open leaves the workspace disconnected") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.resume());
-    CHECK_FALSE(session.suspend());
-    CHECK_FALSE(session.step());
-    CHECK_FALSE(session.stepOver());
-    CHECK_FALSE(session.stepOver(0));
-    CHECK_FALSE(session.stepOut());
-    CHECK_FALSE(session.stepBack());
-    CHECK_FALSE(session.reverseStepOver());
-    CHECK_FALSE(session.reverseStepOut());
-
-    CHECK(session.getStopReason().empty());
-    CHECK(session.getRegisters() == "{}");
+    CHECK_FALSE(workspace.open(specFor("unopenable")));
+    CHECK_FALSE(workspace.isConnected());
 }
 
-TEST_CASE("a disconnected session has no green threads") {
-    DisconnectedSession session;
+TEST_CASE("reopening builds a new session from the same target") {
+    StubWorkspace workspace;
 
-    session.refreshGreenThreads();  // no-op — must not crash
-    CHECK(session.greenThreadCount() == 0);
-    CHECK(session.getGreenThreadName(0).empty());
-    CHECK(session.listSmalltalkFrames(0) == "[]");
-    CHECK(session.getSmalltalkFrameDetail(0, 0) == "{}");
-    CHECK(session.getSmalltalkFrameBindings(0, 0) == "[]");
+    REQUIRE(workspace.open(specFor("target")));
+
+    // Reopening frees the old session before building the new one, so the
+    // allocator hands back the same block often enough that comparing the two
+    // addresses says nothing. What the factory last produced does.
+    REQUIRE(workspace.reopen());
+    CHECK(workspace.opens == 2);
+    CHECK(workspace.session() == workspace.last);
+    CHECK(workspace.target().path == "target");
 }
 
-TEST_CASE("a disconnected session exposes no classes") {
-    DisconnectedSession session;
+TEST_CASE("breakpoints outlive the session they were set in") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.discoverClasses());
-    CHECK(session.listClasses("", false, false, -1) == "[]");
-    CHECK(session.getClass("Object") == "{}");
-    CHECK(session.getMethods("Object") == "[]");
-    CHECK(session.search("x", false, "", "") == "[]");
+    workspace.setBreakpoint(0x1000, "start");
+    REQUIRE(workspace.open(specFor("target")));
+    CHECK(workspace.last->applied.count(0x1000) == 1);
+
+    workspace.setBreakpoint(0x2000, "later");
+    CHECK(workspace.last->applied.count(0x2000) == 1);
+
+    REQUIRE(workspace.reopen());
+    CHECK(workspace.last->applied.size() == 2);
+
+    workspace.clearBreakpoint(0x1000);
+    CHECK(workspace.breakpoints().size() == 1);
+    CHECK(workspace.last->applied.count(0x1000) == 0);
 }
 
-TEST_CASE("a disconnected session has no breakpoints, memory, or events") {
-    DisconnectedSession session;
+TEST_CASE("labels are the developer's own and belong to the workspace") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.setBreakpoint(0x1000, ""));
-    CHECK_FALSE(session.clearBreakpoint(0x1000));
-    CHECK(session.listBreakpoints() == "[]");
-    CHECK(session.readMemory(0x1000, 16) == "{}");
-    CHECK(session.waitForEvent(0) == "{}");
-    CHECK(session.describeObject(0x1000, 1) == "{}");
+    workspace.setLabel(0x400000, "vmEntry");
+    CHECK(workspace.labelAt(0x400000) == "vmEntry");
+    CHECK(workspace.labelAt(0x400004).empty());
+
+    REQUIRE(workspace.open(specFor("target")));
+    workspace.close();
+    CHECK(workspace.labelAt(0x400000) == "vmEntry");
+
+    workspace.clearLabel(0x400000);
+    CHECK(workspace.labels().empty());
 }
 
 TEST_CASE("frame label combines module and function") {

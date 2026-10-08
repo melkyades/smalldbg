@@ -4,8 +4,11 @@ find_package(doctest REQUIRED)
 add_executable(webside_tests
     test_websidesession.cpp
     test_http_server.cpp
+    test_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/HttpServer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideSession.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Workspace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Json.cpp
 )
 target_include_directories(webside_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

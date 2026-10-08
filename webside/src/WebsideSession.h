@@ -23,9 +23,7 @@ class Json;             // forward declaration
 /// The Webside API over a VM session.
 ///
 /// What the runtime holds is vmdbg::VMSession's to say; this turns it into
-/// the documents the Webside client expects. Concrete sessions drive a real
-/// smalldbg::Debugger; DisconnectedSession provides safe "disconnected"
-/// answers so callers never have to null-check the session.
+/// the documents the Webside client expects.
 class WebsideSession : public vmdbg::VMSession {
 public:
     // ---- state queries ----
