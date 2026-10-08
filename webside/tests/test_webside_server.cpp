@@ -42,6 +42,8 @@ struct TestServer : WebsideServer {
     using WebsideServer::debuggerListJson;
     using WebsideServer::frameWarning;
     using WebsideServer::warn;
+    using WebsideServer::nativeSymbolsData;
+    using WebsideServer::nativeInspectData;
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
@@ -71,6 +73,37 @@ struct Served {
             at = amp == std::string::npos ? query.size() : amp + 1;
         }
         return Json::parse(server.handleMemory(request).body);
+    }
+
+    Workspace workspace;
+    TestServer server{workspace, 0};
+};
+
+// A workspace with the test target launched and stopped, and a server over it.
+struct Launched {
+    Launched()
+        : workspace([](const TargetSpec&) {
+              return std::make_unique<LiveSession>();
+          }) {
+        TargetSpec target;
+        target.path = WEBSIDE_TEST_TARGET;
+        REQUIRE(workspace.open(target));
+        REQUIRE(debugger().waitForEvent(smalldbg::StopReason::None, 5000)
+                != smalldbg::StopReason::None);
+    }
+    ~Launched() { debugger().detach(); }
+
+    smalldbg::Debugger& debugger() { return workspace.session()->debugger(); }
+
+    smalldbg::Symbol symbol(const std::string& name) {
+        auto found = debugger().getSymbolProvider()->getSymbolByName(name);
+        REQUIRE(found.has_value());
+        return *found;
+    }
+
+    void stopAtBreakHere() {
+        REQUIRE(debugger().runTo(symbol("test_target!break_here").address, 30000)
+                == smalldbg::Status::Ok);
     }
 
     Workspace workspace;
@@ -131,82 +164,45 @@ TEST_CASE("/memory gives 64-bit values as hex when asked, to keep them exact") {
 }
 
 TEST_CASE("loading a module's symbols reports them, and the workspace keeps it") {
-    Workspace workspace([](const TargetSpec&) {
-        return std::make_unique<LiveSession>();
-    });
-    TargetSpec target;
-    target.path = WEBSIDE_TEST_TARGET;
-    REQUIRE(workspace.open(target));
-    auto& live = *workspace.session();
-    REQUIRE(live.debugger().waitForEvent(smalldbg::StopReason::None, 5000)
-            != smalldbg::StopReason::None);
-    TestServer server{workspace, 0};
-
+    Launched launched;
     HttpRequest request;
     request.method = "POST";
     request.path = "/native-modules/test_target/symbols";
-    Json loaded = Json::parse(server.handleLoadModuleSymbols(request).body);
+    Json loaded = Json::parse(
+        launched.server.handleLoadModuleSymbols(request).body);
     CHECK(loaded["name"].asString() == "test_target");
     CHECK(loaded["loaded"].asBool());
     CHECK_FALSE(loaded["symbolFile"].asString().empty());
-    CHECK(workspace.symbolModules() == std::vector<std::string>{"test_target"});
+    CHECK(launched.workspace.symbolModules()
+          == std::vector<std::string>{"test_target"});
 
     request.path = "/native-modules/no_such_module/symbols";
-    HttpResponse missing = server.handleLoadModuleSymbols(request);
-    CHECK(missing.statusCode == 404);
-
-    live.debugger().detach();
+    CHECK(launched.server.handleLoadModuleSymbols(request).statusCode == 404);
 }
 
 TEST_CASE("a debugger runs its thread to the address it is given") {
-    Workspace workspace([](const TargetSpec&) {
-        return std::make_unique<LiveSession>();
-    });
-    TargetSpec target;
-    target.path = WEBSIDE_TEST_TARGET;
-    REQUIRE(workspace.open(target));
-    auto& debugger = workspace.session()->debugger();
-    REQUIRE(debugger.waitForEvent(smalldbg::StopReason::None, 5000)
-            != smalldbg::StopReason::None);
-    auto breakHere = debugger.getSymbolProvider()->getSymbolByName(
-        "test_target!break_here");
-    REQUIRE(breakHere.has_value());
-    TestServer server{workspace, 0};
+    Launched launched;
+    smalldbg::Address breakHere = launched.symbol("test_target!break_here").address;
 
     HttpRequest request;
     request.method = "POST";
     request.path = "/debuggers/1/runto";
-    request.body = Json::object()
-        .set("address", Json::hex(breakHere->address)).dump();
-    Json answer = Json::parse(server.handleRunTo(request, false).body);
+    request.body = Json::object().set("address", Json::hex(breakHere)).dump();
+    Json answer = Json::parse(launched.server.handleRunTo(request, false).body);
     CHECK(answer["success"].asBool());
     smalldbg::Registers regs;
-    REQUIRE(debugger.getRegisters(regs) == smalldbg::Status::Ok);
-    CHECK(regs.ip() == breakHere->address);
+    REQUIRE(launched.debugger().getRegisters(regs) == smalldbg::Status::Ok);
+    CHECK(regs.ip() == breakHere);
 
     request.body = "{}";
-    CHECK(server.handleRunTo(request, false).statusCode == 400);
-
-    debugger.detach();
+    CHECK(launched.server.handleRunTo(request, false).statusCode == 400);
 }
 
 TEST_CASE("/threads names each thread and marks the VM's as main") {
-    Workspace workspace([](const TargetSpec&) {
-        return std::make_unique<LiveSession>();
-    });
-    TargetSpec target;
-    target.path = WEBSIDE_TEST_TARGET;
-    REQUIRE(workspace.open(target));
-    auto& debugger = workspace.session()->debugger();
-    REQUIRE(debugger.waitForEvent(smalldbg::StopReason::None, 5000)
-            != smalldbg::StopReason::None);
-    auto breakHere = debugger.getSymbolProvider()->getSymbolByName(
-        "test_target!break_here");
-    REQUIRE(breakHere.has_value());
-    REQUIRE(debugger.runTo(breakHere->address, 30000) == smalldbg::Status::Ok);
-    TestServer server{workspace, 0};
+    Launched launched;
+    launched.stopAtBreakHere();
 
-    Json threads = Json::parse(server.threadListJson());
+    Json threads = Json::parse(launched.server.threadListJson());
     REQUIRE(threads.size() >= 1);
     int mains = 0;
     for (const Json& thread : threads.elements()) {
@@ -217,10 +213,8 @@ TEST_CASE("/threads names each thread and marks the VM's as main") {
     }
     CHECK(mains == 1);
 
-    Json debuggers = Json::parse(server.debuggerListJson());
+    Json debuggers = Json::parse(launched.server.debuggerListJson());
     CHECK(debuggers.size() >= threads.size());
-
-    debugger.detach();
 }
 
 TEST_CASE("frames that cannot be trusted come with a warning header") {
@@ -235,4 +229,30 @@ TEST_CASE("frames that cannot be trusted come with a warning header") {
     HttpResponse quiet;
     TestServer::warn(quiet, "");
     CHECK(quiet.headers.empty());
+}
+
+TEST_CASE("a symbol search finds a name from part of it") {
+    Launched launched;
+    launched.stopAtBreakHere();
+    Json found = Json::parse(launched.server.nativeSymbolsData("break_her"));
+    bool named = false;
+    for (const Json& symbol : found.elements())
+        named = named || symbol["name"].asString() == "break_here";
+    CHECK(named);
+}
+
+TEST_CASE("native inspection gives a field its own size") {
+    Launched launched;
+    launched.stopAtBreakHere();
+    const size_t pointer = launched.debugger().arch()->pointerSize();
+
+    Json label = Json::parse(
+        launched.server.nativeInspectData("test_target!g_test_record.label"));
+    CHECK(label["size"].asInt() == static_cast<int64_t>(pointer));
+    CHECK(label["type"].asString().find("char") != std::string::npos);
+
+    Json id = Json::parse(
+        launched.server.nativeInspectData("test_target!g_test_record.id"));
+    CHECK(id["size"].asInt() == 4);
+    CHECK(id["value"].asString() == Json::hex(uint64_t(7)).asString());
 }

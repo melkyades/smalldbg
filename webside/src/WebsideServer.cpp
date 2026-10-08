@@ -218,9 +218,20 @@ static Json symbolToJson(const smalldbg::Symbol& sym) {
         .set("module", sym.moduleName);
 }
 
+// Returns the pattern to search for what a person typed. The symbol engine
+// matches whole names, so text without a wildcard is looked for anywhere in a
+// name.
+static std::string symbolPattern(const std::string& filter) {
+    if (filter.empty()) return "*";
+    if (filter.find('*') != std::string::npos
+        || filter.find('?') != std::string::npos)
+        return filter;
+    return "*" + filter + "*";
+}
+
 std::string WebsideServer::nativeSymbolsData(const std::string& filter) const {
     auto* provider = session().debugger().getSymbolProvider();
-    auto symbols = provider->findSymbols(filter);
+    auto symbols = provider->findSymbols(symbolPattern(filter));
     auto arr = Json::array();
     for (auto& sym : symbols)
         arr.add(symbolToJson(sym));
@@ -298,6 +309,16 @@ struct ParsedExpression {
     std::vector<PathStep> steps;
 };
 
+// Returns the name that starts at `pos`, up to the next '.' or '->', and moves
+// `pos` to that separator.
+static std::string readFieldName(const std::string& expr, size_t& pos) {
+    size_t start = pos;
+    while (pos < expr.size() && expr[pos] != '.' &&
+           !(expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>'))
+        pos++;
+    return expr.substr(start, pos - start);
+}
+
 static ParsedExpression parseNativeExpression(const std::string& expr) {
     ParsedExpression result;
     size_t pos = 0;
@@ -325,12 +346,7 @@ static ParsedExpression parseNativeExpression(const std::string& expr) {
             break;
         }
 
-        size_t start = pos;
-        while (pos < expr.size() && expr[pos] != '.' &&
-               !(expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>'))
-            pos++;
-
-        step.fieldName = expr.substr(start, pos - start);
+        step.fieldName = readFieldName(expr, pos);
         result.steps.push_back(std::move(step));
     }
 
@@ -372,10 +388,53 @@ static Json fieldsToJson(const std::vector<smalldbg::NativeField>& fields) {
     return arr;
 }
 
+// Returns the field of `info` named `name`, or null when it has none.
+static const smalldbg::NativeField* fieldNamed(const smalldbg::NativeTypeInfo& info,
+                                               const std::string& name) {
+    for (const auto& field : info.fields)
+        if (field.name == name) return &field;
+    return nullptr;
+}
+
+/** Follows `steps` from `address`, which holds a `typeName`, reading a pointer
+ *  wherever a step dereferences one. Sets the address, type and size of the
+ *  field reached. Returns false when a step names no field of its struct or a
+ *  pointer cannot be read. **/
+static bool followPath(const std::vector<PathStep>& steps,
+                       smalldbg::Debugger& debugger,
+                       uint64_t& address, std::string& typeName,
+                       uint64_t& size) {
+    auto& provider = *debugger.getSymbolProvider();
+    for (const auto& step : steps) {
+        if (step.dereference) {
+            uint64_t pointer = 0;
+            if (debugger.readMemory(address, &pointer,
+                                    debugger.arch()->pointerSize())
+                != smalldbg::Status::Ok)
+                return false;
+            address = pointer;
+        }
+
+        auto* structInfo = provider.getStructType(typeName);
+        if (!structInfo) return false;
+
+        const smalldbg::NativeField* field = fieldNamed(*structInfo, step.fieldName);
+        if (!field) return false;
+
+        address += field->offset;
+        typeName = field->typeName;
+        // The struct says how wide its own member is. Looking the member's
+        // type up by name would ask the engine about "unsigned int*", which
+        // belongs to no module and reads back as eight bytes on a 32-bit
+        // target.
+        size = field->size;
+    }
+    return true;
+}
+
 std::string WebsideServer::nativeInspectData(const std::string& expression) const {
-    auto* provider = session().debugger().getSymbolProvider();
-    auto process = session().debugger().getProcess();
-    if (!provider || !process) return "{}";
+    auto& debugger = session().debugger();
+    auto* provider = debugger.getSymbolProvider();
 
     auto parsed = parseNativeExpression(expression);
     if (parsed.rootSymbol.empty()) return "{}";
@@ -388,37 +447,18 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
 
     uint64_t currentAddr = rootSym->address;
     std::string currentTypeName = *rootTypeName;
+    uint64_t fieldSize = 0;
+    if (!followPath(parsed.steps, debugger, currentAddr, currentTypeName,
+                    fieldSize))
+        return "{}";
 
-    for (auto& step : parsed.steps) {
-        if (step.dereference) {
-            uint64_t ptrVal = 0;
-            if (process->readMemory(currentAddr, &ptrVal, 8) != smalldbg::Status::Ok)
-                return "{}";
-            currentAddr = ptrVal;
-        }
-
-        auto* structInfo = provider->getStructType(currentTypeName);
-        if (!structInfo) return "{}";
-
-        const smalldbg::NativeField* field = nullptr;
-        for (auto& f : structInfo->fields) {
-            if (f.name == step.fieldName) {
-                field = &f;
-                break;
-            }
-        }
-        if (!field) return "{}";
-
-        currentAddr += field->offset;
-        currentTypeName = field->typeName;
-    }
-
-    uint64_t rawValue = 0;
+    // A field's own size is the one to trust; see followPath.
     auto* typeInfo = provider->getTypeByName(currentTypeName);
-    size_t readSize = 8;
-    if (typeInfo && typeInfo->size > 0 && typeInfo->size <= 8)
-        readSize = static_cast<size_t>(typeInfo->size);
-    process->readMemory(currentAddr, &rawValue, readSize);
+    uint64_t size = fieldSize ? fieldSize : typeInfo ? typeInfo->size : 0;
+    size_t readSize = size > 0 && size <= 8 ? static_cast<size_t>(size)
+                                            : debugger.arch()->pointerSize();
+    uint64_t rawValue = 0;
+    debugger.readMemory(currentAddr, &rawValue, readSize);
 
     std::vector<smalldbg::NativeField> visibleFields;
     auto* structInfo = provider->getStructType(currentTypeName);
@@ -431,7 +471,7 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
         .set("value", Json::hex(rawValue))
         .set("type", currentTypeName)
         .set("kind", typeKindString(typeInfo ? typeInfo->kind : smalldbg::NativeTypeKind::Unknown))
-        .set("size", static_cast<int64_t>(typeInfo ? typeInfo->size : 0))
+        .set("size", static_cast<int64_t>(size))
         .set("fields", fieldsToJson(visibleFields));
 
     return result.dump();
@@ -1005,10 +1045,13 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
 
     auto result = symbolToJson(*sym);
 
+    // A pointer-sized read: on a 32-bit target the next four bytes belong to
+    // whatever follows the symbol.
     uint64_t value = 0;
     auto process = session().debugger().getProcess();
-    if (process->readMemory(sym->address, &value, 8) == smalldbg::Status::Ok)
-        result.set("value", Json::hex(value));
+    if (process->readMemory(sym->address, &value, session().pointerSize())
+        == smalldbg::Status::Ok)
+        result.set("value", session().addressHex(value));
     else
         result.set("value", nullptr);
 
