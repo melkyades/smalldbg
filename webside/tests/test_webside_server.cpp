@@ -35,6 +35,7 @@ struct SnapshotSession : StubSession {
 struct TestServer : WebsideServer {
     using WebsideServer::WebsideServer;
     using WebsideServer::handleMemory;
+    using WebsideServer::handleLoadModuleSymbols;
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
@@ -121,4 +122,32 @@ TEST_CASE("/memory gives 64-bit values as hex when asked, to keep them exact") {
     Json hex = served.memory("address=0x10008&type=uint64&count=1&format=hex");
     CHECK(hex["values"][0].asString() ==
           Json::hex(uint64_t(0x8807060504030201)).asString());
+}
+
+TEST_CASE("loading a module's symbols reports them, and the workspace keeps it") {
+    Workspace workspace([](const TargetSpec&) {
+        return std::make_unique<LiveSession>();
+    });
+    TargetSpec target;
+    target.path = WEBSIDE_TEST_TARGET;
+    REQUIRE(workspace.open(target));
+    auto& live = *workspace.session();
+    REQUIRE(live.debugger().waitForEvent(smalldbg::StopReason::None, 5000)
+            != smalldbg::StopReason::None);
+    TestServer server{workspace, 0};
+
+    HttpRequest request;
+    request.method = "POST";
+    request.path = "/native-modules/test_target/symbols";
+    Json loaded = Json::parse(server.handleLoadModuleSymbols(request).body);
+    CHECK(loaded["name"].asString() == "test_target");
+    CHECK(loaded["loaded"].asBool());
+    CHECK_FALSE(loaded["symbolFile"].asString().empty());
+    CHECK(workspace.symbolModules() == std::vector<std::string>{"test_target"});
+
+    request.path = "/native-modules/no_such_module/symbols";
+    HttpResponse missing = server.handleLoadModuleSymbols(request);
+    CHECK(missing.statusCode == 404);
+
+    live.debugger().detach();
 }

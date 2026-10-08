@@ -224,9 +224,46 @@ std::string WebsideServer::nativeModulesData() const {
             .set("name", mod.shortName)
             .set("loadAddress", Json::hex(mod.loadAddress))
             .set("endAddress", Json::hex(mod.endAddress))
-            .set("symbolCount", static_cast<int64_t>(mod.symbolCount)));
+            .set("symbolCount", static_cast<int64_t>(mod.symbolCount))
+            .set("symbolType", mod.symbolType)
+            .set("symbolFile", mod.symbolFile));
     }
     return arr.dump();
+}
+
+// POST /native-modules/<name>/symbols
+HttpResponse WebsideServer::handleLoadModuleSymbols(const HttpRequest& req) {
+    HttpResponse res;
+    auto segments = splitPath(req.path);
+    if (segments.size() < 2) {
+        res.statusCode = 400;
+        res.body = Json::object()
+            .set("error", "expected /native-modules/<name>/symbols").dump();
+        return res;
+    }
+    std::string name = segments[1];
+
+    session().loadModuleSymbols(name);
+
+    // A module counts as loaded only when a symbol file was found. Only those
+    // are remembered, so that later sessions do not search again for files
+    // that do not exist.
+    auto* provider = session().debugger().getSymbolProvider();
+    for (const auto& mod : provider->getModules()) {
+        if (mod.shortName != name) continue;
+        bool loaded = !mod.symbolFile.empty();
+        if (loaded) workspace.rememberSymbolModule(name);
+        res.body = Json::object()
+            .set("name", mod.shortName)
+            .set("symbolType", mod.symbolType)
+            .set("symbolFile", mod.symbolFile)
+            .set("loaded", loaded)
+            .dump();
+        return res;
+    }
+    res.statusCode = 404;
+    res.body = Json::object().set("error", "no module named " + name).dump();
+    return res;
 }
 
 std::string WebsideServer::nativeSymbolDetailData(const std::string& name) const {
@@ -1028,6 +1065,11 @@ void WebsideServer::setupRoutes() {
         HttpResponse res;
         res.body = nativeModulesData();
         return res;
+    });
+
+    // A module's symbols load when they are first needed; this loads them now.
+    server.routePrefix("POST", "/native-modules", [this](const HttpRequest& req) {
+        return handleLoadModuleSymbols(req);
     });
 
     server.route("GET", "/symbol", [this](const HttpRequest& req) {

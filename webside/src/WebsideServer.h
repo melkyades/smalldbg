@@ -79,6 +79,7 @@ protected:
     virtual std::string nativeModulesData() const;
     virtual std::string nativeSymbolDetailData(const std::string& name) const;
     virtual std::string nativeInspectData(const std::string& expression) const;
+    HttpResponse handleLoadModuleSymbols(const HttpRequest& req);
     HttpResponse handleSymbol(const HttpRequest& req) const;
 
     // ---- memory / disassembly routes ----

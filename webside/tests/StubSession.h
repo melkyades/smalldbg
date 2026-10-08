@@ -2,6 +2,7 @@
 
 #include "VMInspector.h"
 #include "WebsideSession.h"
+#include "smalldbg/Arch.h"
 #include "smalldbg/Debugger.h"
 
 #include <map>
@@ -72,11 +73,26 @@ struct StubSession : WebsideSession {
     // Never attached and never asked to inspect, but always there, so the
     // session can hand out the references its interface promises.
     const std::unique_ptr<smalldbg::Debugger> ownedDebugger{
-        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External)};
+        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External,
+                                             smalldbg::X64::instance())};
     const std::unique_ptr<vmdbg::VMInspector> ownedInspector{
         std::make_unique<StubInspector>()};
 
     std::map<uint64_t, std::string> applied;
+};
+
+// A session that opens its target in the debugger, for tests that launch the
+// test target. It runs no VM, so the thread the target stopped on stands in
+// for the VM's.
+struct LiveSession : StubSession {
+    bool readsWithoutEngine(const vmdbg::TargetSpec&) const override {
+        return false;
+    }
+    bool onTargetOpened(const vmdbg::TargetSpec&) override { return true; }
+    bool isActive() const override { return debugger().isAttached(); }
+    std::shared_ptr<smalldbg::Thread> vmThread() const override {
+        return debugger().getCurrentThread();
+    }
 };
 
 } // namespace webside
