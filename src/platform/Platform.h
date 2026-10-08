@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 // Prevents a function from being inlined into its callers. Used where code
 // relies on the function having its own reachable symbol address (e.g. a
@@ -15,6 +16,10 @@
 namespace smalldbg_internal {
     // returns the current process id as a 64-bit integer
     uint64_t current_pid();
+
+    // Returns true for a frame the system puts at the base of every thread's
+    // stack, such as the OS's and the C runtime's thread starters.
+    bool isThreadStarter(const std::string& module, const std::string& function);
 
     // (placeholders for future helpers; keep them here so we only add files below)
 }

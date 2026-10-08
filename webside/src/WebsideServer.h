@@ -117,6 +117,20 @@ protected:
 
     // Native OS threads ordered with the primary thread first (id = index+1).
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;
+    /** Returns the id of the OS thread the VM runs on, or 0 when it cannot be
+     *  found. **/
+    smalldbg::ThreadId vmThreadId() const;
+    /** Returns the /debuggers listing: one debugger per thread. **/
+    std::string debuggerListJson() const;
+    /** Returns the /threads listing, each thread named by what it was started
+     *  to do. A thread with no registers or stack is left out. **/
+    std::string threadListJson() const;
+    /** Returns one native thread's /threads entry, or null when the thread
+     *  has no registers or stack. `main` is the id of the VM's thread. **/
+    Json nativeThreadJson(smalldbg::Thread& thread, int id,
+                          smalldbg::ThreadId main) const;
+    void addGreenThreadDebuggers(Json& array, int id) const;
+    void addGreenThreads(Json& array, int id) const;
 
     // ---- VM inspector routes (delegate to session->inspector()) ----
     virtual HttpResponse handleRegions(const HttpRequest& req) const;

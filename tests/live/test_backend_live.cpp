@@ -354,6 +354,20 @@ TEST_CASE("running to an address stops there and keeps the user's breakpoints") 
     dbg.detach();
 }
 
+TEST_CASE("a thread is named after what it was started to do") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    auto thread = dbg.getCurrentThread();
+    REQUIRE(thread != nullptr);
+
+    const ThreadIdentity& identity = dbg.threadIdentity(*thread);
+    CHECK(identity.hasContext);
+    CHECK(identity.name.rfind("test_target!", 0) == 0);
+    CHECK(&dbg.threadIdentity(*thread) == &identity);
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);

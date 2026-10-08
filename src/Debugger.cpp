@@ -3,6 +3,7 @@
 #include "smalldbg/Thread.h"
 #include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackUnwinder.h"
+#include "platform/Platform.h"
 #include <algorithm>
 #include <sstream>
 
@@ -276,6 +277,67 @@ std::shared_ptr<Thread> Debugger::getCurrentThread() {
 
 void Debugger::setCurrentThread(std::shared_ptr<Thread> thread) {
     selectedThread = thread;
+}
+
+const ThreadIdentity& Debugger::threadIdentity(Thread& thread) {
+    if (identitiesVersion != targetVersion) {
+        identities.clear();
+        identitiesVersion = targetVersion;
+    }
+    auto known = identities.find(thread.getThreadId());
+    if (known != identities.end()) return known->second;
+    return identities.emplace(thread.getThreadId(), identify(thread)).first->second;
+}
+
+static std::string frameLabel(const StackFrame& frame) {
+    if (frame.functionName.empty()) return "";
+    return frame.moduleName.empty() ? frame.functionName
+                                    : frame.moduleName + "!" + frame.functionName;
+}
+
+// A walk that runs off the end of a stack it does not understand lands on a
+// module's load address, inside its header where no code can be, and the
+// symbol engine still names it after the module's first symbol.
+static bool isImpossibleFrame(const StackFrame& frame,
+                              const std::vector<ModuleInfo>& modules) {
+    for (const auto& module : modules)
+        if (frame.ip() == module.loadAddress) return true;
+    return false;
+}
+
+// Returns true for a frame that cannot name a thread: one the system put on
+// every thread's stack, one that cannot be real, or one with no name.
+static bool namesNoThread(const StackFrame& frame,
+                          const std::vector<ModuleInfo>& modules) {
+    if (isImpossibleFrame(frame, modules)) return true;
+    // A frame matched to a module only carries the module as its function.
+    const std::string& module = frame.moduleName.empty() ? frame.functionName
+                                                         : frame.moduleName;
+    if (smalldbg_internal::isThreadStarter(module, frame.functionName))
+        return true;
+    std::string label = frameLabel(frame);
+    return label.empty() || label.find("<unknown>") != std::string::npos;
+}
+
+// The stack is read from its base: the top only says where a thread waits, and
+// most threads wait in the same few places.
+ThreadIdentity Debugger::identify(Thread& thread) {
+    ThreadIdentity identity;
+    Registers regs;
+    if (getRegisters(&thread, regs) != Status::Ok || regs.sp() == 0)
+        return identity;
+    StackTrace* trace = thread.getStackTrace(512);
+    if (!trace || trace->getFrames().empty()) return identity;
+    identity.hasContext = true;
+
+    auto modules = symbolProvider->getModules();
+    const auto& frames = trace->getFrames();
+    for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame) {
+        if (namesNoThread(**frame, modules)) continue;
+        identity.name = frameLabel(**frame);
+        break;
+    }
+    return identity;
 }
 
 StopReason Debugger::getStopReason() const { return backend->getStopReason(); }

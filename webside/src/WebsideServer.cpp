@@ -32,16 +32,6 @@ static uint64_t param64(const HttpRequest& req, const char* key, uint64_t dflt =
     try { return std::stoull(it->second, nullptr, 0); } catch (...) { return dflt; }
 }
 
-// The symbol the thread's PC sits in. Needs a stopped target: reading the
-// registers of a running one blocks in the engine until it stops.
-static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread& thread) {
-    smalldbg::Registers regs;
-    if (dbg.getRegisters(&thread, regs) != smalldbg::Status::Ok) return "";
-    auto sym = dbg.getSymbolProvider()->getSymbolByAddress(regs.ip());
-    if (!sym) return "";
-    return (sym->moduleName.empty() ? "" : sym->moduleName + "!") + sym->name;
-}
-
 WebsideServer::WebsideServer(Workspace& workspace, int port)
     : server(port), workspace(workspace) {}
 
@@ -51,6 +41,13 @@ static HttpResponse refusal(int code, const char* status, const char* message) {
     response.statusMessage = status;
     response.body = Json::object().set("error", message).dump();
     return response;
+}
+
+// A listing asks this once rather than once per thread, since answering it
+// may walk every thread the target has.
+smalldbg::ThreadId WebsideServer::vmThreadId() const {
+    auto thread = session().vmThread();
+    return thread ? thread->getThreadId() : 0;
 }
 
 // A refused handler still answers something shaped like the truth, an empty
@@ -647,7 +644,7 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
         res.body = Json::object()
             .set("id", debuggerId)
             .set("description", "Native thread " + threadIdHex(thread.getThreadId())
-                              + (debuggerId == 1 ? " (main)" : ""))
+                              + (thread.getThreadId() == vmThreadId() ? " (main)" : ""))
             .set("status", stopReason())
             .dump();
         return res;
@@ -1002,6 +999,85 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
     return res;
 }
 
+std::string WebsideServer::debuggerListJson() const {
+    auto array = Json::array();
+    auto threads = nativeThreads();
+    addGreenThreadDebuggers(array, static_cast<int>(threads.size()) + 1);
+    const smalldbg::ThreadId main = vmThreadId();
+    int id = 1;
+    for (size_t i = 0; i < threads.size(); i++, id++) {
+        array.add(Json::object()
+            .set("id", id)
+            .set("description", "Native thread " + threadIdHex(threads[i]->getThreadId())
+                              + (threads[i]->getThreadId() == main ? " (main)" : ""))
+            .set("status", stopReason()));
+    }
+    return array.dump();
+}
+
+void WebsideServer::addGreenThreadDebuggers(Json& array, int id) const {
+    const int count = session().greenThreadCount();
+    for (int i = 0; i < count; i++, id++) {
+        array.add(Json::object()
+            .set("id", id)
+            .set("description", "Smalltalk: " + session().getGreenThreadName(i))
+            .set("status", stopReason()));
+    }
+}
+
+std::string WebsideServer::threadListJson() const {
+    auto array = Json::array();
+    auto threads = nativeThreads();
+    addGreenThreads(array, static_cast<int>(threads.size()) + 1);
+    const smalldbg::ThreadId main = vmThreadId();
+    int id = 1;
+    for (size_t i = 0; i < threads.size(); i++, id++) {
+        Json entry = nativeThreadJson(*threads[i], id, main);
+        if (!entry.isNull()) array.add(std::move(entry));
+    }
+    return array.dump();
+}
+
+Json WebsideServer::nativeThreadJson(smalldbg::Thread& thread, int id,
+                                     smalldbg::ThreadId main) const {
+    auto* debugger = &session().debugger();
+    const bool stopped = debugger->isStopped();
+    smalldbg::ThreadIdentity identity = stopped
+        ? debugger->threadIdentity(thread) : smalldbg::ThreadIdentity{};
+    if (stopped && !identity.hasContext) return Json::null();
+
+    auto current = debugger->getCurrentThread();
+
+    auto entry = Json::object()
+        .set("debuggerId", id)
+        .set("id", threadIdHex(thread.getThreadId()))
+        .set("type", "native")
+        .set("name", identity.name)
+        .set("isMain", thread.getThreadId() == main)
+        .set("isCurrent", current && current->getThreadId() == thread.getThreadId())
+        .set("status", stopReason());
+
+    std::string green = stopped ? session().greenThreadOn(thread.getThreadId())
+                                : std::string();
+    if (!green.empty()) entry.set("runs", green);
+    return entry;
+}
+
+void WebsideServer::addGreenThreads(Json& array, int id) const {
+    const int count = session().greenThreadCount();
+    for (int i = 0; i < count; i++, id++) {
+        array.add(Json::object()
+            .set("debuggerId", id)
+            .set("id", std::to_string(i + 1))
+            .set("type", "smalltalk")
+            .set("name", session().getGreenThreadName(i))
+            .set("isMain", false)
+            .set("isCurrent", false)
+            .set("terminated", !session().isGreenThreadLive(i))
+            .set("status", stopReason()));
+    }
+}
+
 void WebsideServer::setupRoutes() {
     // ---- Search ----
     server.route("GET", "/search", [this](const HttpRequest& req) {
@@ -1102,67 +1178,14 @@ void WebsideServer::setupRoutes() {
     // ---- Debuggers: native OS threads 1..N (primary first), green threads N+1.. ----
     server.route("GET", "/debuggers", [this](const HttpRequest&) {
         HttpResponse res;
-        if (!isActive()) {
-            res.body = "[]";
-            return res;
-        }
-        auto arr = Json::array();
-        auto threads = nativeThreads();
-        int id = 1;
-        for (size_t i = 0; i < threads.size(); i++, id++) {
-            arr.add(Json::object()
-                .set("id", id)
-                .set("description", "Native thread " + threadIdHex(threads[i]->getThreadId())
-                                  + (id == 1 ? " (main)" : ""))
-                .set("status", stopReason()));
-        }
-        for (int i = 0; i < session().greenThreadCount(); i++, id++) {
-            arr.add(Json::object()
-                .set("id", id)
-                .set("description", "Smalltalk: " + session().getGreenThreadName(i))
-                .set("status", stopReason()));
-        }
-        res.body = arr.dump();
+        res.body = isActive() ? debuggerListJson() : "[]";
         return res;
     });
 
     // ---- Threads: native OS threads (+ green threads); debuggerId maps to /debuggers/<id> ----
     server.route("GET", "/threads", [this](const HttpRequest&) {
         HttpResponse res;
-        auto* dbg = &session().debugger();
-        if (!isActive() || !dbg) { res.body = "[]"; return res; }
-        auto current = dbg->getCurrentThread();
-        auto arr = Json::array();
-        auto threads = nativeThreads();
-        const bool stopped = dbg->isStopped();
-        int id = 1;
-        for (size_t i = 0; i < threads.size(); i++, id++) {
-            auto entry = Json::object()
-                .set("debuggerId", id)
-                .set("id", threadIdHex(threads[i]->getThreadId()))
-                .set("type", "native")
-                .set("name", stopped ? threadTopFrameName(*dbg, *threads[i])
-                                     : std::string())
-                .set("isMain", i == 0)
-                .set("isCurrent", current && current->getThreadId() == threads[i]->getThreadId())
-                .set("status", stopReason());
-            std::string green =
-                stopped ? session().greenThreadOn(threads[i]->getThreadId())
-                        : std::string();
-            if (!green.empty()) entry.set("runs", green);
-            arr.add(std::move(entry));
-        }
-        for (int i = 0; i < session().greenThreadCount(); i++, id++) {
-            arr.add(Json::object()
-                .set("debuggerId", id)
-                .set("id", std::to_string(i + 1))
-                .set("type", "smalltalk")
-                .set("name", session().getGreenThreadName(i))
-                .set("isMain", false)
-                .set("isCurrent", false)
-                .set("status", stopReason()));
-        }
-        res.body = arr.dump();
+        res.body = isActive() ? threadListJson() : "[]";
         return res;
     });
 

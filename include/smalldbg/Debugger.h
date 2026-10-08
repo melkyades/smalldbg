@@ -6,6 +6,8 @@
 #include "StackTrace.h"      // InlineFrameInfo
 #include "symbols/SymbolProvider.h"  // Need full definition for SymbolOptions default parameter
 #include <functional>
+#include <map>
+#include <string>
 #include <vector>
 #include <optional>
 #include <memory>
@@ -27,6 +29,16 @@ class StackUnwinder;
 void markEngineBusy();
 void clearEngineBusy();
 bool engineWasBusy();
+
+
+/** A ThreadIdentity says what a thread was started to do: the first frame,
+ *  from the base of its stack, that the system did not put there. **/
+struct ThreadIdentity {
+    std::string name;        // "module!function"; empty when none was found
+    // False for a thread with no registers or stack, such as one a trace
+    // lists but never recorded running.
+    bool hasContext{false};
+};
 
 class Debugger {
 public:
@@ -128,6 +140,11 @@ public:
     std::shared_ptr<Process> getProcess();
     std::shared_ptr<Thread> getCurrentThread();
     void setCurrentThread(std::shared_ptr<Thread> thread);
+
+    /** Returns what `thread` was started to do. The answer unwinds the whole
+     *  stack, so it is kept until the target moves, and stays valid until
+     *  then. Needs a stopped target. **/
+    const ThreadIdentity& threadIdentity(Thread& thread);
     
     // accessors provided by the backend implementation
     Status readMemory(Address address, void *outBuf, size_t size) const;
@@ -172,6 +189,7 @@ private:
     Status runToWith(Address address, int timeoutMs,
                      const std::function<Status()>& run);
     Status awaitArrival(Address address, int timeoutMs);
+    ThreadIdentity identify(Thread& thread);
 
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread
@@ -179,6 +197,8 @@ private:
     std::vector<std::unique_ptr<StackUnwinder>> unwinders; // highest priority first
     std::unique_ptr<Disassembler> disassembler; // disassembler instance
     mutable uint64_t targetVersion{1};
+    std::map<ThreadId, ThreadIdentity> identities;
+    uint64_t identitiesVersion{0};  // targetVersion the identities are from
     uint64_t threadsVersion{0};  // targetVersion the thread list is from
 };
 

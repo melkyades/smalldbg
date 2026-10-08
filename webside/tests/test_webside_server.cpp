@@ -37,6 +37,8 @@ struct TestServer : WebsideServer {
     using WebsideServer::handleMemory;
     using WebsideServer::handleLoadModuleSymbols;
     using WebsideServer::handleRunTo;
+    using WebsideServer::threadListJson;
+    using WebsideServer::debuggerListJson;
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
@@ -181,6 +183,39 @@ TEST_CASE("a debugger runs its thread to the address it is given") {
 
     request.body = "{}";
     CHECK(server.handleRunTo(request, false).statusCode == 400);
+
+    debugger.detach();
+}
+
+TEST_CASE("/threads names each thread and marks the VM's as main") {
+    Workspace workspace([](const TargetSpec&) {
+        return std::make_unique<LiveSession>();
+    });
+    TargetSpec target;
+    target.path = WEBSIDE_TEST_TARGET;
+    REQUIRE(workspace.open(target));
+    auto& debugger = workspace.session()->debugger();
+    REQUIRE(debugger.waitForEvent(smalldbg::StopReason::None, 5000)
+            != smalldbg::StopReason::None);
+    auto breakHere = debugger.getSymbolProvider()->getSymbolByName(
+        "test_target!break_here");
+    REQUIRE(breakHere.has_value());
+    REQUIRE(debugger.runTo(breakHere->address, 30000) == smalldbg::Status::Ok);
+    TestServer server{workspace, 0};
+
+    Json threads = Json::parse(server.threadListJson());
+    REQUIRE(threads.size() >= 1);
+    int mains = 0;
+    for (const Json& thread : threads.elements()) {
+        CHECK(thread["type"].asString() == "native");
+        if (!thread["isMain"].asBool()) continue;
+        mains++;
+        CHECK(thread["name"].asString().rfind("test_target!", 0) == 0);
+    }
+    CHECK(mains == 1);
+
+    Json debuggers = Json::parse(server.debuggerListJson());
+    CHECK(debuggers.size() >= threads.size());
 
     debugger.detach();
 }
