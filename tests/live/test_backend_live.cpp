@@ -17,10 +17,12 @@
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/StackTrace.h"
+#include "smalldbg/symbols/SymbolLoader.h"
 #include "smalldbg/symbols/SymbolProvider.h"
 
 #include "util.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -200,6 +202,24 @@ TEST_CASE("a module's symbols load on request, and any spelling finds it") {
 
     CHECK(symbols->moduleNamed("no_such_module").shortName.empty());
     CHECK_FALSE(symbols->loadModuleSymbols("no_such_module"));
+
+    dbg.detach();
+}
+
+TEST_CASE("the symbol loader loads a module's own symbol file and says which") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+
+    std::vector<std::string> log;
+    SymbolLoader loader(dbg, [&](const std::string& line) { log.push_back(line); });
+
+    CHECK(loader.loadAndReport("test_target"));
+    REQUIRE_FALSE(log.empty());
+    CHECK(log.back().find("test_target.pdb") != std::string::npos);
+
+    CHECK(loader.load("no_such_module") == SymbolState::Missing);
+    CHECK_FALSE(loader.report("no_such_module", SymbolState::Missing, "needed for X"));
+    CHECK(std::find(log.begin(), log.end(), "needed for X") != log.end());
 
     dbg.detach();
 }
