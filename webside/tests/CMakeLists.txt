@@ -6,8 +6,10 @@ add_executable(webside_tests
     test_http_server.cpp
     test_main.cpp
     test_smalltalk_session.cpp
+    test_webside_server.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Workspace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Json.cpp

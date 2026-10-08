@@ -735,9 +735,17 @@ static size_t typeUnitSize(const std::string& type) {
     return 1;
 }
 
+static uint64_t rawUnit(const uint8_t* unit, size_t unitSize) {
+    switch (unitSize) {
+    case 2: return *reinterpret_cast<const uint16_t*>(unit);
+    case 4: return *reinterpret_cast<const uint32_t*>(unit);
+    case 8: return *reinterpret_cast<const uint64_t*>(unit);
+    }
+    return *unit;
+}
+
 static int64_t readTypedValue(const uint8_t* buf, size_t unitSize, bool isSigned) {
-    uint64_t raw = 0;
-    std::memcpy(&raw, buf, unitSize);
+    uint64_t raw = rawUnit(buf, unitSize);
     if (isSigned) {
         switch (unitSize) {
         case 1: return static_cast<int8_t>(raw);
@@ -767,6 +775,63 @@ static std::string formatAsciiDump(const std::vector<uint8_t>& buf) {
     return ascii;
 }
 
+bool WebsideServer::readByteDump(uint64_t address, int count,
+                                 Json& result) const {
+    std::vector<uint8_t> buf(count);
+    if (session().debugger().readMemory(address, buf.data(), count)
+        != smalldbg::Status::Ok)
+        return false;
+    result.set("hex", formatHexDump(buf));
+    result.set("ascii", formatAsciiDump(buf));
+    result.set("size", count);
+    return true;
+}
+
+bool WebsideServer::readStringAt(uint64_t address, int count,
+                                 Json& result) const {
+    std::vector<uint8_t> buf(count);
+    if (session().debugger().readMemory(address, buf.data(), count)
+        != smalldbg::Status::Ok)
+        return false;
+    std::string text;
+    for (int i = 0; i < count && buf[i] != 0; i++)
+        text += static_cast<char>(buf[i]);
+    result.set("type", "string");
+    result.set("value", text);
+    result.set("size", static_cast<int64_t>(text.size()));
+    return true;
+}
+
+bool WebsideServer::readTypedUnits(uint64_t address, int count,
+                                   const std::string& type, bool asHex,
+                                   Json& result) const {
+    size_t unitSize = typeUnitSize(type);
+    bool isSigned = !type.empty() && type[0] == 'i';
+    size_t totalBytes = std::min(unitSize * count, static_cast<size_t>(32768));
+
+    std::vector<uint8_t> buf(totalBytes, 0);
+    if (session().debugger().readMemory(address, buf.data(), totalBytes)
+        != smalldbg::Status::Ok)
+        return false;
+
+    auto values = Json::array();
+    int unitCount = static_cast<int>(totalBytes / unitSize);
+    for (int i = 0; i < unitCount; i++)
+        values.add(unitJson(buf.data() + i * unitSize, unitSize, isSigned,
+                            asHex));
+
+    result.set("type", type);
+    result.set("values", values);
+    return true;
+}
+
+Json WebsideServer::unitJson(const uint8_t* unit, size_t unitSize,
+                             bool isSigned, bool asHex) {
+    if (!asHex) return Json::number(readTypedValue(unit, unitSize, isSigned));
+    uint64_t raw = rawUnit(unit, unitSize);
+    return unitSize <= 4 ? Json::hex(static_cast<uint32_t>(raw)) : Json::hex(raw);
+}
+
 HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
@@ -791,60 +856,23 @@ HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
     }
     count = std::clamp(count, 1, 4096);
 
-    auto process = session().debugger().getProcess();
     auto result = Json::object();
     result.set("address", Json::hex(addr));
 
+    bool read = false;
     if (type == "bytes") {
-        std::vector<uint8_t> buf(count);
-        if (process->readMemory(addr, buf.data(), count) != smalldbg::Status::Ok) {
-            res.statusCode = 400;
-            res.body = Json::object().set("error", "Failed to read memory").dump();
-            return res;
-        }
-        result.set("hex", formatHexDump(buf));
-        result.set("ascii", formatAsciiDump(buf));
-        result.set("size", count);
+        read = readByteDump(addr, count, result);
     } else if (type == "string") {
-        std::vector<uint8_t> buf(count);
-        process->readMemory(addr, buf.data(), count);
-        std::string str;
-        for (int i = 0; i < count && buf[i] != 0; i++)
-            str += static_cast<char>(buf[i]);
-        result.set("type", "string");
-        result.set("value", str);
-        result.set("size", static_cast<int64_t>(str.size()));
+        read = readStringAt(addr, count, result);
     } else {
-        size_t unitSize = typeUnitSize(type);
-        bool isSigned = !type.empty() && type[0] == 'i';
-        size_t totalBytes = unitSize * count;
-        totalBytes = std::min(totalBytes, static_cast<size_t>(32768));
-
-        std::vector<uint8_t> buf(totalBytes, 0);
-        process->readMemory(addr, buf.data(), totalBytes);
-
-        // A 64-bit value does not survive JSON's number type intact, so a
-        // client that needs it exact asks for hex.
-        bool asHex = false;
         auto formatIt = req.params.find("format");
-        if (formatIt != req.params.end()) asHex = formatIt->second == "hex";
-
-        auto values = Json::array();
-        int actualCount = static_cast<int>(totalBytes / unitSize);
-        for (int i = 0; i < actualCount; i++) {
-            const uint8_t* unit = buf.data() + i * unitSize;
-            if (!asHex) {
-                values.add(readTypedValue(unit, unitSize, isSigned));
-                continue;
-            }
-            uint64_t raw = 0;
-            std::memcpy(&raw, unit, unitSize);
-            values.add(unitSize <= 4 ? Json::hex(static_cast<uint32_t>(raw))
-                                     : Json::hex(raw));
-        }
-
-        result.set("type", type);
-        result.set("values", values);
+        bool asHex = formatIt != req.params.end() && formatIt->second == "hex";
+        read = readTypedUnits(addr, count, type, asHex, result);
+    }
+    if (!read) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Failed to read memory").dump();
+        return res;
     }
 
     res.body = result.dump();

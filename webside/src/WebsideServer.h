@@ -83,6 +83,19 @@ protected:
 
     // ---- memory / disassembly routes ----
     HttpResponse handleMemory(const HttpRequest& req) const;
+    /** Sets the hex dump of `count` bytes at `address`, and their ASCII
+     *  rendering, in `result`. Returns false when they cannot be read. **/
+    bool readByteDump(uint64_t address, int count, Json& result) const;
+    /** Sets the C string at `address` in `result`, up to its terminator or
+     *  `count` bytes. Returns false when the bytes cannot be read. **/
+    bool readStringAt(uint64_t address, int count, Json& result) const;
+    /** Sets `count` values of `type`, such as "int32", read from `address`, in
+     *  `result`. With `asHex` the values are hex strings, which keeps 64-bit
+     *  values exact. Returns false when the values cannot be read. **/
+    bool readTypedUnits(uint64_t address, int count, const std::string& type,
+                        bool asHex, Json& result) const;
+    static Json unitJson(const uint8_t* unit, size_t unitSize, bool isSigned,
+                         bool asHex);
     virtual HttpResponse handleDisassemble(const HttpRequest& req);
 
     // ---- suspend/resume hooks (dialects may set up / tear down VM state) ----
