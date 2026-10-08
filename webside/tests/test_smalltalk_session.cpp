@@ -3,6 +3,7 @@
 #include "Json.h"
 #include "Smalltalk/InspectorJson.h"
 #include "Smalltalk/Session.h"
+#include "ToyHeap.h"
 #include "smalldbg/Debugger.h"
 
 #include <memory>
@@ -27,6 +28,14 @@ public:
 
     void add(ClassEntry entry) { addClass(std::move(entry)); }
     void add(vmdbg::Region region) { addRegion(std::move(region)); }
+
+    // The heap retainersOf traces; none unless a test lays one out.
+    std::unique_ptr<ToyHeap> heap;
+
+protected:
+    std::unique_ptr<vmdbg::Tracer> makeTracer() override {
+        return std::move(heap);
+    }
 };
 
 ClassEntry classEntry(const std::string& name, uint64_t oop,
@@ -188,4 +197,23 @@ TEST_CASE("regions read as name, bounds, size and kind") {
     CHECK(regions[0]["size"].asInt() == 0x2000);
     CHECK(regions[0]["objectMemory"].asBool());
     CHECK(regions[1]["code"].asBool());
+}
+
+TEST_CASE("retainers read as oop, class, whether a class, and detail") {
+    TestInspector inspector;
+    inspector.add(classEntry("Holder", 0x10100, "Object", 0x10));
+    inspector.heap = std::make_unique<ToyHeap>();
+    inspector.heap->space("old", 0x10000, 0x1000);
+    inspector.heap->object(0x10000, {0x10100});
+    inspector.heap->object(0x10100, {0x10200});
+    inspector.heap->object(0x10200, {});
+    inspector.heap->roots = {0x10000};
+
+    Json chain = Json::parse(webside::retainersJson(inspector, 0x10200));
+    REQUIRE(chain.size() == 2);
+    CHECK(chain[0]["oop"].asString() == Json::hex(uint64_t(0x10100)).asString());
+    CHECK(chain[0]["isClass"].asBool());
+    CHECK(chain[0]["detail"].asString() == "Holder");
+    CHECK_FALSE(chain[1]["isClass"].asBool());
+    CHECK(webside::retainersJson(inspector, 0x10200) == "[]");
 }

@@ -96,6 +96,18 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
 void WebsideServer::setupRoutes() {
     webside::WebsideServer::setupRoutes();
 
+    // Why an object is still alive, the question behind every object that
+    // should have been collected and was not.
+    server.route("GET", "/retainers", [this](const HttpRequest& req) {
+        HttpResponse res;
+        Inspector* inspector = smalltalkInspector();
+        auto oop = req.params.find("oop");
+        res.body = isActive() && inspector && oop != req.params.end()
+            ? webside::retainersJson(*inspector, parseHexParam(oop->second))
+            : "[]";
+        return res;
+    });
+
     // The class of an object, without the object itself: a browser asks this
     // for every value it shows.
     server.route("GET", "/classoop", [this](const HttpRequest& req) {

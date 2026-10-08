@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HeapObject.h"
+#include "Tracer.h"
 #include "VMInspector.h"
 
 #include <map>
@@ -20,6 +21,14 @@ struct ClassEntry {
     std::string category;
     std::vector<std::string> instanceVariableNames;
     std::vector<std::string> classVariableNames;
+};
+
+/** A RetainerStep is one object on the chain that keeps another alive. **/
+struct RetainerStep {
+    uint64_t oop{0};
+    std::string className;
+    std::string detail;      // the class's name, or the object printed
+    bool isClass{false};     // a class in the class table
 };
 
 /** VM introspection shared by every Smalltalk dialect.
@@ -48,13 +57,23 @@ public:
     std::vector<std::string> subclassesOf(const std::string& name) const;
     std::vector<std::string> superclassesOf(const std::string& name) const;
 
+    /** Returns the chain that keeps `oop` alive, from the last class on the
+     *  way down from the roots to `oop` itself. Returns an empty chain when
+     *  `oop` cannot be reached or the VM cannot trace its heap. **/
+    std::vector<RetainerStep> retainersOf(uint64_t oop);
+
     Inspector* smalltalkView() override { return this; }
 
 protected:
+    /** Returns a tracer over the VM's heap, or null when the VM has none. **/
+    virtual std::unique_ptr<vmdbg::Tracer> makeTracer() { return nullptr; }
+
     void clearClasses() { classTable.clear(); }
     void addClass(ClassEntry entry) { classTable[entry.name] = std::move(entry); }
 
 private:
+    RetainerStep retainerStep(uint64_t oop) const;
+
     std::map<std::string, ClassEntry> classTable;
 };
 

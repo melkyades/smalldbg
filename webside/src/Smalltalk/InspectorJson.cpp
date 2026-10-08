@@ -22,6 +22,19 @@ std::string regionsJson(const smalltalk::Inspector& inspector) {
     return array.dump();
 }
 
+std::string retainersJson(smalltalk::Inspector& inspector, uint64_t oop) {
+    auto array = Json::array();
+    for (const auto& step : inspector.retainersOf(oop)) {
+        auto entry = Json::object()
+            .set("oop", Json::hex(step.oop))
+            .set("class", step.className)
+            .set("isClass", step.isClass);
+        if (!step.detail.empty()) entry.set("detail", step.detail);
+        array.add(std::move(entry));
+    }
+    return array.dump();
+}
+
 std::string inspectObjectJson(const smalltalk::Inspector& inspector,
                               uint64_t oop, int maxSlots) {
     auto object = inspector.objectFor(oop);

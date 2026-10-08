@@ -16,7 +16,8 @@ add_executable(webside_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smalltalk/Session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smalltalk/InspectorJson.cpp
 )
-target_include_directories(webside_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_include_directories(webside_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    ${PROJECT_SOURCE_DIR}/vmdbg/tests)
 target_link_libraries(webside_tests PRIVATE vmdbg httplib::httplib doctest::doctest)
 
 # The live frame-API test drives a real target process.

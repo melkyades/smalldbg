@@ -11,6 +11,7 @@ add_executable(vmdbg_tests
     test_frame_unwinder.cpp
     test_target_spec.cpp
     test_tracer.cpp
+    test_retainers.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 

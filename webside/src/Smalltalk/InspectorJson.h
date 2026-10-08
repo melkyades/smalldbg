@@ -11,6 +11,10 @@ namespace webside {
  *  start, end, size, objectMemory and code. **/
 std::string regionsJson(const smalltalk::Inspector& inspector);
 
+/** Returns the chain that keeps `oop` alive as a JSON array of objects with
+ *  oop, class, isClass and detail. **/
+std::string retainersJson(smalltalk::Inspector& inspector, uint64_t oop);
+
 /** Returns one object as JSON: its class, its print string, and its first
  *  `maxSlots` slots. **/
 std::string inspectObjectJson(const smalltalk::Inspector& inspector,

@@ -26,6 +26,35 @@ std::vector<std::string> Inspector::subclassesOf(const std::string& name) const 
     return found;
 }
 
+// The chain from the roots down starts the same way for every object; what
+// tells a reader why one is kept is the last class on the way, since a class
+// is where state outlives the objects that put it there.
+std::vector<RetainerStep> Inspector::retainersOf(uint64_t oop) {
+    std::vector<RetainerStep> chain;
+    auto tracer = makeTracer();
+    if (!tracer || !tracer->trace(true)) return chain;
+
+    std::vector<uint64_t> path = tracer->pathTo(oop);
+    size_t from = 0;
+    for (size_t i = 0; i < path.size(); i++)
+        if (classAt(path[i])) from = i;
+    for (size_t i = from; i < path.size(); i++)
+        chain.push_back(retainerStep(path[i]));
+    return chain;
+}
+
+RetainerStep Inspector::retainerStep(uint64_t oop) const {
+    RetainerStep step;
+    step.oop = oop;
+    const ClassEntry* named = classAt(oop);
+    step.isClass = named != nullptr;
+    auto object = objectFor(oop);
+    if (object) step.className = object->className();
+    if (named) step.detail = named->name;
+    else if (object) step.detail = object->printString();
+    return step;
+}
+
 // Walks up rather than down, so a broken link ends the chain instead of
 // looping: a class whose superclass is itself would otherwise never terminate.
 std::vector<std::string> Inspector::superclassesOf(const std::string& name) const {
