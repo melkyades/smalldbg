@@ -56,7 +56,10 @@ public:
     virtual std::string listSmalltalkFrames(int threadIndex) const = 0;
     virtual std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const = 0;
     virtual std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const = 0;
-    virtual std::string getSmalltalkStackContents(int threadIndex) const = 0;
+    /** Returns a green thread's stack slots, each placed relative to the
+     *  frame `selectedFrame`. **/
+    virtual std::string getSmalltalkStackContents(int threadIndex,
+                                                  int selectedFrame) const = 0;
     /// Registers for one green-thread frame. A dialect whose activations are
     /// not native frames has nothing to say here.
     virtual std::string getSmalltalkFrameRegisters(int, int) const { return "[]"; }

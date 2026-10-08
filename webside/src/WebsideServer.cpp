@@ -191,11 +191,10 @@ std::string WebsideServer::getFrameRegisters(int index) const {
     return session().getFrameRegisters(*frames[index - 1]);
 }
 
-std::string WebsideServer::stackDescriptors(int selectedIndex, uint64_t from,
-                                           int slots) const {
-    auto thread = session().vmThread();
-    if (!thread) return "[]";
-    auto* trace = thread->getStackTrace(256);
+std::string WebsideServer::stackDescriptors(smalldbg::Thread& thread,
+                                            int selectedIndex, uint64_t from,
+                                            int slots) const {
+    auto* trace = thread.getStackTrace(256);
     if (!trace) return "[]";
     return session().stackDescriptors(*trace, selectedIndex, from, slots);
 }
@@ -693,7 +692,16 @@ HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
         return res;
     }
 
-    return handleSmalltalkDebuggerRoute(segments, threadIndex, debuggerId);
+    // A green thread that is running has its current frames on the OS thread
+    // running it; what the VM saved for it is from when it last stopped.
+    if (segments.size() > 2) {
+        uint64_t runner = session().nativeThreadOf(threadIndex);
+        for (int i = 0; runner != 0 && i < nativeCount; i++)
+            if (threads[i]->getThreadId() == runner)
+                return handleNativeDebuggerRoute(segments, req, *threads[i], i + 1);
+    }
+
+    return handleSmalltalkDebuggerRoute(segments, req, threadIndex, debuggerId);
 }
 
 HttpResponse WebsideServer::handleNativeDebuggerRoute(
@@ -712,7 +720,8 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
     }
 
     if (segments[2] == "stack") {
-        res.body = stackDescriptors(static_cast<int>(param64(req, "frame", 1)),
+        res.body = stackDescriptors(thread,
+                                    static_cast<int>(param64(req, "frame", 1)),
                                     param64(req, "address"),
                                     static_cast<int>(param64(req, "count", 64)));
         return res;
@@ -762,8 +771,8 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
 }
 
 HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
-    const std::vector<std::string>& segments, int threadIndex,
-    int debuggerId) const {
+    const std::vector<std::string>& segments, const HttpRequest& req,
+    int threadIndex, int debuggerId) const {
     HttpResponse res;
 
     if (segments.size() == 2) {
@@ -777,7 +786,8 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
     }
 
     if (segments[2] == "stack") {
-        res.body = session().getSmalltalkStackContents(threadIndex);
+        res.body = session().getSmalltalkStackContents(
+            threadIndex, static_cast<int>(param64(req, "frame", 1)));
         return res;
     }
 

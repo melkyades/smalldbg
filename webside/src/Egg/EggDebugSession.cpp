@@ -838,7 +838,7 @@ std::string EggDebugSession::getSmalltalkFrameBindings(int threadIndex,
     return arr.dump();
 }
 
-std::string EggDebugSession::getSmalltalkStackContents(int threadIndex) const {
+std::string EggDebugSession::getSmalltalkStackContents(int threadIndex, int) const {
     if (threadIndex < 0 || threadIndex >= static_cast<int>(greenThreads.size()))
         return "[]";
     return eggStackContentsJson(*ownedInspector, greenThreads[threadIndex].state);

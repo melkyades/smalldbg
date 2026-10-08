@@ -4,6 +4,7 @@
 #include "StubSession.h"
 #include "WebsideServer.h"
 #include "Workspace.h"
+#include "smalldbg/Process.h"
 #include "smalldbg/Snapshot.h"
 #include "smalldbg/Thread.h"
 
@@ -43,6 +44,8 @@ struct TestServer : WebsideServer {
     using WebsideServer::frameWarning;
     using WebsideServer::warn;
     using WebsideServer::runControlResult;
+    using WebsideServer::stackDescriptors;
+    using WebsideServer::handleDebuggerRoute;
     using WebsideServer::nativeSymbolsData;
     using WebsideServer::nativeInspectData;
 
@@ -80,14 +83,26 @@ struct Served {
     TestServer server{workspace, 0};
 };
 
+// A live session with `greenThreads` green threads, which run on the OS
+// thread set in `runner`, or on none while it is 0.
+struct GreenSession : LiveSession {
+    int greenThreadCount() const override { return greenThreads; }
+    std::string getGreenThreadName(int) const override { return "green"; }
+    uint64_t nativeThreadOf(int) const override { return runner; }
+
+    int greenThreads{0};
+    uint64_t runner{0};
+};
+
 // A workspace with the test target launched and stopped, and a server over it.
 struct Launched {
-    Launched()
+    explicit Launched(std::vector<std::string> args = {})
         : workspace([](const TargetSpec&) {
-              return std::make_unique<LiveSession>();
+              return std::make_unique<GreenSession>();
           }) {
         TargetSpec target;
         target.path = WEBSIDE_TEST_TARGET;
+        target.args = std::move(args);
         REQUIRE(workspace.open(target));
         REQUIRE(debugger().waitForEvent(smalldbg::StopReason::None, 5000)
                 != smalldbg::StopReason::None);
@@ -264,4 +279,60 @@ TEST_CASE("a run-control answer forgets a refusal met while moving") {
     Json answer = Json::parse(served.server.runControlResult(true));
     CHECK(answer["success"].asBool());
     CHECK_FALSE(smalldbg::engineWasBusy());
+}
+
+TEST_CASE("a thread's stack is described from that thread's frames") {
+    Launched launched({"deep"});
+    launched.stopAtBreakHere();
+    auto current = launched.debugger().getCurrentThread();
+    std::shared_ptr<smalldbg::Thread> worker;
+    for (const auto& thread : launched.debugger().getProcess()->threads()) {
+        if (thread->getThreadId() == current->getThreadId()) continue;
+        for (const auto& frame : thread->getStackTrace(64)->getFrames())
+            if (frame->functionName == "deep_worker") worker = thread;
+    }
+    REQUIRE(worker.get() != nullptr);
+
+    smalldbg::Registers regs;
+    REQUIRE(launched.debugger().getRegisters(worker.get(), regs)
+            == smalldbg::Status::Ok);
+    Json slots = Json::parse(
+        launched.server.stackDescriptors(*worker, 1, regs.sp(), 16));
+    bool stackPointer = false;
+    for (const Json& slot : slots.elements())
+        stackPointer = stackPointer || slot["role"].asString() == "sp";
+    CHECK(stackPointer);
+}
+
+TEST_CASE("a running green thread's frames come from the OS thread running it") {
+    Launched launched;
+    launched.stopAtBreakHere();
+    auto& green = static_cast<GreenSession&>(*launched.workspace.session());
+    green.greenThreads = 1;
+    int greenId = static_cast<int>(
+        launched.debugger().getProcess()->threads().size()) + 1;
+    HttpRequest request;
+    request.method = "GET";
+    request.path = "/debuggers/" + std::to_string(greenId) + "/frames";
+
+    CHECK(launched.server.handleDebuggerRoute(request).body == "[]");
+
+    green.runner = launched.debugger().getCurrentThread()->getThreadId();
+    Json frames = Json::parse(launched.server.handleDebuggerRoute(request).body);
+    REQUIRE(frames.size() > 0);
+    CHECK(frames[0]["label"].asString().find("break_here") != std::string::npos);
+}
+
+TEST_CASE("a green thread's stack is placed relative to the frame selected") {
+    Launched launched;
+    auto& green = static_cast<GreenSession&>(*launched.workspace.session());
+    green.greenThreads = 1;
+    int greenId = static_cast<int>(
+        launched.debugger().getProcess()->threads().size()) + 1;
+    HttpRequest request;
+    request.method = "GET";
+    request.path = "/debuggers/" + std::to_string(greenId) + "/stack";
+    request.params["frame"] = "3";
+    launched.server.handleDebuggerRoute(request);
+    CHECK(green.lastSelectedFrame == 3);
 }

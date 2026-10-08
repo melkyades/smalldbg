@@ -50,9 +50,11 @@ protected:
     virtual std::string getFrameDetail(int index) const;
     virtual std::string getFrameBindings(int index) const;
     virtual std::string getFrameRegisters(int index) const;
-    /// What the addresses in [from, to) mean on the current stack. Contents
-    /// come from /memory; this says which frame owns a slot and what it holds.
-    virtual std::string stackDescriptors(int selectedIndex, uint64_t from,
+    /** Returns what `slots` stack slots from `from` are on the stack of
+     *  `thread`: the frame that owns each and the role it has there. The
+     *  slots' contents come from /memory. **/
+    virtual std::string stackDescriptors(smalldbg::Thread& thread,
+                                         int selectedIndex, uint64_t from,
                                          int slots) const;
 
     // ---- class / search data (delegate to the session) ----
@@ -112,8 +114,8 @@ protected:
         const std::vector<std::string>& segments, const HttpRequest& req,
         smalldbg::Thread& thread, int debuggerId) const;
     HttpResponse handleSmalltalkDebuggerRoute(
-        const std::vector<std::string>& segments, int threadIndex,
-        int debuggerId) const;
+        const std::vector<std::string>& segments, const HttpRequest& req,
+        int threadIndex, int debuggerId) const;
 
     // Native OS threads ordered with the primary thread first (id = index+1).
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;

@@ -42,7 +42,7 @@ public:
     std::string getSmalltalkFrameBindings(int, int) const override {
         return "[]";
     }
-    std::string getSmalltalkStackContents(int) const override {
+    std::string getSmalltalkStackContents(int, int) const override {
         return "[]";
     }
 

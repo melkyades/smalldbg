@@ -37,7 +37,10 @@ struct StubSession : WebsideSession {
     std::string listSmalltalkFrames(int) const override { return "[]"; }
     std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
     std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
-    std::string getSmalltalkStackContents(int) const override { return "[]"; }
+    std::string getSmalltalkStackContents(int, int frame) const override {
+        lastSelectedFrame = frame;
+        return "[]";
+    }
     bool discoverClasses() override { return false; }
     std::string listClasses(const std::string&, bool, bool, int) const override { return "[]"; }
     std::string getClass(const std::string&) const override { return "{}"; }
@@ -79,6 +82,7 @@ struct StubSession : WebsideSession {
         std::make_unique<StubInspector>()};
 
     std::map<uint64_t, std::string> applied;
+    mutable int lastSelectedFrame{0};
 };
 
 // A session that opens its target in the debugger, for tests that launch the
