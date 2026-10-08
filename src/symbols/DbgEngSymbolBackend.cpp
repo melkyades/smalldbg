@@ -257,6 +257,102 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolWithExtent(Address addr) {
     return sym;
 }
 
+// The engine's name for the module at `base`, which a type name carries so it
+// can be looked up again.
+static std::string moduleShortName(IDebugSymbols3* symbols, ULONG64 base) {
+    char buf[128] = {};
+    ULONG index = 0;
+    if (FAILED(symbols->GetModuleByOffset(base, 0, &index, nullptr))) return {};
+    if (FAILED(symbols->GetModuleNameString(DEBUG_MODNAME_MODULE, index, 0,
+                                            buf, sizeof(buf), nullptr)))
+        return {};
+    return buf;
+}
+
+std::optional<std::string> DbgEngSymbolBackend::getVariableTypeName(
+    const std::string& name) {
+    if (!symbols || name.empty()) return std::nullopt;
+
+    auto known = variableTypeCache.find(name);
+    if (known != variableTypeCache.end()) return known->second;
+
+    std::optional<std::string> answer = lookUpVariableTypeName(name);
+    variableTypeCache.emplace(name, answer);
+    return answer;
+}
+
+std::optional<std::string> DbgEngSymbolBackend::lookUpVariableTypeName(
+    const std::string& name) {
+    ULONG typeId = 0;
+    ULONG64 module = 0;
+    if (FAILED(symbols->GetSymbolTypeId(name.c_str(), &typeId, &module)))
+        return std::nullopt;
+
+    char typeName[512] = {};
+    if (FAILED(symbols->GetTypeName(module, typeId, typeName, sizeof(typeName),
+                                    nullptr)))
+        return std::nullopt;
+    if (!typeName[0]) return std::nullopt;
+
+    std::string shortName = moduleShortName(symbols, module);
+    return shortName.empty() ? std::string(typeName)
+                             : shortName + "!" + typeName;
+}
+
+const NativeTypeInfo* DbgEngSymbolBackend::getTypeByName(const std::string& name) {
+    auto known = typeCache.find(name);
+    if (known != typeCache.end())
+        return known->second ? &*known->second : nullptr;
+    if (!symbols || name.empty()) return nullptr;
+
+    ULONG typeId = 0;
+    ULONG64 module = 0;
+    if (FAILED(symbols->GetSymbolTypeId(name.c_str(), &typeId, &module))) {
+        typeCache.emplace(name, std::nullopt);
+        return nullptr;
+    }
+
+    NativeTypeInfo info;
+    info.name = name;
+
+    ULONG size = 0;
+    if (SUCCEEDED(symbols->GetTypeSize(module, typeId, &size))) info.size = size;
+
+    // The engine cannot say how many fields there are: ask for each in turn
+    // until there is no such index.
+    for (ULONG index = 0; index < 4096; ++index) {
+        char fieldName[512] = {};
+        if (FAILED(symbols->GetFieldName(module, typeId, index, fieldName,
+                                         sizeof(fieldName), nullptr)))
+            break;
+        if (!fieldName[0]) break;
+
+        NativeField field;
+        field.name = fieldName;
+
+        ULONG fieldTypeId = 0, offset = 0;
+        if (SUCCEEDED(symbols->GetFieldTypeAndOffset(module, typeId, fieldName,
+                                                     &fieldTypeId, &offset))) {
+            field.offset = offset;
+            ULONG fieldSize = 0;
+            if (SUCCEEDED(symbols->GetTypeSize(module, fieldTypeId, &fieldSize)))
+                field.size = fieldSize;
+            char fieldType[512] = {};
+            if (SUCCEEDED(symbols->GetTypeName(module, fieldTypeId, fieldType,
+                                               sizeof(fieldType), nullptr)))
+                field.typeName = fieldType;
+        }
+        info.fields.push_back(std::move(field));
+    }
+
+    // Only a type with fields is described; anything else is Unknown.
+    info.kind = info.fields.empty() ? NativeTypeKind::Unknown
+                                    : NativeTypeKind::Struct;
+
+    auto added = typeCache.emplace(name, std::move(info));
+    return &*added.first->second;
+}
+
 std::vector<std::string> DbgEngSymbolBackend::modulesWithSymbols() {
     std::vector<std::string> names;
     ULONG loaded = 0, unloaded = 0;

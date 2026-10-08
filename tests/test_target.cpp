@@ -18,6 +18,14 @@
 
 volatile int g_test_value = 42;
 
+// A global of a struct type, whose layout the native type tests read.
+struct TestRecord {
+    int id;
+    double weight;
+    const char* label;
+};
+TestRecord g_test_record = {7, 1.5, "record"};
+
 // Marked noinline: tests set a breakpoint on this function's own symbol
 // address, so the compiler must not fold it into its caller (it would
 // otherwise vanish under /O2, leaving the symbol address dead code).
@@ -43,6 +51,7 @@ static void workload_loop(int iterations) {
     for (int i = 0; i < iterations; ++i) {
         // touch global memory so tests can read/write it
         g_test_value += i;
+        g_test_record.id = i;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }

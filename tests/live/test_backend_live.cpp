@@ -270,6 +270,31 @@ TEST_CASE("an address inside a function is named, and its size given on request"
     dbg.detach();
 }
 
+TEST_CASE("a global's type and that type's fields come from the pdb") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    auto* symbols = dbg.getSymbolProvider();
+
+    auto typeName = symbols->getVariableTypeName("test_target!g_test_record");
+    REQUIRE(typeName.has_value());
+    CHECK(typeName->find("TestRecord") != std::string::npos);
+
+    const NativeTypeInfo* type = symbols->getTypeByName(*typeName);
+    REQUIRE(type != nullptr);
+    CHECK(type->kind == NativeTypeKind::Struct);
+    REQUIRE(type->fields.size() == 3);
+    CHECK(type->fields[0].name == "id");
+    CHECK(type->fields[1].name == "weight");
+    CHECK(type->fields[1].offset == 8);
+    CHECK(type->fields[2].name == "label");
+    CHECK(type->fields[2].offset == 16);
+
+    CHECK(symbols->getTypeByName("test_target!NoSuchType") == nullptr);
+    CHECK(symbols->getTypeByName("test_target!NoSuchType") == nullptr);
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);

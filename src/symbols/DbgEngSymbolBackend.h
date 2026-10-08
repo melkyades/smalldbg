@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <dbgeng.h>
 #include <set>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,16 @@ public:
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
     std::optional<Symbol> getSymbolByAddress(Address addr) override;
     std::optional<Symbol> getSymbolWithExtent(Address addr) override;
+
+    /** Returns the layout of the type named `name`, such as
+     *  "test_target!TestRecord", or null when the pdb has none. The name must
+     *  carry its module: a bare one gives the engine nowhere to look. The
+     *  result stays valid as long as the backend. **/
+    const NativeTypeInfo* getTypeByName(const std::string& name) override;
+
+    /** Returns the module-qualified name of the type the global `name` holds,
+     *  or nothing when the pdb does not say. **/
+    std::optional<std::string> getVariableTypeName(const std::string& name) override;
     void enumerateSymbols(const std::string& pattern, SymbolCallback callback) override;
 
     // Module enumeration
@@ -55,6 +66,13 @@ public:
     bool isInitialized() const override { return initialized; }
 
 private:
+    std::optional<std::string> lookUpVariableTypeName(const std::string& name);
+
+    // Each lookup searches the pdb, which takes seconds on a large one, so
+    // misses are remembered as well as hits.
+    std::map<std::string, std::optional<NativeTypeInfo>> typeCache;
+    std::map<std::string, std::optional<std::string>> variableTypeCache;
+
     void applySearchPath(const std::string& callerPath);
 
     /** The base and image file name of the module whose image or module name
