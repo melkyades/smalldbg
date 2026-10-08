@@ -63,6 +63,17 @@ Status TTDBackend::reverseStepOver(Thread* thread) {
     return Status::Ok;
 }
 
+// The engine has no execution status for this step, only its command, which
+// stops on the call instruction that entered the frame.
+Status TTDBackend::reverseStepOut(Thread* thread) {
+    if (!attached) return Status::NotAttached;
+
+    requestStepCommand("g-u", *thread);
+
+    if (log) log("(dbgeng) reverseStepOut requested");
+    return Status::Ok;
+}
+
 Status TTDBackend::reverseResume() {
     if (!attached) return Status::NotAttached;
 

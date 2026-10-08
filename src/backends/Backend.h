@@ -40,6 +40,7 @@ public:
     virtual Status openTrace(const std::string& tracePath) { (void)tracePath; return Status::NotSupported; }
     virtual Status stepBack(Thread* thread) { (void)thread; return Status::NotSupported; }
     virtual Status reverseStepOver(Thread* thread) { (void)thread; return Status::NotSupported; }
+    virtual Status reverseStepOut(Thread* thread) { (void)thread; return Status::NotSupported; }
     virtual Status reverseResume() { return Status::NotSupported; }
     virtual bool isTTDTrace() const { return false; }
 

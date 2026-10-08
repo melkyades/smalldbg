@@ -60,6 +60,8 @@ public:
     Status stepBack();              // Step backwards on the current thread
     Status stepBack(Thread* thread); // Step backwards on specific thread
     Status reverseStepOver(Thread* thread); // Step backwards over calls on specific thread
+    // Steps backwards out of the current frame, to the call that entered it.
+    Status reverseStepOut(Thread* thread);
     Status reverseResume();         // Run backwards until breakpoint/start
     bool isTTDTrace() const;        // Check if we're replaying a TTD trace
 

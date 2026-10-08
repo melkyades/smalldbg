@@ -607,6 +607,15 @@ void DbgEngBackend::requestStep(ULONG execStatus, Thread& thread) {
     cv.notify_all();
 }
 
+void DbgEngBackend::requestStepCommand(const std::string& command,
+                                       Thread& thread) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        pendingCommand = command;
+    }
+    requestStep(DEBUG_STATUS_GO, thread);
+}
+
 void DbgEngBackend::requestResume(ULONG execStatus) {
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -1644,19 +1653,22 @@ void DbgEngBackend::selectThreadOnEngine(Thread& thread) const {
 
 bool DbgEngBackend::beginExecution(ULONG& execStatus) {
     DWORD stepTid = 0;
+    std::string command;
     {
         std::lock_guard<std::mutex> lock(mutex);
         execStatus = pendingExecStatus ? pendingExecStatus : DEBUG_STATUS_GO;
         stepTid = stepThreadId;
         stepRequested = false;
         pendingExecStatus = 0;
+        command.swap(pendingCommand);
     }
 
     // Remember PC before stepping (for TTD end-of-trace detection).
     bool isStep = (execStatus == DEBUG_STATUS_STEP_INTO ||
                    execStatus == DEBUG_STATUS_STEP_OVER ||
                    execStatus == DEBUG_STATUS_REVERSE_STEP_INTO ||
-                   execStatus == DEBUG_STATUS_REVERSE_STEP_OVER);
+                   execStatus == DEBUG_STATUS_REVERSE_STEP_OVER ||
+                   !command.empty());
     stepPending = isStep;
     if (isStep) {
         effectiveTypeSync->sync(control, log);
@@ -1671,10 +1683,22 @@ bool DbgEngBackend::beginExecution(ULONG& execStatus) {
         if (SUCCEEDED(hr)) sysObjects->SetCurrentThreadId(engineId);
     }
 
+    if (!command.empty()) return startWithCommand(command);
     HRESULT hr = control->SetExecutionStatus(execStatus);
     if (FAILED(hr)) {
         if (log) log("(dbgeng) SetExecutionStatus(" + std::to_string(execStatus)
                      + ") failed hr=" + toHex((unsigned long)hr));
+        return false;
+    }
+    return true;
+}
+
+bool DbgEngBackend::startWithCommand(const std::string& command) {
+    HRESULT hr = control->Execute(DEBUG_OUTCTL_IGNORE, command.c_str(),
+                                  DEBUG_EXECUTE_NOT_LOGGED);
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) " + command + " failed hr="
+                     + toHex((unsigned long)hr));
         return false;
     }
     return true;

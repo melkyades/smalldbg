@@ -63,7 +63,6 @@ public:
     bool stepOut();
     bool stepBack();
     bool reverseStepOver();
-    /** Returns false: stepping backwards out of a frame is not supported. **/
     bool reverseStepOut();
     /** Steps over the call in frame `frameIndex`; by default, in the current
      *  frame. **/

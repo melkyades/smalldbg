@@ -143,6 +143,11 @@ Status Debugger::reverseStepOver(Thread* thread) {
     return backend->reverseStepOver(thread);
 }
 
+Status Debugger::reverseStepOut(Thread* thread) {
+    targetMoved();
+    return backend->reverseStepOut(thread);
+}
+
 Status Debugger::reverseResume() {
     targetMoved();
     return backend->reverseResume();

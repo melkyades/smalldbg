@@ -179,7 +179,14 @@ bool VMSession::reverseStepOver() {
     return ok;
 }
 
-bool VMSession::reverseStepOut() { return false; }
+bool VMSession::reverseStepOut() {
+    auto thread = debugger().getCurrentThread();
+    if (!thread) return false;
+    beforeTargetRuns();
+    bool ok = debugger().reverseStepOut(thread.get()) == smalldbg::Status::Ok;
+    afterTargetStops();
+    return ok;
+}
 
 bool VMSession::stepOver(int /*frameIndex*/) { return stepOver(); }
 bool VMSession::runToAddress(uint64_t /*address*/) { return false; }

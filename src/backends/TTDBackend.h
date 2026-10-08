@@ -19,6 +19,7 @@ public:
     Status openTrace(const std::string& tracePath) override;
     Status stepBack(Thread* thread) override;
     Status reverseStepOver(Thread* thread) override;
+    Status reverseStepOut(Thread* thread) override;
     Status reverseResume() override;
     bool isTTDTrace() const override { return true; }
 

@@ -147,6 +147,9 @@ protected:
     // requestStep pins the thread it applies to; requestResume runs them all.
     void requestStep(ULONG execStatus, Thread& thread);
     void requestResume(ULONG execStatus);
+    // Asks the event loop to step `thread` with an engine command, for a step
+    // that has no execution status of its own.
+    void requestStepCommand(const std::string& command, Thread& thread);
 
     // Make `thread` the engine's current thread. Must run on the engine thread;
     // selectThreadOnEngine() is the version callable from anywhere.
@@ -212,6 +215,7 @@ protected:
     // Sets the execution status on the engine. Returns false when the engine
     // refuses it.
     bool beginExecution(ULONG& execStatus);
+    bool startWithCommand(const std::string& command);
     void pumpEvents(ULONG execStatus);       // inner WaitForEvent pump
     enum class EventAction { Continue, Stop, EndOfTrace, SessionEnded };
     EventAction handleDebugEvent(ULONG execStatus, ULONG64 pc);  // classify & act on one event
@@ -282,6 +286,7 @@ protected:
     bool stepRequested    = false;
     DWORD stepThreadId    = 0;
     ULONG pendingExecStatus = 0;              // execution status for event loop (e.g. DEBUG_STATUS_GO)
+    std::string pendingCommand;      // runs instead of pendingExecStatus
     ULONG pendingContinueStatus = 0; // non-zero → auto-continue exception
     Address lastStepPC = 0;          // PC before last step (for TTD breakpoint skip)
     bool stepPending = false;         // true while a step is being executed
