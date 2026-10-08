@@ -117,6 +117,11 @@ protected:
 
     // Native OS threads ordered with the primary thread first (id = index+1).
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;
+    /** Returns why the frames of `thread` cannot be trusted, or an empty text
+     *  when they can. The server sends it in a header, so that the frames
+     *  keep their Webside shape. **/
+    std::string frameWarning(smalldbg::Thread& thread) const;
+    static void warn(HttpResponse& res, const std::string& warning);
     /** Returns the id of the OS thread the VM runs on, or 0 when it cannot be
      *  found. **/
     smalldbg::ThreadId vmThreadId() const;

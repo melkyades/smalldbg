@@ -43,6 +43,22 @@ static HttpResponse refusal(int code, const char* status, const char* message) {
     return response;
 }
 
+// On a replay, a thread that was not running at this position has no
+// registers, so its stack is unknown rather than empty.
+std::string WebsideServer::frameWarning(smalldbg::Thread& thread) const {
+    smalldbg::Registers regs;
+    if (session().debugger().getRegisters(&thread, regs) != smalldbg::Status::Ok)
+        return "registers for this thread could not be read";
+    if (regs.sp() == 0)
+        return "this thread has no register context here; it was not running "
+               "at this position";
+    return {};
+}
+
+void WebsideServer::warn(HttpResponse& res, const std::string& warning) {
+    if (!warning.empty()) res.headers["X-Webside-Warning"] = warning;
+}
+
 // A listing asks this once rather than once per thread, since answering it
 // may walk every thread the target has.
 smalldbg::ThreadId WebsideServer::vmThreadId() const {
@@ -660,6 +676,7 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
             res.body = session().listFrames(thread);
+            warn(res, frameWarning(thread));
             return res;
         }
         std::string sub = segments.size() > 4 ? segments[4] : "";
@@ -1493,6 +1510,8 @@ void WebsideServer::setupBaseRoutes() {
         HttpResponse res;
         if (isActive()) {
             res.body = listFrames();
+            auto walked = session().vmThread();
+            if (walked) warn(res, frameWarning(*walked));
         } else {
             res.statusCode = 404;
             res.body = Json::object().set("error", "Debugger not found").dump();

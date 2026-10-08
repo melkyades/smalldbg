@@ -5,6 +5,7 @@
 #include "WebsideServer.h"
 #include "Workspace.h"
 #include "smalldbg/Snapshot.h"
+#include "smalldbg/Thread.h"
 
 #include <memory>
 #include <vector>
@@ -39,6 +40,8 @@ struct TestServer : WebsideServer {
     using WebsideServer::handleRunTo;
     using WebsideServer::threadListJson;
     using WebsideServer::debuggerListJson;
+    using WebsideServer::frameWarning;
+    using WebsideServer::warn;
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
@@ -218,4 +221,18 @@ TEST_CASE("/threads names each thread and marks the VM's as main") {
     CHECK(debuggers.size() >= threads.size());
 
     debugger.detach();
+}
+
+TEST_CASE("frames that cannot be trusted come with a warning header") {
+    Served served(sample());
+    smalldbg::Thread thread(nullptr, 1);
+    std::string warning = served.server.frameWarning(thread);
+    CHECK(warning == "registers for this thread could not be read");
+
+    HttpResponse response;
+    TestServer::warn(response, warning);
+    CHECK(response.headers["X-Webside-Warning"] == warning);
+    HttpResponse quiet;
+    TestServer::warn(quiet, "");
+    CHECK(quiet.headers.empty());
 }
