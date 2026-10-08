@@ -202,3 +202,21 @@ TEST_CASE("stepping backwards out of a frame stops on the call that entered it")
 
     dbg.detach();
 }
+
+TEST_CASE("a replay runs backwards to an address it executed before") {
+    Debugger dbg(Mode::External, X64::instance(), Debuggee::Trace);
+    if (!openAtBreakHere(dbg)) return;
+
+    Registers atEntry;
+    REQUIRE(dbg.getRegisters(atEntry) == Status::Ok);
+    Address returnAddress = 0;
+    REQUIRE(dbg.readMemory(atEntry.sp(), &returnAddress, 8) == Status::Ok);
+
+    REQUIRE(dbg.runTo(returnAddress, 30000) == Status::Ok);
+    REQUIRE(dbg.reverseRunTo(atEntry.ip(), 30000) == Status::Ok);
+    Registers regs;
+    REQUIRE(dbg.getRegisters(regs) == Status::Ok);
+    CHECK(regs.ip() == atEntry.ip());
+
+    dbg.detach();
+}

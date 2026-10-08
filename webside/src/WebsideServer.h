@@ -143,6 +143,10 @@ protected:
                                      const std::string& subRoute,
                                      const std::vector<std::string>& segments) const;
 
+    /** Runs the debugger's thread to the address in the request body,
+     *  forwards or backwards. **/
+    HttpResponse handleRunTo(const HttpRequest& req, bool backwards);
+
     // ---- hook for subclass-specific routes ----
     virtual void setupRoutes();
 

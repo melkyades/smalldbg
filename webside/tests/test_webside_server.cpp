@@ -36,6 +36,7 @@ struct TestServer : WebsideServer {
     using WebsideServer::WebsideServer;
     using WebsideServer::handleMemory;
     using WebsideServer::handleLoadModuleSymbols;
+    using WebsideServer::handleRunTo;
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
@@ -150,4 +151,36 @@ TEST_CASE("loading a module's symbols reports them, and the workspace keeps it")
     CHECK(missing.statusCode == 404);
 
     live.debugger().detach();
+}
+
+TEST_CASE("a debugger runs its thread to the address it is given") {
+    Workspace workspace([](const TargetSpec&) {
+        return std::make_unique<LiveSession>();
+    });
+    TargetSpec target;
+    target.path = WEBSIDE_TEST_TARGET;
+    REQUIRE(workspace.open(target));
+    auto& debugger = workspace.session()->debugger();
+    REQUIRE(debugger.waitForEvent(smalldbg::StopReason::None, 5000)
+            != smalldbg::StopReason::None);
+    auto breakHere = debugger.getSymbolProvider()->getSymbolByName(
+        "test_target!break_here");
+    REQUIRE(breakHere.has_value());
+    TestServer server{workspace, 0};
+
+    HttpRequest request;
+    request.method = "POST";
+    request.path = "/debuggers/1/runto";
+    request.body = Json::object()
+        .set("address", Json::hex(breakHere->address)).dump();
+    Json answer = Json::parse(server.handleRunTo(request, false).body);
+    CHECK(answer["success"].asBool());
+    smalldbg::Registers regs;
+    REQUIRE(debugger.getRegisters(regs) == smalldbg::Status::Ok);
+    CHECK(regs.ip() == breakHere->address);
+
+    request.body = "{}";
+    CHECK(server.handleRunTo(request, false).statusCode == 400);
+
+    debugger.detach();
 }

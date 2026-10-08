@@ -189,8 +189,24 @@ bool VMSession::reverseStepOut() {
 }
 
 bool VMSession::stepOver(int /*frameIndex*/) { return stepOver(); }
-bool VMSession::runToAddress(uint64_t /*address*/) { return false; }
-bool VMSession::reverseRunToAddress(uint64_t /*address*/) { return false; }
+// How long a run to an address may take before the target is suspended.
+static constexpr int kRunToTimeoutMs = 30000;
+
+bool VMSession::runToAddress(uint64_t address) {
+    beforeTargetRuns();
+    bool reached = debugger().runTo(address, kRunToTimeoutMs)
+                   == smalldbg::Status::Ok;
+    afterTargetStops();
+    return reached;
+}
+
+bool VMSession::reverseRunToAddress(uint64_t address) {
+    beforeTargetRuns();
+    bool reached = debugger().reverseRunTo(address, kRunToTimeoutMs)
+                   == smalldbg::Status::Ok;
+    afterTargetStops();
+    return reached;
+}
 
 bool VMSession::setBreakpoint(uint64_t address, const std::string& name) {
     return debugger().setBreakpoint(address, name) == smalldbg::Status::Ok;

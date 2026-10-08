@@ -328,6 +328,32 @@ TEST_CASE("an address inside a global struct is named by its field") {
     dbg.detach();
 }
 
+TEST_CASE("running to an address stops there and keeps the user's breakpoints") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+    auto breakHere = dbg.getSymbolProvider()->getSymbolByName(
+        "test_target!break_here");
+    REQUIRE(breakHere.has_value());
+
+    REQUIRE(dbg.runTo(breakHere->address, 30000) == Status::Ok);
+    Registers regs;
+    REQUIRE(dbg.getRegisters(regs) == Status::Ok);
+    CHECK(regs.ip() == breakHere->address);
+    CHECK(dbg.listBreakpoints().empty());
+
+    // At a function's first instruction the stack pointer points at the
+    // return address.
+    Address returnAddress = 0;
+    REQUIRE(dbg.readMemory(regs.sp(), &returnAddress,
+                           dbg.arch()->pointerSize()) == Status::Ok);
+    REQUIRE(dbg.setBreakpoint(returnAddress, "mine") == Status::Ok);
+    REQUIRE(dbg.runTo(returnAddress, 30000) == Status::Ok);
+    REQUIRE(dbg.listBreakpoints().size() == 1);
+    CHECK(dbg.listBreakpoints()[0].addr == returnAddress);
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);

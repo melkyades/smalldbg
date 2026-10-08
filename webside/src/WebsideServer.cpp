@@ -555,6 +555,31 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
 // /debuggers routes
 // =========================================================================
 
+HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) {
+    HttpResponse res;
+    auto segments = splitPath(req.path);
+    int debuggerId = 0;
+    try { debuggerId = std::stoi(segments[1]); } catch (...) {}
+    auto threads = nativeThreads();
+    if (debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
+        session().debugger().setCurrentThread(threads[debuggerId - 1]);
+
+    auto body = Json::parse(req.body);
+    uint64_t address = 0;
+    if (body["address"].isNumber()) address = body["address"].asUInt();
+    else address = parseHexParam(body["address"].asString());
+    if (address == 0) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "address required").dump();
+        return res;
+    }
+
+    bool reached = backwards ? session().reverseRunToAddress(address)
+                             : session().runToAddress(address);
+    res.body = Json::object().set("success", reached).dump();
+    return res;
+}
+
 // Primary first, so the id a client remembers stays the main thread.
 std::vector<std::shared_ptr<smalldbg::Thread>>
 WebsideServer::nativeThreads() const {
@@ -1165,6 +1190,12 @@ void WebsideServer::setupRoutes() {
             res.body = Json::object().set("success", true).dump();
             return res;
         }
+
+        if (segments.size() >= 3 && segments[2] == "runto")
+            return handleRunTo(req, false);
+
+        if (segments.size() >= 3 && segments[2] == "reverserunto")
+            return handleRunTo(req, true);
 
         if (segments.size() >= 5 && segments[2] == "frames") {
             std::string action = segments[4];

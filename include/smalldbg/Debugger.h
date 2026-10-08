@@ -52,6 +52,12 @@ public:
     Status stepOver(Thread* thread);
     Status stepOut();
     Status stepOut(Thread* thread);
+
+    /** Runs the target until it reaches `address`, waiting at most `timeoutMs`
+     *  (-1 waits for good), and suspends it when it does not get there in
+     *  time. A breakpoint already set at `address` stays. Returns NotFound
+     *  when the target stopped elsewhere or had to be suspended. **/
+    Status runTo(Address address, int timeoutMs);
     
     // --- Reverse debugging (TTD) ---
     // Open a TTD trace file (.run). Returns NotSupported unless the Debugger
@@ -63,6 +69,9 @@ public:
     // Steps backwards out of the current frame, to the call that entered it.
     Status reverseStepOut(Thread* thread);
     Status reverseResume();         // Run backwards until breakpoint/start
+    /** Runs a replay backwards until it reaches `address`, the way runTo runs
+     *  forwards. Returns NotSupported unless the target is a replay. **/
+    Status reverseRunTo(Address address, int timeoutMs);
     bool isTTDTrace() const;        // Check if we're replaying a TTD trace
 
     // --- Post-mortem crash-dump loading ---
@@ -159,6 +168,10 @@ public:
 private:
     // Called by everything that may move the target.
     void targetMoved() const { targetVersion++; }
+
+    Status runToWith(Address address, int timeoutMs,
+                     const std::function<Status()>& run);
+    Status awaitArrival(Address address, int timeoutMs);
 
     Backend *backend; // pointer to backend implementation
     std::shared_ptr<Thread> selectedThread; // current thread

@@ -34,14 +34,7 @@ Status Backend::runToFrameReturn(Thread* thread, size_t depth) {
 }
 
 Status Backend::runTo(Address address) {
-    if (setBreakpoint(address, "__step_tmp") != Status::Ok)
-        return Status::Error;
-
-    Status status = resume();
-    if (status == Status::Ok)
-        waitForEvent(StopReason::None, -1);
-    clearBreakpoint(address);
-    return status;
+    return debugger->runTo(address, -1);
 }
 
 } // namespace smalldbg

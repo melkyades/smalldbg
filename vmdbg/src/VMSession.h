@@ -67,11 +67,13 @@ public:
     /** Steps over the call in frame `frameIndex`; by default, in the current
      *  frame. **/
     virtual bool stepOver(int frameIndex);
-    /** Runs until `address` is reached. Returns false by default. **/
-    virtual bool runToAddress(uint64_t address);
-    /** Runs backwards until `address` is reached, on a replay. Returns false
-     *  by default. **/
-    virtual bool reverseRunToAddress(uint64_t address);
+    /** Runs the target until it reaches `address`. Returns false when it
+     *  stopped elsewhere or did not get there in time. **/
+    bool runToAddress(uint64_t address);
+    /** Runs a replay backwards until it reaches `address`. Returns false
+     *  when it stopped elsewhere, did not get there in time, or the target is
+     *  not a replay. **/
+    bool reverseRunToAddress(uint64_t address);
 
     // ---- breakpoints -------------------------------------------------------
     virtual bool setBreakpoint(uint64_t address, const std::string& name = "");

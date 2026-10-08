@@ -111,6 +111,49 @@ Status Debugger::stepOut(Thread* thread) {
     return backend->stepOut(thread);
 }
 
+// How long the suspend that ends a run-to waits for the target to halt.
+static constexpr int kHaltWaitMs = 5000;
+
+Status Debugger::runTo(Address address, int timeoutMs) {
+    return runToWith(address, timeoutMs, [this] { return resume(); });
+}
+
+Status Debugger::reverseRunTo(Address address, int timeoutMs) {
+    if (!isTTDTrace()) return Status::NotSupported;
+    return runToWith(address, timeoutMs, [this] { return reverseResume(); });
+}
+
+// A breakpoint the user set at `address` is theirs, so only one set here for
+// the run is cleared again.
+Status Debugger::runToWith(Address address, int timeoutMs,
+                           const std::function<Status()>& run) {
+    if (!isStopped()) return Status::Busy;
+    bool ours = true;
+    for (const auto& breakpoint : listBreakpoints())
+        if (breakpoint.addr == address) ours = false;
+    if (ours && setBreakpoint(address, "run to") != Status::Ok)
+        return Status::Error;
+
+    Status status = run();
+    if (status == Status::Ok) status = awaitArrival(address, timeoutMs);
+    if (ours) clearBreakpoint(address);
+    return status;
+}
+
+// Any stop ends the wait: one at another breakpoint or on an exception is
+// where the run ended, and waiting on would never return.
+Status Debugger::awaitArrival(Address address, int timeoutMs) {
+    StopReason reason = waitForEvent(StopReason::None, timeoutMs);
+    if (reason == StopReason::None) {
+        suspend();
+        waitForEvent(StopReason::None, kHaltWaitMs);
+        return Status::NotFound;
+    }
+    bool arrived = reason == StopReason::Breakpoint
+                   && getStopAddress() == address;
+    return arrived ? Status::Ok : Status::NotFound;
+}
+
 Status Debugger::suspend() {
     targetMoved();
     return backend->suspend();
