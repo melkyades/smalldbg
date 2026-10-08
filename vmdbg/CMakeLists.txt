@@ -9,6 +9,7 @@
 # layer above: what those bytes mean to the runtime that wrote them.
 
 set(VMDBG_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Target.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/VMSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/VMInspector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AddressTable.cpp

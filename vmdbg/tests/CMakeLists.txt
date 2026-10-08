@@ -9,6 +9,7 @@ add_executable(vmdbg_tests
     test_address_table.cpp
     test_method_parser.cpp
     test_frame_unwinder.cpp
+    test_target_spec.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 
