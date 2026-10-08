@@ -43,6 +43,7 @@ std::string SymbolProvider::searchPath() const {
 
 bool SymbolProvider::loadModuleSymbols(const std::string& module,
                                        SymbolMatch match) {
+    fieldWindow = {};
     for (auto& backend : backends)
         if (backend->loadModuleSymbols(module, match)) return true;
     return false;
@@ -182,6 +183,65 @@ std::optional<std::string> SymbolProvider::getVariableTypeName(const std::string
         if (result) return result;
     }
     return std::nullopt;
+}
+
+// The number of wrappers is bounded, so a type that names itself ends.
+const NativeTypeInfo* SymbolProvider::getStructType(const std::string& typeName) {
+    const NativeTypeInfo* info = getTypeByName(typeName);
+    for (int depth = 0; info && depth < 20; depth++) {
+        if (info->kind == NativeTypeKind::Struct ||
+            info->kind == NativeTypeKind::Class ||
+            info->kind == NativeTypeKind::Union)
+            return info;
+        if (info->targetTypeName.empty()) return nullptr;
+        info = getTypeByName(info->targetTypeName);
+    }
+    return nullptr;
+}
+
+std::optional<NativeFieldAt> SymbolProvider::getFieldAt(Address address) {
+    if (address < fieldWindow.start || address >= fieldWindow.end)
+        findFieldOwner(address);
+    const NativeTypeInfo* owner = fieldWindow.owner;
+    if (!owner) return std::nullopt;
+
+    uint64_t offset = address - fieldWindow.ownerStart;
+    if (offset >= owner->size) return std::nullopt;
+    for (const auto& field : owner->fields) {
+        if (offset < field.offset) continue;
+        if (field.size && offset >= field.offset + field.size) continue;
+        return NativeFieldAt{field.name, field.typeName, owner->name,
+                             fieldWindow.ownerStart + field.offset, field.size};
+    }
+    return std::nullopt;
+}
+
+// The window is kept whether or not a struct covers it, so that a stretch of
+// memory with no type costs one search rather than one per word.
+void SymbolProvider::findFieldOwner(Address address) {
+    fieldWindow = {};
+    auto symbol = getSymbolByAddress(address);
+    if (!symbol) return;
+    if (symbol->address > address) {
+        fieldWindow.start = address;
+        fieldWindow.end = symbol->address;
+        return;
+    }
+
+    fieldWindow.start = symbol->address;
+    fieldWindow.end = std::max(symbol->address + (symbol->size ? symbol->size : 1),
+                               address + 1);
+
+    std::string qualified = symbol->moduleName.empty()
+        ? symbol->name : symbol->moduleName + "!" + symbol->name;
+    auto typeName = getVariableTypeName(qualified);
+    if (!typeName) return;
+    const NativeTypeInfo* info = getStructType(*typeName);
+    if (!info || info->size == 0) return;
+
+    fieldWindow.ownerStart = symbol->address;
+    fieldWindow.owner = info;
+    fieldWindow.end = std::max(fieldWindow.end, symbol->address + info->size);
 }
 
 } // namespace smalldbg

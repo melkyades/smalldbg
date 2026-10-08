@@ -295,6 +295,39 @@ TEST_CASE("a global's type and that type's fields come from the pdb") {
     dbg.detach();
 }
 
+TEST_CASE("an address inside a global struct is named by its field") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg);
+    auto* symbols = dbg.getSymbolProvider();
+
+    auto record = symbols->getSymbolByName("test_target!g_test_record");
+    REQUIRE(record.has_value());
+
+    auto weight = symbols->getFieldAt(record->address + 8);
+    REQUIRE(weight.has_value());
+    CHECK(weight->name == "weight");
+    CHECK(weight->start == record->address + 8);
+    CHECK(weight->size == 8);
+    CHECK(weight->owner.find("TestRecord") != std::string::npos);
+
+    auto inside = symbols->getFieldAt(record->address + 12);
+    REQUIRE(inside.has_value());
+    CHECK(inside->name == "weight");
+    CHECK(symbols->getFieldAt(record->address + 16)->name == "label");
+    CHECK(symbols->getFieldAt(record->address)->name == "id");
+
+    auto breakHere = symbols->getSymbolByName("test_target!break_here");
+    REQUIRE(breakHere.has_value());
+    CHECK_FALSE(symbols->getFieldAt(breakHere->address).has_value());
+
+    auto typeName = symbols->getVariableTypeName("test_target!g_test_record");
+    REQUIRE(typeName.has_value());
+    CHECK(symbols->getStructType(*typeName) != nullptr);
+    CHECK(symbols->getStructType("test_target!NoSuchType") == nullptr);
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);

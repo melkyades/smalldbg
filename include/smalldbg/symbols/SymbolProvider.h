@@ -62,6 +62,16 @@ struct NativeTypeInfo {
     std::string targetTypeName;          // for pointer/reference/typedef/const/volatile
 };
 
+/** A NativeFieldAt names the field of a global struct variable that covers an
+ *  address. **/
+struct NativeFieldAt {
+    std::string name;      // "segStart"
+    std::string typeName;  // "unsigned long *"
+    std::string owner;     // the struct's type
+    uint64_t start{0};
+    uint64_t size{0};
+};
+
 // Options for symbol loading
 struct SymbolOptions {
     std::string cacheDirectory = "C:\\Symbols";  // Where to cache downloaded symbols
@@ -125,6 +135,15 @@ public:
     const NativeTypeInfo* getTypeByName(const std::string& name);
     std::optional<std::string> getVariableTypeName(const std::string& name);
 
+    /** Returns the struct, class or union `typeName` names, looking through
+     *  pointers, typedefs and qualifiers, or null when it names none. The type
+     *  stays valid while the provider lives. **/
+    const NativeTypeInfo* getStructType(const std::string& typeName);
+
+    /** Returns the field of a global struct variable that covers `address`, or
+     *  nothing when no global struct covers it. **/
+    std::optional<NativeFieldAt> getFieldAt(Address address);
+
     // Everything known about an address ends up here, whichever producer
     // found it, so a caller asks once instead of merging answers itself.
     SymbolDatabase& database() { return symbolDatabase; }
@@ -141,6 +160,21 @@ private:
 
     /** A database entry as a Symbol. **/
     Symbol symbolFor(const SymbolicInfo& info) const;
+
+    /** Sets fieldWindow to the stretch around `address` that one global
+     *  covers, or that no global covers. **/
+    void findFieldOwner(Address address);
+
+    // The addresses the last getFieldAt answer holds for, and the struct that
+    // covers them, if any. A listing asks about each word of a struct in turn,
+    // and each new answer costs a symbol file search.
+    struct FieldWindow {
+        Address start{0};
+        Address end{0};
+        Address ownerStart{0};
+        const NativeTypeInfo* owner{nullptr};
+    };
+    FieldWindow fieldWindow;
 
     Backend* backend;
     std::vector<std::unique_ptr<SymbolBackend>> backends;

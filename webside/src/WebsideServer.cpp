@@ -359,27 +359,6 @@ static Json fieldsToJson(const std::vector<smalldbg::NativeField>& fields) {
     return arr;
 }
 
-// Resolve a type through pointer/typedef/const/volatile wrappers
-// to find the underlying struct/class type with fields.
-static const smalldbg::NativeTypeInfo* resolveToStruct(
-    const std::string& typeName, smalldbg::SymbolProvider* provider) {
-    auto* info = provider->getTypeByName(typeName);
-    if (!info) return nullptr;
-
-    int depth = 0;
-    while (info && depth < 20) {
-        if (info->kind == smalldbg::NativeTypeKind::Struct ||
-            info->kind == smalldbg::NativeTypeKind::Class ||
-            info->kind == smalldbg::NativeTypeKind::Union) {
-            return info;
-        }
-        if (info->targetTypeName.empty()) return nullptr;
-        info = provider->getTypeByName(info->targetTypeName);
-        depth++;
-    }
-    return nullptr;
-}
-
 std::string WebsideServer::nativeInspectData(const std::string& expression) const {
     auto* provider = session().debugger().getSymbolProvider();
     auto process = session().debugger().getProcess();
@@ -405,7 +384,7 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
             currentAddr = ptrVal;
         }
 
-        auto* structInfo = resolveToStruct(currentTypeName, provider);
+        auto* structInfo = provider->getStructType(currentTypeName);
         if (!structInfo) return "{}";
 
         const smalldbg::NativeField* field = nullptr;
@@ -429,7 +408,7 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
     process->readMemory(currentAddr, &rawValue, readSize);
 
     std::vector<smalldbg::NativeField> visibleFields;
-    auto* structInfo = resolveToStruct(currentTypeName, provider);
+    auto* structInfo = provider->getStructType(currentTypeName);
     if (structInfo)
         visibleFields = structInfo->fields;
 
