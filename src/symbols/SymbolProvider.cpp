@@ -3,6 +3,8 @@
 #include "backends/Backend.h"
 #include "ModuleKey.h"
 
+#include <algorithm>
+
 namespace smalldbg {
 
 SymbolProvider::SymbolProvider(Backend* be) 
@@ -54,6 +56,12 @@ ModuleInfo SymbolProvider::moduleNamed(const std::string& module) {
     return {};
 }
 
+void SymbolProvider::preferModule(const std::string& module) {
+    if (std::find(preferredModules.begin(), preferredModules.end(), module)
+        == preferredModules.end())
+        preferredModules.push_back(module);
+}
+
 void SymbolProvider::shutdown() {
     // Shutdown all backends
     for (auto& backend : backends) {
@@ -62,6 +70,12 @@ void SymbolProvider::shutdown() {
 }
 
 std::optional<Symbol> SymbolProvider::getSymbolByName(const std::string& name) {
+    if (name.find('!') == std::string::npos)
+        for (const auto& module : preferredModules)
+            for (auto& backend : backends)
+                if (auto result = backend->getSymbolByName(module + "!" + name))
+                    return result;
+
     // Query backends in priority order
     for (auto& backend : backends) {
         auto result = backend->getSymbolByName(name);

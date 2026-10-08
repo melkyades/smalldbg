@@ -11,7 +11,9 @@
 
 #include <windows.h>
 #include <dbgeng.h>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace smalldbg {
 
@@ -61,6 +63,18 @@ private:
     /** Returns true when the module at `base` has a symbol file rather than
      *  its export table. A reload succeeds either way, so it cannot tell. **/
     bool hasSymbolFile(ULONG64 base);
+
+    /** Loads the symbols of the module holding `addr`, once per module.
+     *  Returns false when that was already tried or nothing holds `addr`. **/
+    bool loadSymbolsAt(Address addr);
+    std::set<ULONG64> symbolsLoadedAt;
+
+    /** The names of the modules whose symbols are loaded. **/
+    std::vector<std::string> modulesWithSymbols();
+
+    /** Matches `pattern` with the engine. Returns false when `callback` asked
+     *  to stop. **/
+    bool matchSymbols(const std::string& pattern, const SymbolCallback& callback);
 
 
     IDebugSymbols3* symbols = nullptr;

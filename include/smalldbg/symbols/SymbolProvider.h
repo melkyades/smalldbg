@@ -96,6 +96,10 @@ public:
      *  empty ModuleInfo when there is none. **/
     ModuleInfo moduleNamed(const std::string& module);
 
+    /** A module to look in first for a name given without one. Symbol engines
+     *  do not search modules whose symbols are not loaded yet. **/
+    void preferModule(const std::string& module);
+
     void shutdown();
     
     // Add a symbol backend (takes ownership)
@@ -140,6 +144,7 @@ private:
     SymbolDatabase symbolDatabase;
     SourceRef nativeSymbols;
     bool modulesRegistered{false};
+    std::vector<std::string> preferredModules;
 };
 
 } // namespace smalldbg

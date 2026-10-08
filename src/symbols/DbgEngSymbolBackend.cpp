@@ -58,6 +58,11 @@ Status DbgEngSymbolBackend::initialize(void* /*processHandle*/, const SymbolOpti
 
     applySearchPath(opts.searchPath);
 
+    // A name given without its module would otherwise have the engine load
+    // every module's symbols to look for it, fetching each from the symbol
+    // server. A name with its module still loads that module.
+    symbols->AddSymbolOptions(SYMOPT_NO_UNQUALIFIED_LOADS);
+
     initialized = true;
     return Status::Ok;
 }
@@ -95,6 +100,21 @@ bool DbgEngSymbolBackend::findModule(const std::string& module, ULONG64& base,
         return true;
     }
     return false;
+}
+
+bool DbgEngSymbolBackend::loadSymbolsAt(Address addr) {
+    ULONG index = 0;
+    ULONG64 base = 0;
+    if (FAILED(symbols->GetModuleByOffset(addr, 0, &index, &base))) return false;
+    if (!symbolsLoadedAt.insert(base).second) return false;
+
+    char image[512] = {};
+    if (FAILED(symbols->GetModuleNameString(DEBUG_MODNAME_IMAGE, index, 0, image,
+                                            sizeof(image), nullptr)))
+        return false;
+    std::string path = image;
+    std::string imageFile = path.substr(path.find_last_of("\\/") + 1);
+    return SUCCEEDED(symbols->Reload(("/f " + imageFile).c_str()));
 }
 
 bool DbgEngSymbolBackend::hasSymbolFile(ULONG64 base) {
@@ -142,13 +162,7 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolByName(const std::string& na
 
     ULONG64 offset = 0;
     HRESULT hr = symbols->GetOffsetByName(name.c_str(), &offset);
-    if (FAILED(hr)) {
-        // Symbols can be deferred-loaded; force a reload and retry once
-        // before giving up.
-        symbols->Reload("/f");
-        hr = symbols->GetOffsetByName(name.c_str(), &offset);
-        if (FAILED(hr)) return std::nullopt;
-    }
+    if (FAILED(hr)) return std::nullopt;
 
     Symbol sym;
     sym.name = name;
@@ -189,6 +203,14 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolByAddress(Address addr) {
     std::string fullName = nameBuf;
     if (fullName.empty()) return std::nullopt;
 
+    // A module whose symbols are not loaded yet is named alone, with no
+    // function: load them and ask again.
+    if (fullName.find('!') == std::string::npos && loadSymbolsAt(addr)) {
+        hr = symbols->GetNameByOffset(static_cast<ULONG64>(addr), nameBuf,
+                                      sizeof(nameBuf), &nameSize, &displacement);
+        if (SUCCEEDED(hr) && nameBuf[0] != 0) fullName = nameBuf;
+    }
+
     Symbol sym;
     sym.address = addr - static_cast<Address>(displacement);
     sym.type = SymbolType::Function;
@@ -218,13 +240,43 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolByAddress(Address addr) {
     return sym;
 }
 
+// A pattern without a module would have the engine load every module's
+// symbols to match it, which SYMOPT_NO_UNQUALIFIED_LOADS does not stop, so it
+// is matched in each module that has its symbols already.
 void DbgEngSymbolBackend::enumerateSymbols(const std::string& pattern, SymbolCallback callback) {
     if (!symbols || !callback) return;
+    if (pattern.find('!') != std::string::npos) {
+        matchSymbols(pattern, callback);
+        return;
+    }
+    for (const auto& module : modulesWithSymbols())
+        if (!matchSymbols(module + "!" + pattern, callback)) return;
+}
 
-    // Use IDebugSymbols3::StartSymbolMatch / GetNextSymbolMatch
+std::vector<std::string> DbgEngSymbolBackend::modulesWithSymbols() {
+    std::vector<std::string> names;
+    ULONG loaded = 0, unloaded = 0;
+    if (FAILED(symbols->GetNumberModules(&loaded, &unloaded))) return names;
+
+    for (ULONG i = 0; i < loaded; i++) {
+        DEBUG_MODULE_PARAMETERS params = {};
+        if (FAILED(symbols->GetModuleParameters(1, nullptr, i, &params))) continue;
+        if (params.SymbolType == DEBUG_SYMTYPE_DEFERRED
+            || params.SymbolType == DEBUG_SYMTYPE_NONE)
+            continue;
+
+        char name[256] = {};
+        if (SUCCEEDED(symbols->GetModuleNames(i, 0, nullptr, 0, nullptr, name, sizeof(name),
+                                              nullptr, nullptr, 0, nullptr)))
+            names.push_back(name);
+    }
+    return names;
+}
+
+bool DbgEngSymbolBackend::matchSymbols(const std::string& pattern,
+                                       const SymbolCallback& callback) {
     ULONG64 handle = 0;
-    HRESULT hr = symbols->StartSymbolMatch(pattern.c_str(), &handle);
-    if (FAILED(hr)) return;
+    if (FAILED(symbols->StartSymbolMatch(pattern.c_str(), &handle))) return true;
 
     char nameBuf[512] = {};
     ULONG64 offset = 0;
@@ -242,10 +294,14 @@ void DbgEngSymbolBackend::enumerateSymbols(const std::string& pattern, SymbolCal
             sym.name = fullName;
         }
 
-        if (!callback(sym)) break;
+        if (!callback(sym)) {
+            symbols->EndSymbolMatch(handle);
+            return false;
+        }
     }
 
     symbols->EndSymbolMatch(handle);
+    return true;
 }
 
 static const char* symbolTypeName(ULONG type) {

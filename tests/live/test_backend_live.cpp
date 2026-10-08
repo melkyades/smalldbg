@@ -224,6 +224,36 @@ TEST_CASE("the symbol loader loads a module's own symbol file and says which") {
     dbg.detach();
 }
 
+TEST_CASE("a name without its module is found only where symbols are loaded") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+
+    CHECK_FALSE(symbols->getSymbolByName("break_here").has_value());
+    CHECK(symbols->getSymbolByName("test_target!break_here").has_value());
+    CHECK(symbols->getSymbolByName("break_here").has_value());
+
+    bool found = false;
+    for (const auto& symbol : symbols->findSymbols("break_her*"))
+        if (symbol.name == "break_here") found = true;
+    CHECK(found);
+
+    dbg.detach();
+}
+
+TEST_CASE("a preferred module is searched for a name without one") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+    auto* symbols = dbg.getSymbolProvider();
+    REQUIRE(symbols != nullptr);
+
+    symbols->preferModule("test_target");
+    CHECK(symbols->getSymbolByName("break_here").has_value());
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
