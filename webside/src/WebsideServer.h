@@ -201,6 +201,7 @@ private:
     void setupStaticRoutes();
     void setupLegacyFrameRoutes();
     void setupRunControlRoutes();
+    void setupWorkspaceRoutes();
     void setupSymbolRoutes();
     void setupInspectorRoutes();
     void setupDebuggerRoutes();

@@ -367,3 +367,32 @@ TEST_CASE("with nothing open, only the routes that need no target answer") {
     server.stop();
     serving.join();
 }
+
+TEST_CASE("the workspace and its breakpoints answer with nothing open") {
+    constexpr int port = 47233;
+    Workspace workspace([](const TargetSpec&) {
+        return std::make_unique<StubSession>();
+    });
+    workspace.setBreakpoint(0x401000, "start");
+    TestServer server{workspace, port};
+    std::thread serving([&] { server.run(); });
+
+    httplib::Client client("127.0.0.1", port);
+    httplib::Result breakpoints;
+    for (int attempt = 0; attempt < 50 && !breakpoints; attempt++) {
+        breakpoints = client.Get("/breakpoints");
+        if (!breakpoints) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    REQUIRE(breakpoints);
+    Json listed = Json::parse(breakpoints->body);
+    REQUIRE(listed.size() == 1);
+    CHECK(listed[0]["address"].asString() == Json::hex(uint64_t(0x401000)).asString());
+    CHECK(listed[0]["name"].asString() == "start");
+
+    auto setup = client.Get("/workspace");
+    REQUIRE(setup);
+    CHECK(Json::parse(setup->body)["breakpoints"].size() == 1);
+
+    server.stop();
+    serving.join();
+}

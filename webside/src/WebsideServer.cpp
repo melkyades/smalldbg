@@ -1323,6 +1323,26 @@ HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) 
     return res;
 }
 
+// What the developer set up, which is there whether or not a target is open.
+void WebsideServer::setupWorkspaceRoutes() {
+    sessionFreeRoute("GET", "/workspace", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = workspace.toJson();
+        return res;
+    });
+
+    sessionFreeRoute("GET", "/breakpoints", [this](const HttpRequest&) {
+        HttpResponse res;
+        auto array = Json::array();
+        for (const auto& [address, name] : workspace.breakpoints())
+            array.add(Json::object()
+                .set("address", Json::hex(address))
+                .set("name", name));
+        res.body = array.dump();
+        return res;
+    });
+}
+
 // Run control aimed at one debugger id: resume, suspend, terminate, run to an
 // address, and the steps.
 void WebsideServer::setupDebuggerActionRoutes() {
@@ -1497,6 +1517,7 @@ void WebsideServer::setupBaseRoutes() {
     setupStaticRoutes();
     setupLegacyFrameRoutes();
     setupRunControlRoutes();
+    setupWorkspaceRoutes();
 }
 
 // A client asks for these at startup. Their answers do not depend on the
