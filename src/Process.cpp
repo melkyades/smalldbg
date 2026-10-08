@@ -38,7 +38,10 @@ void Process::syncThreads(const std::vector<ThreadId>& live) {
     registerNewThreads(live);
 }
 
+// A replay has different threads at each position, and a running target has
+// no position to answer for.
 std::vector<std::shared_ptr<Thread>> Process::threads() {
+    if (debugger->isStopped()) debugger->refreshThreads();
     std::vector<std::shared_ptr<Thread>> result;
     for (const auto& pair : threadMap) {
         result.push_back(pair.second);

@@ -20,7 +20,8 @@ public:
     // Process identification
     uintptr_t getPid() const { return pid; }
     
-    // Thread enumeration
+    /** Returns the threads the target has. A stopped target is asked for its
+     *  current ones, at most once each time it moves. **/
     std::vector<std::shared_ptr<Thread>> threads();
     std::optional<std::shared_ptr<Thread>> getThread(ThreadId tid);
     

@@ -547,13 +547,12 @@ TEST_CASE("a debugger whose target exited leaves the engine to the next one") {
 }
 
 // test_target's "threads" mode starts threads that end before break_here.
-// Once refreshed, the thread list holds only threads the target still has,
-// each of which can be read.
-TEST_CASE("refreshing the thread list drops threads that have ended") {
+// The thread list holds only threads the target still has, each of which can
+// be read.
+TEST_CASE("the thread list leaves out threads that have ended") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtBreakHere(dbg, {"threads"});
 
-    dbg.refreshThreads();
     auto threads = dbg.getProcess()->threads();
     REQUIRE_FALSE(threads.empty());
     for (const auto& thread : threads) {
