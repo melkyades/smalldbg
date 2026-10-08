@@ -8,7 +8,11 @@
 #include "smalldbg/Snapshot.h"
 #include "smalldbg/Thread.h"
 
+#include <httplib/httplib.h>
+
+#include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 using namespace webside;
@@ -48,6 +52,8 @@ struct TestServer : WebsideServer {
     using WebsideServer::handleDebuggerRoute;
     using WebsideServer::nativeSymbolsData;
     using WebsideServer::nativeInspectData;
+
+    void stop() { server.stop(); }
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
@@ -335,4 +341,29 @@ TEST_CASE("a green thread's stack is placed relative to the frame selected") {
     request.params["frame"] = "3";
     launched.server.handleDebuggerRoute(request);
     CHECK(green.lastSelectedFrame == 3);
+}
+
+TEST_CASE("with nothing open, only the routes that need no target answer") {
+    constexpr int port = 47232;
+    Workspace workspace([](const TargetSpec&) {
+        return std::make_unique<StubSession>();
+    });
+    TestServer server{workspace, port};
+    std::thread serving([&] { server.run(); });
+
+    httplib::Client client("127.0.0.1", port);
+    httplib::Result logo;
+    for (int attempt = 0; attempt < 50 && !logo; attempt++) {
+        logo = client.Get("/logo");
+        if (!logo) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    REQUIRE(logo);
+    CHECK(logo->status == 200);
+    CHECK(client.Get("/dialect")->body == "\"test\"");
+    CHECK(client.Get("/themes")->status == 200);
+    CHECK(client.Get("/classes")->status == 503);
+    CHECK(client.Get("/threads")->status == 503);
+
+    server.stop();
+    serving.join();
 }

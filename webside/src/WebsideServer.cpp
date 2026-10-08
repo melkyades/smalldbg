@@ -43,29 +43,6 @@ static HttpResponse refusal(int code, const char* status, const char* message) {
     return response;
 }
 
-// On a replay, a thread that was not running at this position has no
-// registers, so its stack is unknown rather than empty.
-std::string WebsideServer::frameWarning(smalldbg::Thread& thread) const {
-    smalldbg::Registers regs;
-    if (session().debugger().getRegisters(&thread, regs) != smalldbg::Status::Ok)
-        return "registers for this thread could not be read";
-    if (regs.sp() == 0)
-        return "this thread has no register context here; it was not running "
-               "at this position";
-    return {};
-}
-
-void WebsideServer::warn(HttpResponse& res, const std::string& warning) {
-    if (!warning.empty()) res.headers["X-Webside-Warning"] = warning;
-}
-
-// A listing asks this once rather than once per thread, since answering it
-// may walk every thread the target has.
-smalldbg::ThreadId WebsideServer::vmThreadId() const {
-    auto thread = session().vmThread();
-    return thread ? thread->getThreadId() : 0;
-}
-
 // A refused handler still answers something shaped like the truth, an empty
 // list or a zeroed read, which a client cannot tell from the real thing.
 HttpResponse WebsideServer::answerOrRefuse(const HttpRequest& request,
@@ -87,6 +64,29 @@ void WebsideServer::sessionFreeRoute(const std::string& method,
     server.route(method, path, std::move(handler));
 }
 
+// On a replay, a thread that was not running at this position has no
+// registers, so its stack is unknown rather than empty.
+std::string WebsideServer::frameWarning(smalldbg::Thread& thread) const {
+    smalldbg::Registers regs;
+    if (session().debugger().getRegisters(&thread, regs) != smalldbg::Status::Ok)
+        return "registers for this thread could not be read";
+    if (regs.sp() == 0)
+        return "this thread has no register context here; it was not running "
+               "at this position";
+    return {};
+}
+
+// A listing asks this once rather than once per thread, since answering it
+// may walk every thread the target has.
+smalldbg::ThreadId WebsideServer::vmThreadId() const {
+    auto thread = session().vmThread();
+    return thread ? thread->getThreadId() : 0;
+}
+
+void WebsideServer::warn(HttpResponse& res, const std::string& warning) {
+    if (!warning.empty()) res.headers["X-Webside-Warning"] = warning;
+}
+
 std::string WebsideServer::runControlResult(bool success) const {
     smalldbg::clearEngineBusy();
     return Json::object().set("success", success).dump();
@@ -105,7 +105,6 @@ void WebsideServer::run() {
 std::string WebsideServer::version() const { return "0.1.0"; }
 
 // ---- run control / session state / class browsing: delegate to the session ----
-
 bool WebsideServer::resume() {
     onPreResume();
     return session().resume();
@@ -612,31 +611,6 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
 // /debuggers routes
 // =========================================================================
 
-HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) {
-    HttpResponse res;
-    auto segments = splitPath(req.path);
-    int debuggerId = 0;
-    try { debuggerId = std::stoi(segments[1]); } catch (...) {}
-    auto threads = nativeThreads();
-    if (debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
-        session().debugger().setCurrentThread(threads[debuggerId - 1]);
-
-    auto body = Json::parse(req.body);
-    uint64_t address = 0;
-    if (body["address"].isNumber()) address = body["address"].asUInt();
-    else address = parseHexParam(body["address"].asString());
-    if (address == 0) {
-        res.statusCode = 400;
-        res.body = Json::object().set("error", "address required").dump();
-        return res;
-    }
-
-    bool reached = backwards ? session().reverseRunToAddress(address)
-                             : session().runToAddress(address);
-    res.body = runControlResult(reached);
-    return res;
-}
-
 // Primary first, so the id a client remembers stays the main thread.
 std::vector<std::shared_ptr<smalldbg::Thread>>
 WebsideServer::nativeThreads() const {
@@ -1074,6 +1048,137 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
     return res;
 }
 
+void WebsideServer::setupRoutes() {
+    // ---- Search ----
+    server.route("GET", "/search", [this](const HttpRequest& req) {
+        HttpResponse res;
+        std::string text;
+        bool ignoreCase = false;
+        std::string condition = "beginning";
+        std::string type = "all";
+
+        auto it = req.params.find("text");
+        if (it != req.params.end()) text = it->second;
+        it = req.params.find("ignoreCase");
+        if (it != req.params.end()) ignoreCase = (it->second == "true" || it->second == "1");
+        it = req.params.find("condition");
+        if (it != req.params.end()) condition = it->second;
+        it = req.params.find("type");
+        if (it != req.params.end()) type = it->second;
+
+        res.body = searchData(text, ignoreCase, condition, type);
+        return res;
+    });
+
+    // ---- Classes — exact match for the listing ----
+    server.route("GET", "/classes", [this](const HttpRequest& req) {
+        return handleClassList(req);
+    });
+
+    // ---- Classes — prefix routes for detail / sub-routes ----
+    server.routePrefix("GET", "/classes", [this](const HttpRequest& req) {
+        return handleClassesPrefix(req);
+    });
+
+    setupSymbolRoutes();
+    setupInspectorRoutes();
+    setupDebuggerRoutes();
+}
+
+// Symbols, modules, memory and disassembly: what the target looks like
+// as a native program.
+void WebsideServer::setupSymbolRoutes() {
+    // ---- Native symbols ----
+    server.route("GET", "/native-symbols", [this](const HttpRequest& req) {
+        HttpResponse res;
+        std::string filter;
+        auto it = req.params.find("filter");
+        if (it != req.params.end()) filter = it->second;
+        res.body = nativeSymbolsData(filter);
+        return res;
+    });
+
+    server.routePrefix("GET", "/native-symbols", [this](const HttpRequest& req) {
+        HttpResponse res;
+        auto segments = splitPath(req.path);
+        if (segments.size() < 2) {
+            res.body = nativeSymbolsData("");
+            return res;
+        }
+        // /native-symbols/<name>
+        std::string name;
+        for (size_t i = 1; i < segments.size(); i++) {
+            if (i > 1) name += "/";
+            name += segments[i];
+        }
+        res.body = nativeSymbolDetailData(name);
+        if (res.body == "{}") {
+            res.statusCode = 404;
+            res.body = Json::object().set("error", "Symbol not found").dump();
+        }
+        return res;
+    });
+
+    server.route("GET", "/native-modules", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = nativeModulesData();
+        return res;
+    });
+
+    // A module's symbols load when they are first needed; this loads them now.
+    server.routePrefix("POST", "/native-modules", [this](const HttpRequest& req) {
+        return handleLoadModuleSymbols(req);
+    });
+
+    server.route("GET", "/symbol", [this](const HttpRequest& req) {
+        return handleSymbol(req);
+    });
+
+    server.route("GET", "/memory", [this](const HttpRequest& req) {
+        return handleMemory(req);
+    });
+
+    server.route("GET", "/disassemble", [this](const HttpRequest& req) {
+        return handleDisassemble(req);
+    });
+
+    server.route("GET", "/native-inspect", [this](const HttpRequest& req) {
+        HttpResponse res;
+        std::string expression;
+        auto it = req.params.find("expression");
+        if (it != req.params.end()) expression = it->second;
+        if (expression.empty()) {
+            res.statusCode = 400;
+            res.body = Json::object().set("error", "Missing 'expression' parameter").dump();
+            return res;
+        }
+        res.body = nativeInspectData(expression);
+        if (res.body == "{}") {
+            res.statusCode = 404;
+            res.body = Json::object().set("error", "Cannot resolve expression").dump();
+        }
+        return res;
+    });
+}
+
+// The VM's own view of its memory: spaces, what an address is, what an
+// object holds.
+void WebsideServer::setupInspectorRoutes() {
+    // ---- VM inspector ----
+    server.route("GET", "/regions", [this](const HttpRequest& req) {
+        return handleRegions(req);
+    });
+    server.route("GET", "/classify", [this](const HttpRequest& req) {
+        return handleClassify(req);
+    });
+    server.route("GET", "/inspect", [this](const HttpRequest& req) {
+        return handleInspect(req);
+    });
+
+}
+
+// The green threads are listed first, as the program a Smalltalk developer
+// came to look at. Ids still count the native threads first.
 std::string WebsideServer::debuggerListJson() const {
     auto array = Json::array();
     auto threads = nativeThreads();
@@ -1153,103 +1258,8 @@ void WebsideServer::addGreenThreads(Json& array, int id) const {
     }
 }
 
-void WebsideServer::setupRoutes() {
-    // ---- Search ----
-    server.route("GET", "/search", [this](const HttpRequest& req) {
-        HttpResponse res;
-        std::string text;
-        bool ignoreCase = false;
-        std::string condition = "beginning";
-        std::string type = "all";
-
-        auto it = req.params.find("text");
-        if (it != req.params.end()) text = it->second;
-        it = req.params.find("ignoreCase");
-        if (it != req.params.end()) ignoreCase = (it->second == "true" || it->second == "1");
-        it = req.params.find("condition");
-        if (it != req.params.end()) condition = it->second;
-        it = req.params.find("type");
-        if (it != req.params.end()) type = it->second;
-
-        res.body = searchData(text, ignoreCase, condition, type);
-        return res;
-    });
-
-    // ---- Classes — exact match for the listing ----
-    server.route("GET", "/classes", [this](const HttpRequest& req) {
-        return handleClassList(req);
-    });
-
-    // ---- Classes — prefix routes for detail / sub-routes ----
-    server.routePrefix("GET", "/classes", [this](const HttpRequest& req) {
-        return handleClassesPrefix(req);
-    });
-
-    // ---- Native symbols ----
-    server.route("GET", "/native-symbols", [this](const HttpRequest& req) {
-        HttpResponse res;
-        std::string filter;
-        auto it = req.params.find("filter");
-        if (it != req.params.end()) filter = it->second;
-        res.body = nativeSymbolsData(filter);
-        return res;
-    });
-
-    server.routePrefix("GET", "/native-symbols", [this](const HttpRequest& req) {
-        HttpResponse res;
-        auto segments = splitPath(req.path);
-        if (segments.size() < 2) {
-            res.body = nativeSymbolsData("");
-            return res;
-        }
-        // /native-symbols/<name>
-        std::string name;
-        for (size_t i = 1; i < segments.size(); i++) {
-            if (i > 1) name += "/";
-            name += segments[i];
-        }
-        res.body = nativeSymbolDetailData(name);
-        if (res.body == "{}") {
-            res.statusCode = 404;
-            res.body = Json::object().set("error", "Symbol not found").dump();
-        }
-        return res;
-    });
-
-    server.route("GET", "/native-modules", [this](const HttpRequest&) {
-        HttpResponse res;
-        res.body = nativeModulesData();
-        return res;
-    });
-
-    // A module's symbols load when they are first needed; this loads them now.
-    server.routePrefix("POST", "/native-modules", [this](const HttpRequest& req) {
-        return handleLoadModuleSymbols(req);
-    });
-
-    server.route("GET", "/symbol", [this](const HttpRequest& req) {
-        return handleSymbol(req);
-    });
-
-    server.route("GET", "/memory", [this](const HttpRequest& req) {
-        return handleMemory(req);
-    });
-
-    server.route("GET", "/disassemble", [this](const HttpRequest& req) {
-        return handleDisassemble(req);
-    });
-
-    // ---- VM inspector ----
-    server.route("GET", "/regions", [this](const HttpRequest& req) {
-        return handleRegions(req);
-    });
-    server.route("GET", "/classify", [this](const HttpRequest& req) {
-        return handleClassify(req);
-    });
-    server.route("GET", "/inspect", [this](const HttpRequest& req) {
-        return handleInspect(req);
-    });
-
+// Threads and the frames on them, plus the run control that moves them.
+void WebsideServer::setupDebuggerRoutes() {
     // ---- Debuggers: native OS threads 1..N (primary first), green threads N+1.. ----
     server.route("GET", "/debuggers", [this](const HttpRequest&) {
         HttpResponse res;
@@ -1268,7 +1278,54 @@ void WebsideServer::setupRoutes() {
         return handleDebuggerRoute(req);
     });
 
-    // POST actions for any debugger (resume, stepping, suspend, terminate)
+    setupDebuggerActionRoutes();
+}
+
+bool WebsideServer::stepAction(const std::vector<std::string>& segments) {
+    int debuggerId = 0;
+    try { debuggerId = std::stoi(segments[1]); } catch (...) {}
+    auto threads = nativeThreads();
+    if (debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
+        session().debugger().setCurrentThread(threads[debuggerId - 1]);
+
+    const std::string& action = segments[4];
+    if (action == "stepinto")          return session().step();
+    if (action == "stepover")          return session().stepOver();
+    if (action == "stepout")           return session().stepOut();
+    if (action == "reversestepinto")   return session().stepBack();
+    if (action == "reversestepover")   return session().reverseStepOver();
+    if (action == "reversestepout")    return session().reverseStepOut();
+    return false;
+}
+
+HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) {
+    HttpResponse res;
+    auto segments = splitPath(req.path);
+    int debuggerId = 0;
+    try { debuggerId = std::stoi(segments[1]); } catch (...) {}
+    auto threads = nativeThreads();
+    if (debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
+        session().debugger().setCurrentThread(threads[debuggerId - 1]);
+
+    auto body = Json::parse(req.body);
+    uint64_t address = 0;
+    if (body["address"].isNumber()) address = body["address"].asUInt();
+    else address = parseHexParam(body["address"].asString());
+    if (address == 0) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "address required").dump();
+        return res;
+    }
+
+    bool reached = backwards ? session().reverseRunToAddress(address)
+                             : session().runToAddress(address);
+    res.body = runControlResult(reached);
+    return res;
+}
+
+// Run control aimed at one debugger id: resume, suspend, terminate, run to an
+// address, and the steps.
+void WebsideServer::setupDebuggerActionRoutes() {
     server.routePrefix("POST", "/debuggers", [this](const HttpRequest& req) {
         HttpResponse res;
         auto segments = splitPath(req.path);
@@ -1296,53 +1353,12 @@ void WebsideServer::setupRoutes() {
             return handleRunTo(req, true);
 
         if (segments.size() >= 5 && segments[2] == "frames") {
-            std::string action = segments[4];
-            bool success = false;
-
-            // Step the thread this debugger id resolves to, not just primary.
-            int debuggerId = 0;
-            try { debuggerId = std::stoi(segments[1]); } catch (...) {}
-            auto* dbg = &session().debugger();
-            auto threads = nativeThreads();
-            if (dbg && debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
-                dbg->setCurrentThread(threads[debuggerId - 1]);
-
-            if (action == "stepinto")              success = session().step();
-            else if (action == "stepover")         success = session().stepOver();
-            else if (action == "stepout")          success = session().stepOut();
-            else if (action == "reversestepinto")  success = session().stepBack();
-            else if (action == "reversestepover")  success = session().reverseStepOver();
-            else if (action == "reversestepout")   success = session().reverseStepOut();
-            else {
-                res.statusCode = 404;
-                res.body = Json::object().set("error", "Unknown action: " + action).dump();
-                return res;
-            }
-
-            res.body = runControlResult(success);
+            res.body = runControlResult(stepAction(segments));
             return res;
         }
 
         res.statusCode = 404;
-        res.body = Json::object().set("error", "Unknown action").dump();
-        return res;
-    });
-
-    server.route("GET", "/native-inspect", [this](const HttpRequest& req) {
-        HttpResponse res;
-        std::string expression;
-        auto it = req.params.find("expression");
-        if (it != req.params.end()) expression = it->second;
-        if (expression.empty()) {
-            res.statusCode = 400;
-            res.body = Json::object().set("error", "Missing 'expression' parameter").dump();
-            return res;
-        }
-        res.body = nativeInspectData(expression);
-        if (res.body == "{}") {
-            res.statusCode = 404;
-            res.body = Json::object().set("error", "Cannot resolve expression").dump();
-        }
+        res.body = Json::object().set("error", "unknown debugger action").dump();
         return res;
     });
 }
@@ -1478,55 +1494,36 @@ void WebsideServer::setupBaseRoutes() {
         return res;
     });
 
-    server.route("GET", "/logo", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "\"\"";
-        return res;
-    });
+    setupStaticRoutes();
+    setupLegacyFrameRoutes();
+    setupRunControlRoutes();
+}
 
-    server.route("GET", "/themes", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
+// A client asks for these at startup. Their answers do not depend on the
+// target, so they answer even while nothing is open.
+void WebsideServer::setupStaticRoutes() {
+    static const std::pair<const char*, const char*> fixedAnswers[] = {
+        {"/logo", "\"\""},
+        {"/themes", "[]"},
+        // The documented shape is an object with the two dialect colors, and
+        // the client reads both fields straight off it.
+        {"/colors", "{\"primary\":\"#1976d2\",\"secondary\":\"#42a5f5\"}"},
+        {"/extensions", "[]"},
+        {"/icons", "[]"},
+        {"/usual-categories", "[]"},
+        {"/command-definitions", "[]"},
+        {"/stats", "{}"},
+        {"/objects", "[]"},
+    };
+    for (const auto& [path, body] : fixedAnswers) {
+        sessionFreeRoute("GET", path, [body = body](const HttpRequest&) {
+            HttpResponse res;
+            res.body = body;
+            return res;
+        });
+    }
 
-    server.route("GET", "/colors", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/extensions", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/icons", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/usual-categories", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/command-definitions", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/stats", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "{}";
-        return res;
-    });
-
-    server.route("GET", "/objects", [](const HttpRequest&) {
+    sessionFreeRoute("POST", "/autocompletions", [](const HttpRequest&) {
         HttpResponse res;
         res.body = "[]";
         return res;
@@ -1535,33 +1532,13 @@ void WebsideServer::setupBaseRoutes() {
     server.routePrefix("GET", "/objects", [](const HttpRequest&) {
         HttpResponse res;
         res.statusCode = 404;
-        res.body = "{\"error\":\"Object not found\"}";
+        res.body = Json::object().set("error", "Object not found").dump();
         return res;
     });
+}
 
-    server.route("POST", "/autocompletions", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    // ---- Debugger listing ----
-
-    server.route("GET", "/debuggers", [this](const HttpRequest&) {
-        HttpResponse res;
-        if (isActive()) {
-            res.body = Json::array()
-                .add(Json::object()
-                    .set("id", 1)
-                    .set("description", description())
-                    .set("status", stopReason()))
-                .dump();
-        } else {
-            res.body = "[]";
-        }
-        return res;
-    });
-
+// The frame routes of the single-debugger API act on the primary thread.
+void WebsideServer::setupLegacyFrameRoutes() {
     // ---- Frames ----
 
     server.route("GET", "/debuggers/1/frames", [this](const HttpRequest&) {
@@ -1616,6 +1593,10 @@ void WebsideServer::setupBaseRoutes() {
         return res;
     });
 
+}
+
+// Resuming, suspending and reporting where the target stopped.
+void WebsideServer::setupRunControlRoutes() {
     // ---- Debug control ----
 
     server.route("POST", "/debuggers/1/resume", [this](const HttpRequest&) {
@@ -1637,11 +1618,10 @@ void WebsideServer::setupBaseRoutes() {
     server.route("GET", "/debug/state", [this](const HttpRequest&) {
         HttpResponse res;
         auto p = pid();
-        auto* debugger = &session().debugger();
         res.body = Json::object()
             .set("active", isActive())
             .set("pid", p ? *p : 0)
-            .set("stopped", debugger && debugger->isStopped())
+            .set("stopped", session().debugger().isStopped())
             .set("stopReason", stopReason())
             .dump();
         return res;

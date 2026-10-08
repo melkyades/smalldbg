@@ -3,6 +3,7 @@
 #include "HttpServer.h"
 #include "WebsideSession.h"
 #include "Workspace.h"
+#include "smalldbg/Types.h"
 #include <string>
 #include <vector>
 #include <optional>
@@ -20,11 +21,13 @@ public:
     WebsideServer(Workspace& workspace, int port);
     virtual ~WebsideServer() = default;
 
-    /// Resume / suspend the target (also drive startup from main()).
+    /** Resumes the target after the dialect's onPreResume hook. **/
     virtual bool resume();
+    /** Suspends the target, then reads its classes and green threads again.
+     **/
     virtual bool suspend();
 
-    /// Set up all routes and enter the accept loop (blocks).
+    /** Sets up the routes and serves requests until the server stops. **/
     void run();
 
 protected:
@@ -56,6 +59,21 @@ protected:
     virtual std::string stackDescriptors(smalldbg::Thread& thread,
                                          int selectedIndex, uint64_t from,
                                          int slots) const;
+
+    /** Returns the answer to a run-control request. An engine call refused
+     *  while the target was moving is forgotten, since moving it was the
+     *  point. **/
+    std::string runControlResult(bool success) const;
+
+    /** Returns why the frames of `thread` cannot be trusted, or an empty text
+     *  when they can. The server sends it in a header, so that the frames
+     *  keep their Webside shape. **/
+    std::string frameWarning(smalldbg::Thread& thread) const;
+
+    /** Returns the id of the OS thread the VM runs on, or 0 when it cannot be
+     *  found. **/
+    smalldbg::ThreadId vmThreadId() const;
+    static void warn(HttpResponse& res, const std::string& warning);
 
     // ---- class / search data (delegate to the session) ----
     virtual std::string classListData(const std::string& root = "",
@@ -119,31 +137,8 @@ protected:
 
     // Native OS threads ordered with the primary thread first (id = index+1).
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;
-    /** Returns why the frames of `thread` cannot be trusted, or an empty text
-     *  when they can. The server sends it in a header, so that the frames
-     *  keep their Webside shape. **/
-    std::string frameWarning(smalldbg::Thread& thread) const;
-    static void warn(HttpResponse& res, const std::string& warning);
-    /** Returns the answer to a run-control request. An engine call refused
-     *  while the target was moving is forgotten, since moving it was the
-     *  point. **/
-    std::string runControlResult(bool success) const;
-    /** Returns the id of the OS thread the VM runs on, or 0 when it cannot be
-     *  found. **/
-    smalldbg::ThreadId vmThreadId() const;
-    /** Returns the /debuggers listing: one debugger per thread. **/
-    std::string debuggerListJson() const;
-    /** Returns the /threads listing, each thread named by what it was started
-     *  to do. A thread with no registers or stack is left out. **/
-    std::string threadListJson() const;
-    /** Returns one native thread's /threads entry, or null when the thread
-     *  has no registers or stack. `main` is the id of the VM's thread. **/
-    Json nativeThreadJson(smalldbg::Thread& thread, int id,
-                          smalldbg::ThreadId main) const;
-    void addGreenThreadDebuggers(Json& array, int id) const;
-    void addGreenThreads(Json& array, int id) const;
 
-    // ---- VM inspector routes (delegate to session->inspector()) ----
+    // ---- VM inspector routes (delegate to the session inspector) ----
     virtual HttpResponse handleRegions(const HttpRequest& req) const;
     virtual HttpResponse handleClassify(const HttpRequest& req) const;
     virtual HttpResponse handleInspect(const HttpRequest& req) const;
@@ -168,12 +163,29 @@ protected:
                                      const std::string& subRoute,
                                      const std::vector<std::string>& segments) const;
 
+    // ---- hook for subclass-specific routes ----
+    virtual void setupRoutes();
+
     /** Runs the debugger's thread to the address in the request body,
      *  forwards or backwards. **/
     HttpResponse handleRunTo(const HttpRequest& req, bool backwards);
 
-    // ---- hook for subclass-specific routes ----
-    virtual void setupRoutes();
+    /** Performs the stepping action a /debuggers path names, on the thread
+     *  its debugger id names. Returns false for an action it does not know.
+     **/
+    bool stepAction(const std::vector<std::string>& segments);
+
+    /** Returns the /debuggers listing: one debugger per thread. **/
+    std::string debuggerListJson() const;
+    /** Returns the /threads listing, each thread named by what it was started
+     *  to do. A thread with no registers or stack is left out. **/
+    std::string threadListJson() const;
+    /** Returns one native thread's /threads entry, or null when the thread
+     *  has no registers or stack. `main` is the id of the VM's thread. **/
+    Json nativeThreadJson(smalldbg::Thread& thread, int id,
+                          smalldbg::ThreadId main) const;
+    void addGreenThreadDebuggers(Json& array, int id) const;
+    void addGreenThreads(Json& array, int id) const;
 
     /** Adds a route that answers even while no target is open. **/
     void sessionFreeRoute(const std::string& method, const std::string& path,
@@ -186,6 +198,13 @@ protected:
 
 private:
     void setupBaseRoutes();
+    void setupStaticRoutes();
+    void setupLegacyFrameRoutes();
+    void setupRunControlRoutes();
+    void setupSymbolRoutes();
+    void setupInspectorRoutes();
+    void setupDebuggerRoutes();
+    void setupDebuggerActionRoutes();
     HttpResponse answerOrRefuse(const HttpRequest& request,
                                 const HttpHandler& handler) const;
 
