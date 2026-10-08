@@ -87,6 +87,11 @@ void WebsideServer::sessionFreeRoute(const std::string& method,
     server.route(method, path, std::move(handler));
 }
 
+std::string WebsideServer::runControlResult(bool success) const {
+    smalldbg::clearEngineBusy();
+    return Json::object().set("success", success).dump();
+}
+
 void WebsideServer::run() {
     setupBaseRoutes();
     setupRoutes();
@@ -629,7 +634,7 @@ HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) 
 
     bool reached = backwards ? session().reverseRunToAddress(address)
                              : session().runToAddress(address);
-    res.body = Json::object().set("success", reached).dump();
+    res.body = runControlResult(reached);
     return res;
 }
 
@@ -1259,12 +1264,12 @@ void WebsideServer::setupRoutes() {
         auto segments = splitPath(req.path);
 
         if (segments.size() >= 3 && segments[2] == "resume") {
-            res.body = Json::object().set("success", resume()).dump();
+            res.body = runControlResult(resume());
             return res;
         }
 
         if (segments.size() >= 3 && segments[2] == "suspend") {
-            res.body = Json::object().set("success", suspend()).dump();
+            res.body = runControlResult(suspend());
             return res;
         }
 
@@ -1304,7 +1309,7 @@ void WebsideServer::setupRoutes() {
                 return res;
             }
 
-            res.body = Json::object().set("success", success).dump();
+            res.body = runControlResult(success);
             return res;
         }
 
@@ -1605,7 +1610,7 @@ void WebsideServer::setupBaseRoutes() {
 
     server.route("POST", "/debuggers/1/resume", [this](const HttpRequest&) {
         HttpResponse res;
-        res.body = Json::object().set("success", resume()).dump();
+        res.body = runControlResult(resume());
         if (res.body.find("false") != std::string::npos)
             res.statusCode = 500;
         return res;
@@ -1613,7 +1618,7 @@ void WebsideServer::setupBaseRoutes() {
 
     server.route("POST", "/debug/suspend", [this](const HttpRequest&) {
         HttpResponse res;
-        res.body = Json::object().set("success", suspend()).dump();
+        res.body = runControlResult(suspend());
         if (res.body.find("false") != std::string::npos)
             res.statusCode = 500;
         return res;

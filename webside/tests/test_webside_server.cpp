@@ -42,6 +42,7 @@ struct TestServer : WebsideServer {
     using WebsideServer::debuggerListJson;
     using WebsideServer::frameWarning;
     using WebsideServer::warn;
+    using WebsideServer::runControlResult;
     using WebsideServer::nativeSymbolsData;
     using WebsideServer::nativeInspectData;
 
@@ -255,4 +256,12 @@ TEST_CASE("native inspection gives a field its own size") {
         launched.server.nativeInspectData("test_target!g_test_record.id"));
     CHECK(id["size"].asInt() == 4);
     CHECK(id["value"].asString() == Json::hex(uint64_t(7)).asString());
+}
+
+TEST_CASE("a run-control answer forgets a refusal met while moving") {
+    Served served(sample());
+    smalldbg::markEngineBusy();
+    Json answer = Json::parse(served.server.runControlResult(true));
+    CHECK(answer["success"].asBool());
+    CHECK_FALSE(smalldbg::engineWasBusy());
 }

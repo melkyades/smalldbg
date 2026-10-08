@@ -122,6 +122,10 @@ protected:
      *  keep their Webside shape. **/
     std::string frameWarning(smalldbg::Thread& thread) const;
     static void warn(HttpResponse& res, const std::string& warning);
+    /** Returns the answer to a run-control request. An engine call refused
+     *  while the target was moving is forgotten, since moving it was the
+     *  point. **/
+    std::string runControlResult(bool success) const;
     /** Returns the id of the OS thread the VM runs on, or 0 when it cannot be
      *  found. **/
     smalldbg::ThreadId vmThreadId() const;
