@@ -139,6 +139,9 @@ private:
     /// lookups in the same routine stop reaching the symbol engine.
     void rememberNativeSymbol(Address address);
 
+    /** A database entry as a Symbol. **/
+    Symbol symbolFor(const SymbolicInfo& info) const;
+
     Backend* backend;
     std::vector<std::unique_ptr<SymbolBackend>> backends;
     SymbolOptions symbolOptions;

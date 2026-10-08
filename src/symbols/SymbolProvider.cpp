@@ -70,6 +70,10 @@ void SymbolProvider::shutdown() {
 }
 
 std::optional<Symbol> SymbolProvider::getSymbolByName(const std::string& name) {
+    // The database is in memory; an engine may search every module.
+    for (const auto& info : symbolDatabase.find(name))
+        if (!(info.source == nativeSymbols)) return symbolFor(info);
+
     if (name.find('!') == std::string::npos)
         for (const auto& module : preferredModules)
             for (auto& backend : backends)
@@ -118,6 +122,9 @@ std::vector<Symbol> SymbolProvider::findSymbols(const std::string& pattern) {
             return true;
         });
     }
+    // Native symbols in the database are copies of what the backends answered.
+    for (const auto& info : symbolDatabase.findMatching(pattern))
+        if (!(info.source == nativeSymbols)) results.push_back(symbolFor(info));
     return results;
 }
 
@@ -204,6 +211,20 @@ void SymbolProvider::rememberNativeSymbol(Address address) {
     if (!symbol || symbol->name.empty()) return;
     symbolDatabase.add(symbol->address, symbol->size, symbol->name,
                        SymbolKind::Code, SymbolLayer::Symbol, nativeSymbols);
+}
+
+Symbol SymbolProvider::symbolFor(const SymbolicInfo& info) const {
+    Symbol symbol;
+    symbol.name = info.name;
+    symbol.address = info.start;
+    symbol.size = info.size;
+    symbol.type = info.kind == SymbolKind::Code ? SymbolType::Function
+                : info.kind == SymbolKind::Data ? SymbolType::Variable
+                                                : SymbolType::Unknown;
+    // An entry outside every module goes by the source that added it.
+    symbol.moduleName = info.module.valid() ? symbolDatabase.moduleName(info.module)
+                                            : symbolDatabase.sourceName(info.source);
+    return symbol;
 }
 
 std::optional<SymbolicInfo> SymbolProvider::symbolicInfoFor(Address address) {

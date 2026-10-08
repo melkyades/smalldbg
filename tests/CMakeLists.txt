@@ -9,6 +9,7 @@ add_executable(unit_tests
     unit/test_arch.cpp
     unit/test_snapshot.cpp
     unit/test_symbol_loader.cpp
+    unit/test_symbol_database.cpp
 )
 target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
 

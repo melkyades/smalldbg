@@ -1,6 +1,7 @@
 #include "smalldbg/symbols/SymbolDatabase.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace smalldbg {
 
@@ -20,6 +21,23 @@ bool isBetterThan(const SymbolicInfo& candidate, const SymbolicInfo& current) {
         return candidate.size < current.size;
     }
     return candidate.start > current.start;
+}
+
+bool globMatches(const char* pattern, const char* text) {
+    for (; *pattern; ++pattern, ++text) {
+        if (*pattern == '*') {
+            for (const char* rest = text;; ++rest) {
+                if (globMatches(pattern + 1, rest)) return true;
+                if (!*rest) return false;
+            }
+        }
+        if (!*text) return false;
+        if (*pattern != '?'
+            && std::tolower(static_cast<unsigned char>(*pattern))
+               != std::tolower(static_cast<unsigned char>(*text)))
+            return false;
+    }
+    return !*text;
 }
 
 } // namespace
@@ -123,6 +141,19 @@ std::vector<SymbolicInfo> SymbolDatabase::find(const std::string& name) const {
     std::vector<SymbolicInfo> found;
     for (const auto& [start, info] : entries)
         if (info.name == name) found.push_back(info);
+    return found;
+}
+
+std::vector<SymbolicInfo> SymbolDatabase::findMatching(const std::string& pattern) const {
+    bool qualified = pattern.find('!') != std::string::npos;
+    std::vector<SymbolicInfo> found;
+    for (const auto& [start, info] : entries) {
+        std::string name = qualified
+            ? (info.module.valid() ? moduleName(info.module) : sourceName(info.source))
+              + "!" + info.name
+            : info.name;
+        if (globMatches(pattern.c_str(), name.c_str())) found.push_back(info);
+    }
     return found;
 }
 

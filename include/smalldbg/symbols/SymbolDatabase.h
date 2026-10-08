@@ -56,6 +56,11 @@ public:
     /// Entries whose name matches exactly. Names are not unique across
     /// sources, so this answers all of them.
     std::vector<SymbolicInfo> find(const std::string& name) const;
+    /** Entries whose name matches `pattern`, where `*` is any run of
+     *  characters and `?` any one, ignoring case. A pattern with a `!` is
+     *  matched against "module!name"; an entry outside every module goes by
+     *  the source that added it. **/
+    std::vector<SymbolicInfo> findMatching(const std::string& pattern) const;
 
     // ---- invalidation --------------------------------------------------
     //
