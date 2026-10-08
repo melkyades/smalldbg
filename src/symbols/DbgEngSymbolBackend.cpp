@@ -224,19 +224,6 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolByAddress(Address addr) {
         sym.name = fullName;
     }
 
-    // Try to get symbol size via GetSymbolEntriesByOffset
-    DEBUG_MODULE_AND_ID id = {};
-    hr = symbols->GetSymbolEntriesByOffset(
-        static_cast<ULONG64>(addr), 0, &id, nullptr, 1, nullptr);
-    if (SUCCEEDED(hr)) {
-        DEBUG_SYMBOL_ENTRY entry = {};
-        entry.Size = sizeof(entry);
-        hr = symbols->GetSymbolEntryInformation(&id, &entry);
-        if (SUCCEEDED(hr)) {
-            sym.size = entry.Size;
-        }
-    }
-
     return sym;
 }
 
@@ -251,6 +238,23 @@ void DbgEngSymbolBackend::enumerateSymbols(const std::string& pattern, SymbolCal
     }
     for (const auto& module : modulesWithSymbols())
         if (!matchSymbols(module + "!" + pattern, callback)) return;
+}
+
+std::optional<Symbol> DbgEngSymbolBackend::getSymbolWithExtent(Address addr) {
+    auto sym = getSymbolByAddress(addr);
+    if (!sym) return sym;
+
+    // Asked at the symbol's start: from inside it the engine reports no size.
+    DEBUG_MODULE_AND_ID id = {};
+    HRESULT hr = symbols->GetSymbolEntriesByOffset(
+        static_cast<ULONG64>(sym->address), 0, &id, nullptr, 1, nullptr);
+    if (SUCCEEDED(hr)) {
+        DEBUG_SYMBOL_ENTRY entry = {};
+        entry.Size = sizeof(entry);
+        hr = symbols->GetSymbolEntryInformation(&id, &entry);
+        if (SUCCEEDED(hr)) sym->size = entry.Size;
+    }
+    return sym;
 }
 
 std::vector<std::string> DbgEngSymbolBackend::modulesWithSymbols() {

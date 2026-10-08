@@ -97,6 +97,19 @@ std::optional<Symbol> SymbolProvider::getSymbolByAddress(Address addr) {
     return std::nullopt;
 }
 
+// A backend that reads its symbols from a file has their sizes already.
+std::optional<Symbol> SymbolBackend::getSymbolWithExtent(Address addr) {
+    return getSymbolByAddress(addr);
+}
+
+std::optional<Symbol> SymbolProvider::getSymbolWithExtent(Address addr) {
+    for (auto& backend : backends) {
+        auto result = backend->getSymbolWithExtent(addr);
+        if (result) return result;
+    }
+    return std::nullopt;
+}
+
 std::vector<Symbol> SymbolProvider::findSymbols(const std::string& pattern) {
     std::vector<Symbol> results;
     for (auto& backend : backends) {
@@ -186,7 +199,8 @@ void SymbolProvider::rememberNativeSymbol(Address address) {
     // asking is the slowest way to learn that.
     if (!symbolDatabase.moduleAt(address).valid()) return;
 
-    auto symbol = getSymbolByAddress(address);
+    // With its size, so that the rest of the function is found here too.
+    auto symbol = getSymbolWithExtent(address);
     if (!symbol || symbol->name.empty()) return;
     symbolDatabase.add(symbol->address, symbol->size, symbol->name,
                        SymbolKind::Code, SymbolLayer::Symbol, nativeSymbols);

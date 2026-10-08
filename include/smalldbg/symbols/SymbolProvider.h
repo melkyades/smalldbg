@@ -108,6 +108,7 @@ public:
     // Symbol lookup - queries all backends in priority order
     std::optional<Symbol> getSymbolByName(const std::string& name);
     std::optional<Symbol> getSymbolByAddress(Address addr);
+    std::optional<Symbol> getSymbolWithExtent(Address addr);
     std::vector<Symbol> findSymbols(const std::string& pattern);
     
     // Source/line information

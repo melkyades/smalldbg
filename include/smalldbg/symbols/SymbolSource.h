@@ -49,6 +49,11 @@ public:
     // Symbol lookup
     virtual std::optional<Symbol> getSymbolByName(const std::string& name) = 0;
     virtual std::optional<Symbol> getSymbolByAddress(Address addr) = 0;
+
+    /** As getSymbolByAddress, with the symbol's size filled in. That can cost
+     *  an engine another query, so naming a stack's frames does without it.
+     **/
+    virtual std::optional<Symbol> getSymbolWithExtent(Address addr);
     
     // Enumerate symbols matching a wildcard pattern (e.g. "*Zone*")
     // Callback returns true to continue, false to stop.

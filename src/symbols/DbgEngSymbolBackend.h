@@ -39,6 +39,7 @@ public:
     // Symbol lookup
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
     std::optional<Symbol> getSymbolByAddress(Address addr) override;
+    std::optional<Symbol> getSymbolWithExtent(Address addr) override;
     void enumerateSymbols(const std::string& pattern, SymbolCallback callback) override;
 
     // Module enumeration

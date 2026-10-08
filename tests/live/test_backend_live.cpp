@@ -254,6 +254,22 @@ TEST_CASE("a preferred module is searched for a name without one") {
     dbg.detach();
 }
 
+TEST_CASE("an address inside a function is named, and its size given on request") {
+    Debugger dbg(Mode::External, X64::instance());
+    Symbol breakHere = launchAtBreakHere(dbg);
+    auto* symbols = dbg.getSymbolProvider();
+
+    auto sized = symbols->getSymbolWithExtent(breakHere.address);
+    REQUIRE(sized.has_value());
+    REQUIRE(sized->size > 1);
+
+    auto inside = symbols->symbolicInfoFor(breakHere.address + 1);
+    REQUIRE(inside.has_value());
+    CHECK(inside->name == "break_here");
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
