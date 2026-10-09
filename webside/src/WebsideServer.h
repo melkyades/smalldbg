@@ -75,25 +75,6 @@ protected:
     smalldbg::ThreadId vmThreadId() const;
     static void warn(HttpResponse& res, const std::string& warning);
 
-    // ---- class / search data (delegate to the session) ----
-    virtual std::string classListData(const std::string& root = "",
-                                      bool namesOnly = false) const;
-    virtual std::string classDetailData(const std::string& name) const;
-    virtual std::string searchData(const std::string& text, bool ignoreCase,
-                                   const std::string& condition,
-                                   const std::string& type) const;
-    virtual std::string subclassesData(const std::string& name) const;
-    virtual std::string superclassesData(const std::string& name) const;
-    virtual std::string variablesData(const std::string& name) const;
-    virtual std::string instanceVariablesData(const std::string& name) const;
-    virtual std::string classVariablesData(const std::string& name) const;
-    virtual std::string categoriesData(const std::string& name) const;
-    virtual std::string usedCategoriesData(const std::string& name) const;
-    virtual std::string selectorsData(const std::string& name) const;
-    virtual std::string methodsData(const std::string& name) const;
-    virtual std::string methodDetailData(const std::string& className,
-                                         const std::string& selector) const;
-
     // ---- native symbol data ----
     virtual std::string nativeSymbolsData(const std::string& filter) const;
     virtual std::string nativeModulesData() const;
@@ -143,18 +124,10 @@ protected:
     virtual HttpResponse handleClassify(const HttpRequest& req) const;
     virtual HttpResponse handleInspect(const HttpRequest& req) const;
 
-    // ---- class name parsing ----
-    struct ClassIdent {
-        std::string className;
-        std::string baseName;
-        bool isMetaclass;
-    };
-    static ClassIdent parseClassName(const std::string& name);
-
     // ---- class / search route handlers ----
-    virtual HttpResponse handleClassList(const HttpRequest& req) const;
+    HttpResponse handleClassList(const HttpRequest& req) const;
     HttpResponse handleClassDetail(const std::string& className) const;
-    virtual HttpResponse handleClassesPrefix(const HttpRequest& req) const;
+    HttpResponse handleClassesPrefix(const HttpRequest& req) const;
     HttpResponse handleClassSubRoute(const std::string& className,
                                      const std::string& subRoute,
                                      const std::vector<std::string>& segments) const;

@@ -15,6 +15,22 @@ const ClassEntry* Inspector::classAt(uint64_t oop) const {
     return nullptr;
 }
 
+std::vector<ClassVariable> Inspector::classVariablesOf(
+    const std::string& className) const {
+    std::vector<ClassVariable> variables;
+    if (const ClassEntry* entry = classNamed(className))
+        for (const std::string& name : entry->classVariableNames)
+            variables.push_back({name, std::nullopt});
+    return variables;
+}
+
+std::optional<MethodEntry> Inspector::methodNamed(
+    const std::string& className, const std::string& selector) const {
+    for (MethodEntry& method : methodsOf(className))
+        if (method.selector == selector) return std::move(method);
+    return std::nullopt;
+}
+
 std::vector<std::string> Inspector::subclassesOf(const std::string& name) const {
     const ClassEntry* parent = classNamed(name);
     if (!parent) return {};

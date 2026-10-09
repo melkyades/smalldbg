@@ -6,9 +6,11 @@
 #include "ToyHeap.h"
 #include "smalldbg/Debugger.h"
 
+#include <map>
 #include <memory>
 
 using smalltalk::ClassEntry;
+using smalltalk::MethodEntry;
 using webside::Json;
 
 namespace {
@@ -25,14 +27,31 @@ public:
         return nullptr;
     }
     bool discoverClasses() override { return true; }
+    std::vector<MethodEntry> methodsOf(
+        const std::string& className) const override {
+        auto found = methods.find(className);
+        return found == methods.end() ? std::vector<MethodEntry>()
+                                      : found->second;
+    }
+    std::string sourceOf(const MethodEntry& method) const override {
+        auto found = sources.find(method.oop);
+        return found == sources.end() ? std::string() : found->second;
+    }
 
     void add(ClassEntry entry) { addClass(std::move(entry)); }
+    void add(const MethodEntry& method, const std::string& source = {}) {
+        methods[method.className].push_back(method);
+        if (!source.empty()) sources[method.oop] = source;
+    }
     void add(vmdbg::Region region) { addRegion(std::move(region)); }
 
     // The heap retainersOf traces; none unless a test lays one out.
     std::unique_ptr<ToyHeap> heap;
 
 protected:
+    std::map<std::string, std::vector<MethodEntry>> methods;
+    std::map<uint64_t, std::string> sources;
+
     std::unique_ptr<vmdbg::Tracer> makeTracer() override {
         return std::move(heap);
     }
@@ -48,8 +67,20 @@ ClassEntry classEntry(const std::string& name, uint64_t oop,
     return entry;
 }
 
+MethodEntry methodEntry(const std::string& className,
+                        const std::string& selector,
+                        const std::string& category, uint64_t oop) {
+    MethodEntry method;
+    method.className = className;
+    method.selector = selector;
+    method.category = category;
+    method.oop = oop;
+    return method;
+}
+
 // A session over a TestInspector with Object <- Collection <- (Array, Bag)
-// and Object <- Point, and nothing opened.
+// and Object <- Point, a few methods on each side of Point and one on
+// Object, and nothing opened.
 class TestSession : public smalltalk::Session {
 public:
     TestSession() {
@@ -57,23 +88,25 @@ public:
         point.category = "Kernel-Numbers";
         point.instanceVariableNames = {"x", "y"};
         point.classVariableNames = {"Origin"};
+        ClassEntry collection = classEntry("Collection", 0x20, "Object", 0x10);
+        collection.instanceVariableNames = {"tally"};
         classes->add(classEntry("Object", 0x10, "", 0));
-        classes->add(classEntry("Collection", 0x20, "Object", 0x10));
+        classes->add(collection);
         classes->add(point);
         classes->add(classEntry("Bag", 0x40, "Collection", 0x20));
         classes->add(classEntry("Array", 0x50, "Collection", 0x20));
         classes->add(classEntry("Point class", 0x31, "Object class", 0x11));
+
+        classes->add(methodEntry("Point", "x", "accessing", 0x300),
+                     "x\r\t^x");
+        classes->add(methodEntry("Point", "y", "accessing", 0x310));
+        classes->add(methodEntry("Point", "printOn:", "printing", 0x320));
+        classes->add(methodEntry("Point class", "x:y:", "instance creation",
+                                 0x330));
+        classes->add(methodEntry("Object", "isNil", "testing", 0x340));
     }
 
     std::string getRegisters() const override { return "{}"; }
-    std::string getSelectors(const std::string&) const override { return "[]"; }
-    std::string getMethods(const std::string&) const override { return "[]"; }
-    std::string getMethod(const std::string&,
-                          const std::string&) const override {
-        return "{}";
-    }
-    std::string search(const std::string&, bool, const std::string&,
-                       const std::string&) const override { return "[]"; }
     std::string listBreakpoints() const override { return "[]"; }
     std::string readMemory(uint64_t, size_t) const override { return "{}"; }
     std::string waitForEvent(int) override { return "{}"; }
@@ -136,12 +169,25 @@ TEST_CASE("a metaclass is a Metaclass and is defined by its name") {
     CHECK(meta["definition"].asString() == "Point class");
 }
 
+TEST_CASE("a metaclass the class table lacks is made from its class") {
+    TestSession session;
+    Json meta = Json::parse(session.getClass("Bag class"));
+    CHECK(meta["name"].asString() == "Bag class");
+    CHECK(meta["class"].asString() == "Metaclass");
+    CHECK(meta["superclass"].asString() == "Collection class");
+    CHECK(Json::parse(session.getClass("Object class"))["superclass"]
+              .asString() == "Class");
+    CHECK(session.getClass("Missing class") == "{}");
+}
+
 TEST_CASE("a class list keeps to the classes under its root") {
     TestSession session;
-    Json all = Json::parse(session.listClasses("Collection", true, false, -1));
+    CHECK(session.listClasses("Collection", true, false, -1) ==
+          "[\"Array\",\"Bag\",\"Collection\"]");
+    Json all = Json::parse(session.listClasses("Collection", false, false, -1));
     CHECK(namesIn(all) ==
           std::vector<std::string>{"Array", "Bag", "Collection"});
-    CHECK(all[0].entries().size() == 1);
+    CHECK(all[2]["oop"].asString() == Json::hex(uint64_t(0x20)).asString());
 }
 
 TEST_CASE("a class tree starts at the root and stops at the depth asked") {
@@ -169,12 +215,67 @@ TEST_CASE("a class's neighbours and variables come from the class table") {
     Json variables = Json::parse(session.getVariables("Point"));
     CHECK(namesIn(variables) == std::vector<std::string>{"x", "y", "Origin"});
     CHECK(variables[2]["type"].asString() == "class");
+    CHECK(variables[2]["value"].isNull());
     CHECK(namesIn(Json::parse(session.getInstanceVariables("Point"))) ==
           std::vector<std::string>{"x", "y"});
     CHECK(namesIn(Json::parse(session.getClassVariables("Point"))) ==
           std::vector<std::string>{"Origin"});
-    CHECK(session.getCategories("Point") == "[\"Kernel-Numbers\"]");
-    CHECK(session.getCategories("Object") == "[]");
+}
+
+TEST_CASE("a class's variables include the inherited ones, defined where") {
+    TestSession session;
+    Json variables = Json::parse(session.getVariables("Bag"));
+    REQUIRE(variables.size() == 1);
+    CHECK(variables[0]["name"].asString() == "tally");
+    CHECK(variables[0]["class"].asString() == "Collection");
+    CHECK(session.getInstanceVariables("Bag") == "[]");
+}
+
+TEST_CASE("a class's categories are those of its methods") {
+    TestSession session;
+    CHECK(session.getCategories("Point") ==
+          "[\"accessing\",\"printing\"]");
+    CHECK(session.getCategories("Bag") == "[]");
+    CHECK(session.getUsedCategories("Point") ==
+          "[\"accessing\",\"printing\",\"testing\"]");
+}
+
+TEST_CASE("a method reads with its source, or its heading when it has none") {
+    TestSession session;
+    CHECK(session.getSelectors("Point") == "[\"x\",\"y\",\"printOn:\"]");
+
+    Json x = Json::parse(session.getMethod("Point", "x"));
+    CHECK(x["methodClass"].asString() == "Point");
+    CHECK(x["category"].asString() == "accessing");
+    CHECK(x["source"].asString() == "x\r\t^x");
+    CHECK(x["hasSource"].asBool());
+    CHECK(x["oop"].asString() == Json::hex(uint64_t(0x300)).asString());
+
+    Json y = Json::parse(session.getMethod("Point", "y"));
+    CHECK(y["source"].asString() == "Point>>y");
+    CHECK_FALSE(y["hasSource"].asBool());
+    CHECK(session.getMethod("Point", "z") == "{}");
+
+    CHECK(Json::parse(session.getMethods("Point")).size() == 3);
+    Json classSide = Json::parse(session.getMethods("Point class"));
+    REQUIRE(classSide.size() == 1);
+    CHECK(classSide[0]["selector"].asString() == "x:y:");
+}
+
+TEST_CASE("a search finds classes, then selectors from both sides, once each") {
+    TestSession session;
+    CHECK(session.search("o", true, "including", "class") ==
+          "[{\"type\":\"class\",\"text\":\"Collection\"},"
+          "{\"type\":\"class\",\"text\":\"Object\"},"
+          "{\"type\":\"class\",\"text\":\"Point\"}]");
+    Json selectors = Json::parse(session.search("x", false, "beginning",
+                                                "selector"));
+    REQUIRE(selectors.size() == 2);
+    CHECK(selectors[0]["text"].asString() == "x");
+    CHECK(selectors[1]["text"].asString() == "x:y:");
+    CHECK(session.search("ON:", true, "ending", "")
+          == "[{\"type\":\"selector\",\"text\":\"printOn:\"}]");
+    CHECK(session.search("", true, "including", "all") == "[]");
 }
 
 TEST_CASE("a session with nothing attached says it is detached") {

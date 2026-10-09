@@ -124,28 +124,6 @@ bool WebsideServer::isActive() const {
 std::string WebsideServer::stopReason() const { return session().getStopReason(); }
 std::optional<int> WebsideServer::pid() const { return session().getPid(); }
 
-std::string WebsideServer::classListData(const std::string& root, bool namesOnly) const {
-    return session().listClasses(root, namesOnly);
-}
-std::string WebsideServer::classDetailData(const std::string& name) const { return session().getClass(name); }
-std::string WebsideServer::searchData(const std::string& text, bool ignoreCase,
-                                      const std::string& condition, const std::string& type) const {
-    return session().search(text, ignoreCase, condition, type);
-}
-std::string WebsideServer::subclassesData(const std::string& name) const { return session().getSubclasses(name); }
-std::string WebsideServer::superclassesData(const std::string& name) const { return session().getSuperclasses(name); }
-std::string WebsideServer::variablesData(const std::string& name) const { return session().getVariables(name); }
-std::string WebsideServer::instanceVariablesData(const std::string& name) const { return session().getInstanceVariables(name); }
-std::string WebsideServer::classVariablesData(const std::string& name) const { return session().getClassVariables(name); }
-std::string WebsideServer::categoriesData(const std::string& name) const { return session().getCategories(name); }
-std::string WebsideServer::usedCategoriesData(const std::string& name) const { return session().getUsedCategories(name); }
-std::string WebsideServer::selectorsData(const std::string& name) const { return session().getSelectors(name); }
-std::string WebsideServer::methodsData(const std::string& name) const { return session().getMethods(name); }
-std::string WebsideServer::methodDetailData(const std::string& className,
-                                            const std::string& selector) const {
-    return session().getMethod(className, selector);
-}
-
 // ---- frame API: resolve the current thread/frame, then let the session format ----
 
 std::string WebsideServer::listFrames() const {
@@ -1064,7 +1042,7 @@ void WebsideServer::setupRoutes() {
         it = req.params.find("type");
         if (it != req.params.end()) type = it->second;
 
-        res.body = searchData(text, ignoreCase, condition, type);
+        res.body = session().search(text, ignoreCase, condition, type);
         return res;
     });
 
@@ -1382,39 +1360,26 @@ void WebsideServer::setupDebuggerActionRoutes() {
 }
 
 // =========================================================================
-// Class name parsing
-// =========================================================================
-
-WebsideServer::ClassIdent WebsideServer::parseClassName(const std::string& name) {
-    ClassIdent id;
-    id.className = name;
-    const std::string suffix = " class";
-    if (name.size() > suffix.size() &&
-        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        id.isMetaclass = true;
-        id.baseName = name.substr(0, name.size() - suffix.size());
-    } else {
-        id.isMetaclass = false;
-        id.baseName = name;
-    }
-    return id;
-}
-
-// =========================================================================
 // /classes — list
 // =========================================================================
 
 HttpResponse WebsideServer::handleClassList(const HttpRequest& req) const {
-    HttpResponse res;
+    auto flag = [&](const char* name) {
+        auto it = req.params.find(name);
+        return it != req.params.end()
+            && (it->second == "true" || it->second == "1");
+    };
     std::string root;
-    bool namesOnly = false;
-
     auto it = req.params.find("root");
     if (it != req.params.end()) root = it->second;
-    it = req.params.find("names");
-    if (it != req.params.end()) namesOnly = (it->second == "true" || it->second == "1");
+    int depth = -1;
+    it = req.params.find("depth");
+    if (it != req.params.end()) {
+        try { depth = std::stoi(it->second); } catch (...) {}
+    }
 
-    res.body = classListData(root, namesOnly);
+    HttpResponse res;
+    res.body = session().listClasses(root, flag("names"), flag("tree"), depth);
     return res;
 }
 
@@ -1424,7 +1389,7 @@ HttpResponse WebsideServer::handleClassList(const HttpRequest& req) const {
 
 HttpResponse WebsideServer::handleClassDetail(const std::string& className) const {
     HttpResponse res;
-    res.body = classDetailData(className);
+    res.body = session().getClass(className);
     if (res.body == "{}") {
         res.statusCode = 404;
         res.body = Json::object().set("error", "Class not found").dump();
@@ -1441,17 +1406,11 @@ HttpResponse WebsideServer::handleClassesPrefix(const HttpRequest& req) const {
     auto segments = splitPath(req.path);
 
     if (segments.size() < 2) {
-        res.body = classListData();
+        res.body = session().listClasses();
         return res;
     }
-
-    auto id = parseClassName(segments[1]);
-
-    if (segments.size() == 2)
-        return handleClassDetail(id.className);
-
-    std::string subRoute = segments[2];
-    return handleClassSubRoute(id.className, subRoute, segments);
+    if (segments.size() == 2) return handleClassDetail(segments[1]);
+    return handleClassSubRoute(segments[1], segments[2], segments);
 }
 
 // =========================================================================
@@ -1465,24 +1424,25 @@ HttpResponse WebsideServer::handleClassSubRoute(
 
     HttpResponse res;
 
-    if (subRoute == "subclasses")               res.body = subclassesData(className);
-    else if (subRoute == "superclasses")         res.body = superclassesData(className);
-    else if (subRoute == "variables")            res.body = variablesData(className);
-    else if (subRoute == "instance-variables")   res.body = instanceVariablesData(className);
-    else if (subRoute == "class-variables")      res.body = classVariablesData(className);
-    else if (subRoute == "categories")           res.body = categoriesData(className);
-    else if (subRoute == "used-categories")      res.body = usedCategoriesData(className);
-    else if (subRoute == "selectors")            res.body = selectorsData(className);
+    const WebsideSession& s = session();
+    if (subRoute == "subclasses")               res.body = s.getSubclasses(className);
+    else if (subRoute == "superclasses")         res.body = s.getSuperclasses(className);
+    else if (subRoute == "variables")            res.body = s.getVariables(className);
+    else if (subRoute == "instance-variables")   res.body = s.getInstanceVariables(className);
+    else if (subRoute == "class-variables")      res.body = s.getClassVariables(className);
+    else if (subRoute == "categories")           res.body = s.getCategories(className);
+    else if (subRoute == "used-categories")      res.body = s.getUsedCategories(className);
+    else if (subRoute == "selectors")            res.body = s.getSelectors(className);
     else if (subRoute == "methods") {
         if (segments.size() == 3) {
-            res.body = methodsData(className);
+            res.body = s.getMethods(className);
         } else {
             std::string selector;
             for (size_t i = 3; i < segments.size(); i++) {
                 if (i > 3) selector += "/";
                 selector += segments[i];
             }
-            res.body = methodDetailData(className, selector);
+            res.body = s.getMethod(className, selector);
             if (res.body == "{}")
                 res.statusCode = 404;
         }

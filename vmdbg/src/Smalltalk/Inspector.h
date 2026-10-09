@@ -6,6 +6,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,8 +20,26 @@ struct ClassEntry {
     uint64_t superclass{0};          // oop, 0 at the root of the hierarchy
     std::string superclassName;      // empty at the root
     std::string category;
+    std::string package;
+    bool variable{false};            // its instances have indexed slots
     std::vector<std::string> instanceVariableNames;
     std::vector<std::string> classVariableNames;
+};
+
+/** A MethodEntry is what is known about a method: enough to list it without
+ *  its source. **/
+struct MethodEntry {
+    std::string selector;
+    std::string className;           // the class or metaclass defining it
+    std::string category;
+    uint64_t oop{0};
+};
+
+/** A ClassVariable is a class variable's name and the oop it holds, which is
+ *  empty when the VM's value was not read. **/
+struct ClassVariable {
+    std::string name;
+    std::optional<uint64_t> value;
 };
 
 /** A RetainerStep is one object on the chain that keeps another alive. **/
@@ -49,6 +68,21 @@ public:
     /** Fill the class table. Costly, so it is done once per stop. **/
     virtual bool discoverClasses() = 0;
 
+    /** Returns the methods `className` defines, where "Point class" names
+     *  the metaclass. Returns none when the VM's methods cannot be read. **/
+    virtual std::vector<MethodEntry> methodsOf(const std::string&) const {
+        return {};
+    }
+
+    /** Returns the source of `method`, or an empty text when it cannot be
+     *  found. **/
+    virtual std::string sourceOf(const MethodEntry&) const { return {}; }
+
+    /** Returns the class variables of `className`. The default has the names
+     *  in the class table and no values. **/
+    virtual std::vector<ClassVariable> classVariablesOf(
+        const std::string& className) const;
+
     // ---- built on the above ------------------------------------------------
 
     const std::map<std::string, ClassEntry>& classes() const { return classTable; }
@@ -56,6 +90,11 @@ public:
     const ClassEntry* classAt(uint64_t oop) const;
     std::vector<std::string> subclassesOf(const std::string& name) const;
     std::vector<std::string> superclassesOf(const std::string& name) const;
+
+    /** Returns the method `className` defines for `selector`, or nothing
+     *  when it defines none. **/
+    std::optional<MethodEntry> methodNamed(const std::string& className,
+                                           const std::string& selector) const;
 
     /** Returns the chain that keeps `oop` alive, from the last class on the
      *  way down from the roots to `oop` itself. Returns an empty chain when
