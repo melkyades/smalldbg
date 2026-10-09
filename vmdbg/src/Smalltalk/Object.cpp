@@ -42,13 +42,25 @@ std::string Object::printString() const {
     return os.str();
 }
 
+std::unique_ptr<HeapObject> Object::asBaseHeapObject() const {
+    return nullptr;
+}
+
+// Only the dialect's heap object can read a header, so a heap oop asks it.
+std::string Object::className() const {
+    if (isSmallInteger()) return "SmallInteger";
+    if (isCharacter()) return "Character";
+    if (isHeapObject())
+        if (auto heap = asBaseHeapObject()) return heap->className();
+    return {};
+}
+
 void Object::toStream(std::ostream& os, int nested) const {
     if (isImmediate()) { os << immediateString(); return; }
-    if (!isValid() || rawOop == 0) { os << "<invalid>"; return; }
-    // A heap oop reaching here means the dialect did not route it to its heap
-    // object type, which is the only thing that can read the header.
-    (void)nested;
-    os << "<object>";
+    if (isHeapObject()) {
+        if (auto heap = asBaseHeapObject()) { heap->toStream(os, nested); return; }
+    }
+    os << "<invalid>";
 }
 
 } // namespace smalltalk

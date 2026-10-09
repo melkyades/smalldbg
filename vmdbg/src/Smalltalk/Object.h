@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <ostream>
 #include <string>
 
@@ -69,7 +70,11 @@ public:
     bool isPresent() const { return isHeapObject() && !isNil(); }
 
     /** The receiver's class name, or empty when it cannot be read. **/
-    virtual std::string className() const { return {}; }
+    virtual std::string className() const;
+
+    /** Returns the receiver as its dialect's heap object, or null when it is
+     *  an immediate. **/
+    virtual std::unique_ptr<HeapObject> asBaseHeapObject() const;
 
     /** A short human-readable rendering: the value for an immediate, "a Point"
      *  or the contents for a heap object. **/
