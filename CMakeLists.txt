@@ -82,6 +82,7 @@ if(WIN32)
         src/symbols/DbgEngSymbolBackend.cpp
         src/platform/windows/HttpDownload.cpp
         src/platform/windows/Platform.cpp
+        src/platform/windows/WoW64SyscallUnwinder.cpp
     )
     target_link_libraries(smalldbg PRIVATE dbghelp dbgeng)
 else()

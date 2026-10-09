@@ -14,6 +14,9 @@ add_executable(unit_tests
     unit/test_disassembly_annotator.cpp
 )
 target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
+if(WIN32)
+    target_sources(unit_tests PRIVATE unit/test_wow64_syscall_unwinder.cpp)
+endif()
 
 # Legacy end-to-end harness. Still built, but not registered with ctest yet:
 # it drives a live target interactively (stdin "wait" mode) and is being

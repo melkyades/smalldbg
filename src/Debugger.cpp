@@ -11,6 +11,7 @@
 #include "backends/SnapshotBackend.h"
 #ifdef _WIN32
 #include "backends/WindowsBackend.h"
+#include "platform/windows/WoW64SyscallUnwinder.h"
 #include "backends/DbgEngBackend.h"
 #include "backends/TTDBackend.h"
 #else
@@ -47,6 +48,9 @@ Debugger::Debugger(Mode mode, const Arch* arch, Debuggee debuggee)
     : backend(backendFor(this, mode, arch ? arch : X64::instance(), debuggee)),
       symbolProvider(std::make_unique<SymbolProvider>(backend)),
       disassembler(std::make_unique<Disassembler>(backend->getArch())) {
+#ifdef _WIN32
+    unwinders.push_back(std::make_unique<WoW64SyscallUnwinder>());
+#endif
     // The backend's unwinder handles any frame, so it has the lowest priority.
     unwinders.push_back(backend->createUnwinder());
 }

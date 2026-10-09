@@ -368,6 +368,26 @@ TEST_CASE("a thread is named after what it was started to do") {
     dbg.detach();
 }
 
+// The workers of "deep" mode sleep, which is a system call. The engine already
+// walks a live thread out of one, so no frame is left to the WoW64 unwinder.
+TEST_CASE("a live thread in a system call is not taken for a WoW64 thunk") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtBreakHere(dbg, {"deep"});
+
+    int frames = 0;
+    for (const auto& thread : dbg.getProcess()->threads()) {
+        auto* trace = thread->getStackTrace(64);
+        if (!trace) continue;
+        for (const auto& frame : trace->getFrames()) {
+            frames++;
+            CHECK(frame->moduleName != "WoW64");
+        }
+    }
+    CHECK(frames > 0);
+
+    dbg.detach();
+}
+
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtInitialStop(dbg);
