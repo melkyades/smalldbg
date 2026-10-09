@@ -175,11 +175,11 @@ public:
     Backend* getBackend() const { return backend; }
     Disassembler* getDisassembler() { return disassembler.get(); }
 
-    /// The target's architecture, as the backend currently understands it.
+    /** Returns the target's architecture as the backend currently sees it. **/
     const Arch* arch() const;
 
-    /// Update arch after the backend detects the target's real architecture
-    /// (e.g. a WoW64 process running under a 64-bit host).
+    /** Sets the architecture once the backend detects the target's real one,
+     *  such as a WoW64 process under a 64-bit debugger. **/
     void updateArch(const Arch* arch);
 
 private:

@@ -9,7 +9,7 @@
 
 namespace vmdbg {
 
-/// How a stretch of target memory should be presented in a listing.
+/** A MemType says how a stretch of target memory is shown in a listing. **/
 enum class MemType {
     Code,
     Data1,
@@ -25,12 +25,13 @@ enum class MemType {
 const char* memTypeName(MemType t);
 std::optional<MemType> memTypeFromName(const std::string& name);
 
-/// Bytes one element occupies (1 for Code, 0 for Struct: ask the map).
+/** Returns the bytes one element occupies: 1 for Code, and 0 for Struct,
+ *  whose size only the map knows. **/
 size_t memTypeElementSize(MemType t);
 
-/// A layout a dialect names and lays over memory, such as an object header or
-/// a VM record. The generic map only carries the name and the length; what the
-/// fields mean, and how to render them, stays with the dialect that defined it.
+/** A StructType is a named layout over memory, such as an object header or
+ *  a VM record. The map only keeps the name and the size; what the fields
+ *  mean stays with whoever defined it. **/
 struct StructType {
     std::string name;
     size_t size{0};   // 0 when instances vary and only the provider knows
@@ -44,27 +45,28 @@ struct MemTypeRange {
     int      structId{-1};
 };
 
-/// Three-layer address-to-type lookup, mirroring how labels resolve: a user
-/// override wins, then a provider, then the defaults derived from the memory
-/// map, then a fallback. Ranges are half-open and kept non-overlapping within
-/// each layer; inserting an overlapping one splits or replaces what was there.
+/** A MemoryTypeMap says what type each address has. A user override wins,
+ *  then a provider, then the defaults derived from the memory map, then a
+ *  fallback. Ranges are half-open and do not overlap within a layer;
+ *  adding one splits or replaces what was there. **/
 class MemoryTypeMap {
 public:
-    /// Answers one address at a time, for runs too fine or too numerous to
-    /// materialise as ranges. Returns false to let the defaults answer.
+    /** A Provider answers one address at a time, for runs too small or too
+     *  many to keep as ranges. It returns false to let the defaults answer. **/
     using Provider = std::function<bool(uint64_t addr, MemTypeRange& out)>;
     void setProvider(Provider p) { provider = std::move(p); }
 
-    /// Names a layout and returns its id. Defining the same name twice answers
-    /// the existing id, so a dialect can define on demand.
+    /** Names a layout and returns its id. Defining a name again returns the
+     *  existing id, so a layout can be defined on demand. **/
     int defineStruct(const std::string& name, size_t size);
     const StructType* structType(int id) const;
     int structIdNamed(const std::string& name) const;
     const std::vector<StructType>& structTypes() const { return structs; }
 
-    /// The name to show for a range, and the bytes one element of it occupies.
-    /// Both resolve a struct range through the registry.
+    /** Returns the name to show for `range`, looking a struct up by its id. **/
     std::string typeName(const MemTypeRange& range) const;
+    /** Returns the bytes one element of `range` occupies, looking a struct up
+     *  by its id. **/
     size_t elementSize(const MemTypeRange& range) const;
 
     void setDefault(uint64_t start, uint64_t end, MemType type, int structId = -1);
@@ -80,10 +82,10 @@ public:
     MemType typeAt(uint64_t addr) const;
     bool isUserTyped(uint64_t addr) const;
 
-    /// Effective range containing `addr`, clipped to [lo, hi).
+    /** Returns the effective range containing `addr`, clipped to [lo, hi). **/
     MemTypeRange rangeAt(uint64_t addr, uint64_t lo, uint64_t hi) const;
 
-    /// Split [start, end) into maximal runs of a single effective type.
+    /** Returns [start, end) split into maximal runs of one effective type. **/
     std::vector<MemTypeRange> classify(uint64_t start, uint64_t end) const;
 
     const std::map<uint64_t, MemTypeRange>& userRanges() const { return user; }

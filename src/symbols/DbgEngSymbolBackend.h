@@ -20,8 +20,8 @@ namespace smalldbg {
 
 class DbgEngSymbolBackend : public SymbolBackend {
 public:
-    /// Construct with pointers to DbgEng's IDebugSymbols3 and IDebugControl4.
-    /// The caller retains ownership — these must outlive this object.
+    /** The caller keeps ownership of `symbols` and `control`, which must
+     *  outlive this backend. **/
     DbgEngSymbolBackend(IDebugSymbols3* symbols, IDebugControl4* control);
     ~DbgEngSymbolBackend() override;
 

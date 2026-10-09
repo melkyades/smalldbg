@@ -149,13 +149,13 @@ public:
     SymbolDatabase& database() { return symbolDatabase; }
     const SymbolDatabase& database() const { return symbolDatabase; }
 
-    /// What is at this address. Native symbols are folded in on demand, so a
-    /// caller need not know whether it lies in a module or in a heap.
+    /** Returns what is at `address`, in a module or in a heap, or nothing
+     *  when no symbol covers it. Native symbols are added on demand. **/
     std::optional<SymbolicInfo> symbolicInfoFor(Address address);
 
 private:
-    /// Records a native symbol the first time it is asked for, so repeated
-    /// lookups in the same routine stop reaching the symbol engine.
+    /** Records a native symbol the first time it is asked for, so repeated
+     *  lookups in the same routine stop reaching the symbol engine. **/
     void rememberNativeSymbol(Address address);
 
     /** A database entry as a Symbol. **/

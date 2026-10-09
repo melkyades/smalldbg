@@ -73,7 +73,7 @@ struct Breakpoint {
     std::string name;
 };
 
-/// Information about a loaded module (executable or shared library).
+/** A ModuleInfo describes a loaded executable or shared library. **/
 struct ModuleInfo {
     std::string path;         // File path on disk
     std::string shortName;    // Filename component only

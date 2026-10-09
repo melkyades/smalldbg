@@ -14,7 +14,7 @@
 
 namespace smalldbg {
 
-/// A local variable or formal parameter extracted from DWARF.
+/** A DwarfVariable is a local variable or parameter read from DWARF. **/
 struct DwarfVariable {
     std::string name;
     std::string typeName;
@@ -25,7 +25,7 @@ struct DwarfVariable {
     bool isParameter{false};
 };
 
-/// A subprogram (function) with its address range and local variables.
+/** A DwarfSubprogram is a function with its address range and locals. **/
 struct DwarfSubprogram {
     std::string name;
     uint64_t lowPC{0};
@@ -33,22 +33,27 @@ struct DwarfSubprogram {
     std::vector<DwarfVariable> variables;
 };
 
-/// Parsed DWARF type database for one or more compilation units.
+/** A DwarfTypeDatabase holds the types parsed from one or more compilation
+ *  units. **/
 class DwarfTypeDatabase {
 public:
-    /// Parse DWARF types from .o files referenced by a Mach-O binary.
+    /** Parses the types in the .o files a Mach-O binary refers to. **/
     void loadFromBinary(const std::string& binaryPath);
 
-    /// Look up a type by fully-qualified name (e.g. "MyApp::Runtime").
+    /** Returns the type with a fully qualified name such as "MyApp::Runtime",
+     *  or null when there is none. It lives as long as the database. **/
     const NativeTypeInfo* findType(const std::string& name) const;
 
-    /// Get the type name of a global variable by its demangled symbol name.
+    /** Returns the type name of the global with this demangled name, or
+     *  nothing when there is no such global. **/
     std::optional<std::string> getVariableTypeName(const std::string& name) const;
 
-    /// Find the subprogram containing the given PC address.
+    /** Returns the subprogram containing `pc`, or null when there is none.
+     *  It lives as long as the database. **/
     const DwarfSubprogram* findSubprogram(uint64_t pc) const;
 
-    /// Find a subprogram by demangled function name.
+    /** Returns the subprogram with this demangled name, or null when there is
+     *  none. It lives as long as the database. **/
     const DwarfSubprogram* findSubprogramByName(const std::string& name) const;
 
     bool isLoaded() const { return loaded; }

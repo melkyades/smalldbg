@@ -26,11 +26,10 @@ class DbgEngBackend;  // forward declaration for event callbacks
 // determines whether that's a no-op or a real fixup.
 class EffectiveTypeSync;
 
-/// Event callbacks — the engine calls into these during WaitForEvent.
-/// Each callback sets stopReason on the backend.
-/// Returning DEBUG_STATUS_BREAK causes WaitForEvent to return S_OK.
-/// Returning DEBUG_STATUS_GO / GO_NOT_HANDLED lets the engine continue
-/// internally (WaitForEvent keeps waiting).
+/** DbgEngEventCallbacks receives the engine's events during WaitForEvent and
+ *  sets the backend's stop reason. A callback returns DEBUG_STATUS_BREAK to
+ *  make WaitForEvent return, and DEBUG_STATUS_GO or GO_NOT_HANDLED to keep
+ *  it waiting. **/
 class DbgEngEventCallbacks : public DebugBaseEventCallbacks {
 public:
     explicit DbgEngEventCallbacks(DbgEngBackend* be) : backend(be) {}
@@ -57,11 +56,8 @@ private:
     DbgEngBackend* backend;
 };
 
-/// Debugging backend that uses the DbgEng (WinDbg) engine.
-///
-/// This is an alternative to the plain-WinAPI WindowsBackend.  It requires
-/// same-architecture debugging: x86 debugger for x86 targets, x64 for x64,
-/// ARM64 for ARM64.  Cross-architecture debugging is NOT supported.
+/** DbgEngBackend debugs through the DbgEng (WinDbg) engine. The debugger
+ *  and its target must have the same architecture. **/
 class DbgEngBackend : public Backend {
 public:
     DbgEngBackend(Debugger* dbg, Mode m, const Arch* a);

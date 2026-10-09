@@ -41,16 +41,15 @@ public:
     std::string getFrameBindings(smalldbg::StackTrace& trace,
                                  const smalldbg::StackFrame& frame, int index) const;
     std::string getFrameRegisters(const smalldbg::StackFrame& frame) const;
-    /// Where the frame's function starts, for a client that disassembles it.
+    /** Returns where the frame's function starts, for disassembling it. **/
     static uint64_t functionAddressOf(const smalldbg::StackFrame& frame);
 
-    /// A target address in hex at that width, so a 32-bit target's addresses
-    /// are not padded out to 16 digits.
+    /** Returns `address` in hex at the target's width, so a 32-bit target's
+     *  addresses are not padded to 16 digits. **/
     Json addressHex(uint64_t address) const;
 
-    /// What the addresses in [from, to) mean in terms of the frames on this
-    /// stack. Contents come from /memory; this says which frame owns a slot
-    /// and what it holds. Addresses inside no frame are simply absent.
+    /** Returns which frame owns each of the `slots` slots from `from`, and
+     *  what it holds. Slots inside no frame are left out. **/
     std::string stackDescriptors(const smalldbg::StackTrace& trace, int selectedIndex,
                                  uint64_t from, int slots) const;
 
@@ -62,8 +61,8 @@ public:
      *  frame `selectedFrame`. **/
     virtual std::string getSmalltalkStackContents(int threadIndex,
                                                   int selectedFrame) const = 0;
-    /// Registers for one green-thread frame. A dialect whose activations are
-    /// not native frames has nothing to say here.
+    /** Returns the registers of one green-thread frame. The base returns
+     *  none. **/
     virtual std::string getSmalltalkFrameRegisters(int, int) const { return "[]"; }
 
     // ---- class browsing ----
@@ -103,7 +102,7 @@ protected:
     // ---- virtual hooks for frame formatting ----
     // Dialects override these; the base builds generic native JSON.
 
-    /// Display label for a frame (used by listFrames).
+    /** Returns the label listFrames shows for `frame`. **/
     virtual std::string buildFrameLabel(const smalldbg::StackFrame& frame) const;
 
     /** JSON detail for one frame; dispatches to the smalltalk/native hook
@@ -113,27 +112,27 @@ protected:
     virtual void addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
     virtual void addNativeFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
 
-    /// JSON bindings (locals + IP/FP/SP) for one frame; dispatches on metadata.
+    /** Returns the locals and IP, FP and SP of `frame` as JSON. **/
     virtual std::string buildFrameBindingsJson(const smalldbg::StackFrame& frame,
                                                int index) const;
     virtual std::string addSmalltalkFrameBindings(const smalldbg::StackFrame& frame) const;
     virtual std::string addNativeFrameBindings(const smalldbg::StackFrame& frame) const;
 
-    /// Arguments of one frame as [{name, value}]. Empty where a dialect
-    /// cannot tell arguments from locals, which is the base case.
+    /** Returns the frame's arguments as [{name, value}]. The base cannot tell
+     *  arguments from locals and returns none. **/
     virtual std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const;
 
-    /// JSON register dump for one frame (arch-aware).
+    /** Returns the registers of `frame` as JSON. **/
     virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
 
-    /// Descriptors for the slots of one frame that fall in [from, to).
+    /** Adds to `out` a descriptor for each slot of `frame` in [from, to). **/
     void describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
                             int frameIndex, int selectedIndex, size_t slot,
                             uint64_t from, uint64_t to) const;
 
-    /// One descriptor per meaningful address in [from, to). The base names the
-    /// slots any frame-pointer ABI has; dialects add what their own frame
-    /// layout means and may read the target to describe a slot's value.
+    /** Returns a descriptor for each meaningful address in [from, to). The
+     *  base names the slots any frame-pointer ABI has; an override can add
+     *  what its own frame layout means. **/
     virtual std::string buildStackDescriptorsJson(smalldbg::Debugger* dbg,
                                                   const smalldbg::StackTrace& trace,
                                                   int selectedIndex,
