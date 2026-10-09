@@ -127,3 +127,6 @@ add_subdirectory(vmdbg)
 
 # Webside debugger servers (Egg, Bee, etc)
 add_subdirectory(webside)
+
+# A reader for a dump, built on vmdbg like webside is.
+add_subdirectory(vmreport)
