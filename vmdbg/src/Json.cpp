@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace webside {
+namespace vmdbg {
 
 // =========================================================================
 // Construction
@@ -167,13 +167,19 @@ std::string Json::asString() const {
     return "";
 }
 
+// Returns true for text such as "0x1234".
+static bool isHexText(const std::string& text) {
+    return text.size() > 2 && text[0] == '0'
+        && (text[1] == 'x' || text[1] == 'X');
+}
+
 int64_t Json::asInt() const {
     if (type == Type::Int) return intVal;
     if (type == Type::Double) return static_cast<int64_t>(doubleVal);
     if (type == Type::String) {
-        // Handle hex strings like "0x1234"
-        if (strVal.size() > 2 && strVal[0] == '0' && (strVal[1] == 'x' || strVal[1] == 'X'))
-            return static_cast<int64_t>(std::strtoull(strVal.c_str() + 2, nullptr, 16));
+        if (isHexText(strVal))
+            return static_cast<int64_t>(
+                std::strtoull(strVal.c_str() + 2, nullptr, 16));
         return std::strtoll(strVal.c_str(), nullptr, 10);
     }
     if (type == Type::Bool) return boolVal ? 1 : 0;
@@ -184,7 +190,7 @@ uint64_t Json::asUInt() const {
     if (type == Type::Int) return static_cast<uint64_t>(intVal);
     if (type == Type::Double) return static_cast<uint64_t>(doubleVal);
     if (type == Type::String) {
-        if (strVal.size() > 2 && strVal[0] == '0' && (strVal[1] == 'x' || strVal[1] == 'X'))
+        if (isHexText(strVal))
             return std::strtoull(strVal.c_str() + 2, nullptr, 16);
         return std::strtoull(strVal.c_str(), nullptr, 10);
     }
@@ -209,7 +215,9 @@ bool Json::isNull()   const { return type == Type::Null; }
 bool Json::isObject() const { return type == Type::Object; }
 bool Json::isArray()  const { return type == Type::Array; }
 bool Json::isString() const { return type == Type::String; }
-bool Json::isNumber() const { return type == Type::Int || type == Type::Double; }
+bool Json::isNumber() const {
+    return type == Type::Int || type == Type::Double;
+}
 bool Json::isBool()   const { return type == Type::Bool; }
 
 // =========================================================================
@@ -322,12 +330,24 @@ std::string Json::escape(const std::string& s) {
 // Parsing
 // =========================================================================
 
+namespace {
+
+// Thrown by the parser at the first thing that is not JSON.
+struct Malformed {};
+
+} // namespace
+
 Json Json::parse(const std::string& text) {
     const char* p = text.c_str();
     const char* end = p + text.size();
-    skipWhitespace(p, end);
-    if (p >= end) return Json();
-    return parseValue(p, end);
+    try {
+        Json value = parseValue(p, end);
+        skipWhitespace(p, end);
+        if (p != end) throw Malformed{};
+        return value;
+    } catch (const Malformed&) {
+        return Json();
+    }
 }
 
 void Json::skipWhitespace(const char*& p, const char* end) {
@@ -337,7 +357,7 @@ void Json::skipWhitespace(const char*& p, const char* end) {
 
 Json Json::parseValue(const char*& p, const char* end) {
     skipWhitespace(p, end);
-    if (p >= end) return Json();
+    if (p >= end) throw Malformed{};
 
     switch (*p) {
         case '{': return parseObject(p, end);
@@ -348,19 +368,19 @@ Json Json::parseValue(const char*& p, const char* end) {
                 p += 4;
                 return Json::boolean(true);
             }
-            return Json();
+            throw Malformed{};
         case 'f':
             if (end - p >= 5 && std::memcmp(p, "false", 5) == 0) {
                 p += 5;
                 return Json::boolean(false);
             }
-            return Json();
+            throw Malformed{};
         case 'n':
             if (end - p >= 4 && std::memcmp(p, "null", 4) == 0) {
                 p += 4;
                 return Json::null();
             }
-            return Json();
+            throw Malformed{};
         default:
             return parseNumber(p, end);
     }
@@ -374,18 +394,16 @@ Json Json::parseObject(const char*& p, const char* end) {
 
     for (;;) {
         skipWhitespace(p, end);
-        if (p >= end || *p != '"') return j;
         std::string key = parseRawString(p, end);
         skipWhitespace(p, end);
-        if (p >= end || *p != ':') return j;
+        if (p >= end || *p != ':') throw Malformed{};
         ++p; // skip ':'
         Json val = parseValue(p, end);
         j.set(key, val);
         skipWhitespace(p, end);
-        if (p >= end) return j;
-        if (*p == '}') { ++p; return j; }
-        if (*p == ',') { ++p; continue; }
-        return j; // malformed
+        if (p < end && *p == '}') { ++p; return j; }
+        if (p < end && *p == ',') { ++p; continue; }
+        throw Malformed{};
     }
 }
 
@@ -398,10 +416,9 @@ Json Json::parseArray(const char*& p, const char* end) {
     for (;;) {
         j.add(parseValue(p, end));
         skipWhitespace(p, end);
-        if (p >= end) return j;
-        if (*p == ']') { ++p; return j; }
-        if (*p == ',') { ++p; continue; }
-        return j; // malformed
+        if (p < end && *p == ']') { ++p; return j; }
+        if (p < end && *p == ',') { ++p; continue; }
+        throw Malformed{};
     }
 }
 
@@ -410,7 +427,7 @@ Json Json::parseString(const char*& p, const char* end) {
 }
 
 std::string Json::parseRawString(const char*& p, const char* end) {
-    if (p >= end || *p != '"') return "";
+    if (p >= end || *p != '"') throw Malformed{};
     ++p; // skip opening quote
     std::string result;
     while (p < end && *p != '"') {
@@ -427,7 +444,7 @@ std::string Json::parseRawString(const char*& p, const char* end) {
                 case 'b':  result += '\b'; break;
                 case 'f':  result += '\f'; break;
                 case 'u': {
-                    // \uXXXX — just consume 4 hex digits, emit as '?'
+                    // A \uXXXX escape is read past and kept as '?'.
                     if (end - p > 4) p += 4;
                     result += '?';
                     break;
@@ -439,7 +456,8 @@ std::string Json::parseRawString(const char*& p, const char* end) {
         }
         ++p;
     }
-    if (p < end && *p == '"') ++p; // skip closing quote
+    if (p >= end) throw Malformed{};
+    ++p; // skip closing quote
     return result;
 }
 
@@ -459,9 +477,11 @@ Json Json::parseNumber(const char*& p, const char* end) {
     }
 
     std::string numStr(start, p);
+    if (numStr.empty() || numStr == "-") throw Malformed{};
     if (isFloat)
         return Json::number(std::strtod(numStr.c_str(), nullptr));
-    return Json::number(static_cast<int64_t>(std::strtoll(numStr.c_str(), nullptr, 10)));
+    return Json::number(
+        static_cast<int64_t>(std::strtoll(numStr.c_str(), nullptr, 10)));
 }
 
-} // namespace webside
+} // namespace vmdbg

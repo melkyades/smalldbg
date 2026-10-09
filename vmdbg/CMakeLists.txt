@@ -11,6 +11,7 @@
 set(VMDBG_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Target.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/VMSession.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Json.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/VMInspector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/AddressTable.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Tracer.cpp

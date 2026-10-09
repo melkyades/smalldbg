@@ -8,6 +8,8 @@
 
 namespace webside {
 
+using vmdbg::Json;
+
 std::string regionsJson(const smalltalk::Inspector& inspector) {
     auto array = Json::array();
     for (const vmdbg::Region& region : inspector.regions()) {

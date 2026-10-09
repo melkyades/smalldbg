@@ -5,21 +5,10 @@
 #include <cstdint>
 #include <utility>
 
-namespace webside {
+namespace vmdbg {
 
-/// Lightweight JSON value — supports both building and parsing.
-///
-/// Building:
-///   auto j = Json::object()
-///       .set("name", "hello")
-///       .set("count", 42)
-///       .set("items", Json::array().add("a").add("b"));
-///   std::string s = j.dump();
-///
-/// Parsing:
-///   auto j = Json::parse(body);
-///   std::string name = j["name"].asString();
-///   int count = j["count"].asInt();
+/** A Json is a JSON value. It is built with the factories and set or add,
+ *  written with dump, and read back with parse and the accessors. **/
 class Json {
 public:
     Json();  // null
@@ -35,13 +24,14 @@ public:
     static Json boolean(bool b);
     static Json null();
 
-    /// Produce a JSON string like "0x0012abcd" (hex with 0x prefix).
+    /** Returns `v` as a string of eight hex digits after "0x". **/
     static Json hex(uint32_t v);
-    /// Produce a hex string for 64-bit values.
+    /** Returns `v` as a string of sixteen hex digits after "0x". **/
     static Json hex(uint64_t v);
 
     // ---- parsing ----
-    /// Parse a JSON string into a Json value.  Returns null on error.
+    /** Returns the value `text` holds, or null when it does not hold exactly
+     *  one complete JSON value. **/
     static Json parse(const std::string& text);
 
     // ---- object mutators ----
@@ -63,9 +53,9 @@ public:
     Json& add(bool val);
 
     // ---- accessors (for parsed values) ----
-    /// Look up a field by key (object).  Returns null Json if missing.
+    /** Returns an object's field named `key`, or null when it has none. **/
     const Json& operator[](const std::string& key) const;
-    /// Look up an element by index (array).  Returns null Json if out of range.
+    /** Returns an array's element at `index`, or null when there is none. **/
     const Json& operator[](size_t index) const;
 
     std::string asString() const;
@@ -92,7 +82,7 @@ public:
     // ---- serialization ----
     std::string dump() const;
 
-    /// Escape a raw string for safe embedding in a JSON value.
+    /** Returns `s` with the characters JSON cannot hold raw escaped. **/
     static std::string escape(const std::string& s);
 
 private:
@@ -103,7 +93,8 @@ private:
     double doubleVal{0.0};
     std::string strVal;
     std::vector<Json> items;                          // Array
-    std::vector<std::pair<std::string, Json>> fields;  // Object (insertion order)
+    // Object fields, in the order they were set.
+    std::vector<std::pair<std::string, Json>> fields;
 
     void appendTo(std::string& out) const;
     static void appendEscaped(std::string& out, const std::string& s);
@@ -118,4 +109,4 @@ private:
     static std::string parseRawString(const char*& p, const char* end);
 };
 
-} // namespace webside
+} // namespace vmdbg

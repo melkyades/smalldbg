@@ -12,6 +12,7 @@ add_executable(vmdbg_tests
     test_target_spec.cpp
     test_tracer.cpp
     test_retainers.cpp
+    test_json.cpp
 )
 target_link_libraries(vmdbg_tests PRIVATE vmdbg doctest::doctest)
 

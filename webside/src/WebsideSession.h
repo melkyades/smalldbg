@@ -16,9 +16,11 @@ namespace smalldbg {
     struct StackFrame;
 }
 
+namespace vmdbg { class Json; }
+
 namespace webside {
 
-class Json;             // forward declaration
+using vmdbg::Json;
 
 /** A WebsideSession answers the Webside API for one VM session, in the
  *  shapes the Webside client expects. The VM's state comes from

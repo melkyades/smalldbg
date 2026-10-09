@@ -11,7 +11,6 @@ set(WEBSIDE_COMMON
     ${CMAKE_CURRENT_SOURCE_DIR}/src/HttpServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideSession.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Json.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Workspace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Smalltalk/Session.cpp

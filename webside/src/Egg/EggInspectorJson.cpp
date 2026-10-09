@@ -9,6 +9,8 @@ static constexpr int PTR_SIZE = 8;
 
 namespace webside {
 
+using vmdbg::Json;
+
 static Json slotToJson(int index, const egg::EggObject& slotObj) {
     auto slot = Json::object();
     slot.set("index", index);

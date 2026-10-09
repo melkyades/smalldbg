@@ -12,7 +12,6 @@ add_executable(webside_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Workspace.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Json.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smalltalk/Session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/Smalltalk/InspectorJson.cpp
 )

@@ -8,6 +8,8 @@
 
 namespace webside {
 
+using vmdbg::Json;
+
 namespace {
 
 const char* kindNames[] = {"launch", "attach", "trace", "dump"};
