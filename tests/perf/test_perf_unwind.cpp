@@ -39,8 +39,9 @@ constexpr double kSecondUnwindFactor = 25.0;
 // thread on stacks of about 35 frames.
 constexpr double kPerThreadUnits = 40.0;
 
-// One request, not one per byte or per pointer. Measured 0.95 round trips.
-constexpr double kPageReadUnits = 8.0;
+// Expects one request, not one per byte or per pointer, which would cost 512
+// or more. Measured 0.9 to 2.7 round trips.
+constexpr double kPageReadUnits = 32.0;
 
 // Launches the test target in "deep" mode and runs it to break_here, so that
 // the tests time stacks with frames in them: several worker threads wait
