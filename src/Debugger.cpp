@@ -342,6 +342,23 @@ ThreadIdentity Debugger::identify(Thread& thread) {
 
 StopReason Debugger::getStopReason() const { return backend->getStopReason(); }
 
+const char* stopReasonName(StopReason reason) {
+    switch (reason) {
+    case StopReason::None:              return "no stop";
+    case StopReason::ProcessCreated:    return "process created";
+    case StopReason::ThreadCreated:     return "thread created";
+    case StopReason::ModuleLoaded:      return "module loaded";
+    case StopReason::ModuleUnloaded:    return "module unloaded";
+    case StopReason::InitialBreakpoint: return "initial breakpoint";
+    case StopReason::Breakpoint:        return "breakpoint";
+    case StopReason::SingleStep:        return "single step";
+    case StopReason::Exception:         return "exception";
+    case StopReason::ProcessExit:       return "process exit";
+    case StopReason::EndOfTrace:        return "end of trace";
+    }
+    return "unknown";
+}
+
 bool Debugger::isStopped() const { return backend->isStopped(); }
 
 Address Debugger::getStopAddress() const { return backend->getStopAddress(); }

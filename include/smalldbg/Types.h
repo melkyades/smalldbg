@@ -51,6 +51,10 @@ enum class StopReason {
     EndOfTrace         // TTD trace reached beginning or end
 };
 
+/** Returns a short name for `reason` that a person can read, such as "single
+ *  step". **/
+const char* stopReasonName(StopReason reason);
+
 using Address = uint64_t;
 using ThreadId = uint64_t;
 
