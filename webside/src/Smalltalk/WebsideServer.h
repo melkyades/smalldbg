@@ -29,7 +29,7 @@ protected:
 
     /** Returns one object as JSON, with what every Smalltalk object has. A
      *  dialect whose objects hold more overrides this. **/
-    std::string inspectJson(uint64_t oop, int maxSlots) const override;
+    virtual std::string inspectJson(uint64_t oop, int maxSlots) const;
 
     void setupRoutes() override;
 };

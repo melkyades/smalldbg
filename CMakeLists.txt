@@ -130,3 +130,31 @@ add_subdirectory(webside)
 
 # A reader for a dump, built on vmdbg like webside is.
 add_subdirectory(vmreport)
+
+# The virtual machines, each a repository of its own built on the libraries
+# above. An entry of vms/ is either the checkout itself, as a directory or a
+# symlink to one, or a <name>.path file holding the checkout's path, absolute
+# or relative to vms/, where symlinks are awkward. A VM with neither is simply
+# absent.
+set(VMS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vms)
+file(GLOB vm_entries RELATIVE ${VMS_DIR} ${VMS_DIR}/*)
+foreach(entry ${vm_entries})
+    if(IS_DIRECTORY ${VMS_DIR}/${entry})
+        if(EXISTS ${VMS_DIR}/${entry}/CMakeLists.txt)
+            add_subdirectory(vms/${entry})
+        endif()
+    elseif(entry MATCHES "^(.+)\\.path$")
+        set(vm ${CMAKE_MATCH_1})
+        if(IS_DIRECTORY ${VMS_DIR}/${vm})
+            continue()
+        endif()
+        file(STRINGS ${VMS_DIR}/${entry} checkout LIMIT_COUNT 1)
+        string(STRIP "${checkout}" checkout)
+        get_filename_component(checkout "${checkout}" ABSOLUTE BASE_DIR ${VMS_DIR})
+        if(EXISTS ${checkout}/CMakeLists.txt)
+            add_subdirectory(${checkout} ${CMAKE_CURRENT_BINARY_DIR}/vms/${vm})
+        else()
+            message(WARNING "vms/${entry} names ${checkout}, which has no CMakeLists.txt")
+        endif()
+    endif()
+endforeach()

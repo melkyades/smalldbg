@@ -143,10 +143,6 @@ protected:
     virtual HttpResponse handleClassify(const HttpRequest& req) const;
     virtual HttpResponse handleInspect(const HttpRequest& req) const;
 
-    /// One object as a document. Only a dialect knows how its objects look,
-    /// so the base has nothing to say.
-    virtual std::string inspectJson(uint64_t oop, int maxSlots) const;
-
     // ---- class name parsing ----
     struct ClassIdent {
         std::string className;

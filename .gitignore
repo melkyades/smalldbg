@@ -28,3 +28,7 @@ desktop.ini
 
 # Local agent instructions (kept out of git intentionally)
 AGENTS.md
+
+# The virtual machines, each a repository of its own, checked out or pointed
+# to from here
+/vms/

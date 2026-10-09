@@ -19,9 +19,7 @@ set(VMDBG_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/MemoryTypeMap.cpp
 )
 
-# The Smalltalk layer, and the dialects that bring their own CMakeLists.txt.
-# A dialect is picked up by being present, so one that lives in a repository of
-# its own appears when it is checked out and is simply absent when it is not.
+# The Smalltalk layer. Dialects build on it from repositories of their own.
 add_subdirectory(src/Smalltalk)
 
 add_library(vmdbg STATIC ${VMDBG_SOURCES} ${SMALLTALK_SOURCES})
