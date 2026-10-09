@@ -1,9 +1,26 @@
 #include "TTDBackend.h"
 #include "smalldbg/Thread.h"
 
+#include <cstdint>
+#include <fstream>
 #include <string>
 
 namespace smalldbg {
+
+// A trace starts with "TTDLog", and records at 0x68 and 0x70 the lowest and
+// highest user addresses of its process. Only a 64-bit process has a highest
+// address above 4 GB.
+size_t tracePointerSize(const std::string& tracePath) {
+    alignas(8) char header[0x78] = {};
+    std::ifstream in(tracePath, std::ios::binary);
+    if (!in.read(header, sizeof header)) return 0;
+    if (std::string(header, 6) != "TTDLog") return 0;
+
+    const uint64_t lowest = *reinterpret_cast<const uint64_t*>(header + 0x68);
+    const uint64_t highest = *reinterpret_cast<const uint64_t*>(header + 0x70);
+    if (lowest != 0x10000 || highest <= lowest) return 0;
+    return highest > 0xFFFFFFFFull ? 8 : 4;
+}
 
 // A TTD position is global and encodes the thread executing at it, so
 // SetCurrentThreadId does not move the engine; only the command processor's
@@ -27,6 +44,17 @@ Status TTDBackend::openTrace(const std::string& path) {
     }
 
     if (log) log("(dbgeng) openTrace: opening " + path);
+
+    // A debugger cannot replay a trace of a wider process, so it is refused
+    // before the engine opens it.
+    const size_t recorded = tracePointerSize(path);
+    if (recorded > hostArch()->pointerSize()) {
+        if (log) log("(dbgeng) openTrace: the trace recorded a "
+                     + std::to_string(recorded * 8) + "-bit process, which a "
+                     + std::to_string(hostArch()->pointerSize() * 8)
+                     + "-bit debugger cannot replay");
+        return Status::NotSupported;
+    }
 
     if (!loadWinDbgPreviewDbgEng()) {
         if (log) log("(dbgeng) openTrace: no TTD-capable dbgeng.dll found. Install it "

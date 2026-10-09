@@ -15,7 +15,8 @@ add_executable(unit_tests
 )
 target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
 if(WIN32)
-    target_sources(unit_tests PRIVATE unit/test_wow64_syscall_unwinder.cpp)
+    target_sources(unit_tests PRIVATE unit/test_wow64_syscall_unwinder.cpp
+                                      unit/test_ttd_trace.cpp)
 endif()
 
 # Legacy end-to-end harness. Still built, but not registered with ctest yet:

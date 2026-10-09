@@ -24,4 +24,8 @@ protected:
     bool selectThread(Thread& thread) const override;
 };
 
+/** Returns the pointer size, in bytes, of the process a TTD trace recorded,
+ *  or 0 when the file does not start with a header this reads. **/
+size_t tracePointerSize(const std::string& tracePath);
+
 } // namespace smalldbg
