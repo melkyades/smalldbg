@@ -190,10 +190,11 @@ static const char* symbolTypeString(smalldbg::SymbolType type) {
     }
 }
 
-static Json symbolToJson(const smalldbg::Symbol& sym) {
+static Json symbolToJson(const smalldbg::Symbol& sym,
+                         const WebsideSession& session) {
     return Json::object()
         .set("name", sym.name)
-        .set("address", Json::hex(sym.address))
+        .set("address", session.addressHex(sym.address))
         .set("size", static_cast<int64_t>(sym.size))
         .set("type", symbolTypeString(sym.type))
         .set("module", sym.moduleName);
@@ -215,7 +216,7 @@ std::string WebsideServer::nativeSymbolsData(const std::string& filter) const {
     auto symbols = provider->findSymbols(symbolPattern(filter));
     auto arr = Json::array();
     for (auto& sym : symbols)
-        arr.add(symbolToJson(sym));
+        arr.add(symbolToJson(sym, session()));
     return arr.dump();
 }
 
@@ -227,8 +228,8 @@ std::string WebsideServer::nativeModulesData() const {
         arr.add(Json::object()
             .set("path", mod.path)
             .set("name", mod.shortName)
-            .set("loadAddress", Json::hex(mod.loadAddress))
-            .set("endAddress", Json::hex(mod.endAddress))
+            .set("loadAddress", session().addressHex(mod.loadAddress))
+            .set("endAddress", session().addressHex(mod.endAddress))
             .set("symbolCount", static_cast<int64_t>(mod.symbolCount))
             .set("symbolType", mod.symbolType)
             .set("symbolFile", mod.symbolFile));
@@ -275,7 +276,7 @@ std::string WebsideServer::nativeSymbolDetailData(const std::string& name) const
     auto* provider = session().debugger().getSymbolProvider();
     auto sym = provider->getSymbolByName(name);
     if (!sym) return "{}";
-    return symbolToJson(*sym).dump();
+    return symbolToJson(*sym, session()).dump();
 }
 
 // ---- Expression parser for native struct traversal ----
@@ -1008,7 +1009,7 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
         return res;
     }
 
-    auto result = symbolToJson(*sym);
+    auto result = symbolToJson(*sym, session());
 
     // A pointer-sized read: on a 32-bit target the next four bytes belong to
     // whatever follows the symbol.

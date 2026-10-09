@@ -263,6 +263,15 @@ TEST_CASE("a symbol search finds a name from part of it") {
     CHECK(named);
 }
 
+TEST_CASE("a symbol's address has the target's width") {
+    Launched launched;
+    launched.stopAtBreakHere();
+    Json found = Json::parse(launched.server.nativeSymbolsData("break_her"));
+    REQUIRE(found.size() > 0);
+    const size_t digits = 2 * launched.workspace.session()->pointerSize();
+    CHECK(found[0]["address"].asString().size() == 2 + digits);
+}
+
 TEST_CASE("native inspection gives a field its own size") {
     Launched launched;
     launched.stopAtBreakHere();
