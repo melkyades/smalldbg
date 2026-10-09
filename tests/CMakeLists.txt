@@ -83,6 +83,24 @@ if(WIN32)
     add_dependencies(live_tests ttd_recorder)
 endif()
 
+# Performance regression tests. They assert ratios against a round trip they
+# measure on the spot, so they mean the same thing on a fast machine and a slow
+# one. Labelled so a run under load can skip them: ctest -LE perf.
+if(WIN32)
+    add_executable(perf_tests
+        unit/doctest_main.cpp
+        perf/PerfBudget.cpp
+        perf/test_perf_unwind.cpp
+        ${LIVE_UTIL_SRC}
+    )
+    target_include_directories(perf_tests PRIVATE live perf)
+    target_link_libraries(perf_tests PRIVATE smalldbg doctest::doctest shell32)
+    add_dependencies(perf_tests test_target)
+    add_test(NAME perf-tests COMMAND perf_tests)
+    # A hang fails the test rather than holding up the suite.
+    set_tests_properties(perf-tests PROPERTIES LABELS perf TIMEOUT 300)
+endif()
+
 # Include DbgEng register tests (Windows only, separate diagnostic tools)
 if(WIN32)
     add_subdirectory(dbgeng_regs)
