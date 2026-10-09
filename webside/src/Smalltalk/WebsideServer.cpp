@@ -63,36 +63,6 @@ HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
     return res;
 }
 
-std::string WebsideServer::inspectJson(uint64_t oop, int maxSlots) const {
-    Inspector* inspector = smalltalkInspector();
-    if (!inspector) return "{}";
-    return webside::inspectObjectJson(*inspector, oop, maxSlots);
-}
-
-HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
-    Inspector* inspector = smalltalkInspector();
-    if (!isActive() || !inspector)
-        return webside::WebsideServer::handleInspect(req);
-
-    auto oop = req.params.find("oop");
-    if (oop == req.params.end()) {
-        HttpResponse res;
-        res.statusCode = 400;
-        res.body = Json::object().set("error", "Missing oop parameter").dump();
-        return res;
-    }
-
-    int maxSlots = 64;
-    auto slots = req.params.find("slots");
-    if (slots != req.params.end()) {
-        try { maxSlots = std::stoi(slots->second); } catch (...) {}
-    }
-
-    HttpResponse res;
-    res.body = inspectJson(parseHexParam(oop->second), maxSlots);
-    return res;
-}
-
 void WebsideServer::setupRoutes() {
     webside::WebsideServer::setupRoutes();
 

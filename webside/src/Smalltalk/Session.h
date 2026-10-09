@@ -41,6 +41,9 @@ public:
                        const std::string& condition,
                        const std::string& type) const override;
 
+    std::string describeObject(uint64_t oop, int firstSlot,
+                               int maxSlots) const override;
+
     // ---- green threads: none unless the dialect has them -------------------
     void refreshGreenThreads() override {}
     int greenThreadCount() const override { return 0; }
@@ -67,6 +70,11 @@ protected:
     /** Returns one method, with its source, in the shape the Webside client
      *  expects. A dialect that knows more about its methods adds it. **/
     virtual webside::Json methodJson(const MethodEntry& method) const;
+
+    /** Adds to `json` what the dialect's header says about the heap object
+     *  at `oop`, such as its hash and flags. The base adds nothing. **/
+    virtual void describeHeader(webside::Json& /*json*/,
+                                uint64_t /*oop*/) const {}
 
     /** Returns the class definition as source, which a browser shows above
      *  the methods. **/

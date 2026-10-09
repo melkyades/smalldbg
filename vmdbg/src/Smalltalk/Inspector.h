@@ -91,6 +91,10 @@ public:
     std::vector<std::string> subclassesOf(const std::string& name) const;
     std::vector<std::string> superclassesOf(const std::string& name) const;
 
+    /** Returns the names of the slots an instance of `className` has,
+     *  inherited ones first, as its slots are laid out. **/
+    std::vector<std::string> slotNamesOf(const std::string& className) const;
+
     /** Returns the method `className` defines for `selector`, or nothing
      *  when it defines none. **/
     std::optional<MethodEntry> methodNamed(const std::string& className,

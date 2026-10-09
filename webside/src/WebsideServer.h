@@ -122,7 +122,7 @@ protected:
     // ---- VM inspector routes (delegate to the session inspector) ----
     virtual HttpResponse handleRegions(const HttpRequest& req) const;
     virtual HttpResponse handleClassify(const HttpRequest& req) const;
-    virtual HttpResponse handleInspect(const HttpRequest& req) const;
+    HttpResponse handleInspect(const HttpRequest& req) const;
 
     // ---- class / search route handlers ----
     HttpResponse handleClassList(const HttpRequest& req) const;

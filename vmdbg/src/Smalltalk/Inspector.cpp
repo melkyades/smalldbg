@@ -24,6 +24,20 @@ std::vector<ClassVariable> Inspector::classVariablesOf(
     return variables;
 }
 
+std::vector<std::string> Inspector::slotNamesOf(
+    const std::string& className) const {
+    std::vector<std::string> chain = superclassesOf(className);
+    std::reverse(chain.begin(), chain.end());
+    chain.push_back(className);
+
+    std::vector<std::string> names;
+    for (const std::string& owner : chain)
+        if (const ClassEntry* entry = classNamed(owner))
+            names.insert(names.end(), entry->instanceVariableNames.begin(),
+                         entry->instanceVariableNames.end());
+    return names;
+}
+
 std::optional<MethodEntry> Inspector::methodNamed(
     const std::string& className, const std::string& selector) const {
     for (MethodEntry& method : methodsOf(className))

@@ -5,10 +5,9 @@
 #include "Smalltalk/Object.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace webside {
-
-using vmdbg::Json;
 
 std::string regionsJson(const smalltalk::Inspector& inspector) {
     auto array = Json::array();
@@ -37,46 +36,66 @@ std::string retainersJson(smalltalk::Inspector& inspector, uint64_t oop) {
     return array.dump();
 }
 
-std::string inspectObjectJson(const smalltalk::Inspector& inspector,
-                              uint64_t oop, int maxSlots) {
+namespace {
+
+Json hexOf(uint64_t value, const smalltalk::Object& object) {
+    return object.slotSize() <= 4 ? Json::hex(static_cast<uint32_t>(value))
+                                  : Json::hex(value);
+}
+
+const char* kindOf(const smalltalk::Object& object) {
+    if (object.isSmallInteger()) return "SmallInteger";
+    if (object.isNil()) return "nil";
+    if (object.isImmediate()) return "immediate";
+    return object.isHeapObject() ? "object" : "invalid";
+}
+
+Json slotJson(const smalltalk::HeapObject& heap, int index,
+              const std::vector<std::string>& names) {
+    auto json = Json::object()
+        .set("index", index)
+        .set("raw", hexOf(heap.rawSlotAt(index), heap));
+    if (index < static_cast<int>(names.size())) json.set("name", names[index]);
+    if (auto slot = heap.slotObjectAt(index)) {
+        json.set("type", kindOf(*slot))
+            .set("class", slot->className())
+            .set("value", slot->printString());
+    }
+    return json;
+}
+
+} // namespace
+
+Json inspectObjectJson(const smalltalk::Inspector& inspector, uint64_t oop,
+                       int firstSlot, int maxSlots) {
     auto object = inspector.objectFor(oop);
     if (!object || !object->isValid())
-        return Json::object().set("error", "unreadable oop").dump();
+        return Json::object().set("error", "unreadable oop");
 
-    auto result = Json::object()
-        .set("oop", Json::hex(oop))
+    auto json = Json::object()
+        .set("oop", hexOf(oop, *object))
         .set("class", object->className())
-        .set("printString", object->printString());
+        .set("value", object->printString())
+        .set("immediate", object->isImmediate());
 
-    if (object->isImmediate()) {
-        result.set("immediate", true);
-        return result.dump();
-    }
+    auto heap = object->isImmediate() ? nullptr : inspector.heapObjectFor(oop);
+    const int total = heap && heap->isValid() && !heap->isBytes()
+        ? static_cast<int>(heap->size()) : 0;
+    json.set("size", static_cast<int64_t>(heap ? heap->size() : 0));
+    json.set("isBits", heap && heap->isBytes());
+    if (heap && heap->isBytes()) json.set("string", heap->bytesAsString());
 
-    auto heap = inspector.heapObjectFor(oop);
-    if (!heap || !heap->isValid()) return result.dump();
-
-    result.set("size", static_cast<int64_t>(heap->size()));
-    result.set("bytes", heap->isBytes());
-
-    if (heap->isBytes()) {
-        result.set("value", heap->bytesAsString());
-        return result.dump();
-    }
-
+    const int first = std::clamp(firstSlot, 0, total);
+    const int shown = std::min(total - first, std::max(maxSlots, 0));
+    const auto names = inspector.slotNamesOf(object->className());
     auto slots = Json::array();
-    int shown = std::min<int>(static_cast<int>(heap->size()),
-                              std::max(maxSlots, 0));
-    for (int i = 0; i < shown; i++) {
-        auto slot = heap->slotObjectAt(i);
-        auto entry = Json::object()
-            .set("index", i)
-            .set("oop", Json::hex(heap->rawSlotAt(i)));
-        if (slot) entry.set("printString", slot->printString());
-        slots.add(std::move(entry));
-    }
-    result.set("slots", slots);
-    return result.dump();
+    for (int i = first; i < first + shown; i++)
+        slots.add(slotJson(*heap, i, names));
+    json.set("slots", slots);
+    if (first != 0) json.set("offset", first);
+    json.set("totalSlots", total);
+    json.set("truncated", first + shown < total);
+    return json;
 }
 
 } // namespace webside

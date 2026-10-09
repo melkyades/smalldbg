@@ -1,5 +1,6 @@
 #include "Session.h"
 #include "Json.h"
+#include "Smalltalk/InspectorJson.h"
 
 #include <smalldbg/Debugger.h>
 
@@ -329,6 +330,15 @@ std::string Session::getMethod(const std::string& className,
                                const std::string& selector) const {
     auto method = smalltalkInspector().methodNamed(className, selector);
     return method ? methodJson(*method).dump() : "{}";
+}
+
+std::string Session::describeObject(uint64_t oop, int firstSlot,
+                                    int maxSlots) const {
+    Json json = webside::inspectObjectJson(smalltalkInspector(), oop,
+                                           firstSlot, maxSlots);
+    if (json["error"].isNull() && !json["immediate"].asBool())
+        describeHeader(json, oop);
+    return json.dump();
 }
 
 // Finds class names first, then selectors from both sides of every class,

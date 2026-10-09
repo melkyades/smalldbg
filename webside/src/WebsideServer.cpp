@@ -573,14 +573,18 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
         return res;
     }
 
-    uint64_t addr = parseHexParam(oopIt->second);
-    int maxSlots = 20;
-    auto maxIt = req.params.find("maxSlots");
-    if (maxIt != req.params.end()) {
-        try { maxSlots = std::stoi(maxIt->second); } catch (...) {}
-    }
+    // An object can have more slots than one answer should carry, so a
+    // client pages through them with `offset`.
+    auto number = [&](const char* name, int fallback) {
+        auto it = req.params.find(name);
+        if (it == req.params.end()) return fallback;
+        try { return std::stoi(it->second); } catch (...) { return fallback; }
+    };
+    const int maxSlots = std::clamp(number("maxSlots", 64), 0, 1024);
+    const int offset = std::max(number("offset", 0), 0);
 
-    res.body = session().describeObject(addr, static_cast<size_t>(maxSlots));
+    res.body = session().describeObject(parseHexParam(oopIt->second), offset,
+                                        maxSlots);
     return res;
 }
 

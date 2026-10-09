@@ -4,6 +4,7 @@ find_package(doctest REQUIRED)
 add_executable(webside_tests
     test_websidesession.cpp
     test_http_server.cpp
+    test_inspector_json.cpp
     test_main.cpp
     test_smalltalk_session.cpp
     test_webside_server.cpp

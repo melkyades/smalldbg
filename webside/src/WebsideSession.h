@@ -96,7 +96,10 @@ public:
     virtual std::string waitForEvent(int timeoutMs = 5000) = 0;
 
     // ---- object description ----
-    virtual std::string describeObject(uint64_t handle, size_t maxDepth = 1) const = 0;
+    /** Returns the object at `oop` for /inspect, with up to `maxSlots` of its
+     *  slots from `firstSlot`. **/
+    virtual std::string describeObject(uint64_t oop, int firstSlot,
+                                       int maxSlots) const = 0;
 
 protected:
     // ---- virtual hooks for frame formatting ----
