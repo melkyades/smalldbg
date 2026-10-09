@@ -29,7 +29,6 @@ endif()
 
 find_package(capstone REQUIRED)
 
-
 add_library(smalldbg STATIC
     src/Arch.cpp
     src/Debugger.cpp
@@ -127,7 +126,6 @@ add_subdirectory(tests)
 # The VM layer webside reads through. Added first: webside links it.
 add_subdirectory(vmdbg)
 
-# Webside debugger servers (Egg, Bee, etc)
 add_subdirectory(webside)
 
 # A reader for a dump, built on vmdbg like webside is.

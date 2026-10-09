@@ -95,7 +95,6 @@ private:
      *  to stop. **/
     bool matchSymbols(const std::string& pattern, const SymbolCallback& callback);
 
-
     IDebugSymbols3* symbols = nullptr;
     IDebugControl4* control = nullptr;
     SymbolOptions options;

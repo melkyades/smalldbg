@@ -30,7 +30,6 @@ void markEngineBusy();
 void clearEngineBusy();
 bool engineWasBusy();
 
-
 /** A ThreadIdentity says what a thread was started to do: the first frame,
  *  from the base of its stack, that the system did not put there. **/
 struct ThreadIdentity {

@@ -246,7 +246,6 @@ void SymbolProvider::findFieldOwner(Address address) {
 
 } // namespace smalldbg
 
-
 namespace smalldbg {
 
 // Modules are registered once, so attributing an address to one costs no

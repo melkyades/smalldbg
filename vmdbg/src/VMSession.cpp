@@ -130,7 +130,6 @@ bool VMSession::open(const TargetSpec& target) {
     return true;
 }
 
-
 bool VMSession::resume() {
     beforeTargetRuns();
     return debugger().resume() == smalldbg::Status::Ok;
