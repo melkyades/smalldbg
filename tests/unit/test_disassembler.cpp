@@ -6,6 +6,8 @@
 #include "smalldbg/Arch.h"
 #include "smalldbg/Disassembler.h"
 
+#include <vector>
+
 using namespace smalldbg;
 
 TEST_CASE("x64: single-byte nop decodes") {
@@ -88,4 +90,83 @@ TEST_CASE("empty input yields no instructions") {
     Disassembler dis(X64::instance());
     auto insns = dis.disassemble(nullptr, 0, 0);
     CHECK(insns.empty());
+}
+
+namespace {
+
+const Arch* const kX64 = X64::instance();
+const Arch* const kX86 = X86::instance();
+const Arch* const kARM64 = ARM64::instance();
+
+DisasmInsn decodeOne(const Arch* arch, std::vector<uint8_t> code, uint64_t at) {
+    Disassembler dis(arch);
+    auto insns = dis.disassemble(code.data(), code.size(), at);
+    REQUIRE(insns.size() == 1);
+    return insns[0];
+}
+
+} // namespace
+
+TEST_CASE("x64: a branch says where it goes, or which slot it reads") {
+    auto call = decodeOne(kX64, {0xE8, 0x0B, 0x00, 0x00, 0x00}, 0x1000);
+    CHECK(call.isCall);
+    CHECK(call.target == uint64_t(0x1010));
+    CHECK_FALSE(call.targetIsSlot);
+
+    auto loop = decodeOne(kX64, {0xEB, 0xFE}, 0x1000);
+    CHECK(loop.isJump);
+    CHECK(loop.target == uint64_t(0x1000));
+
+    auto notEqual = decodeOne(kX64, {0x0F, 0x85, 0x10, 0, 0, 0}, 0x1000);
+    CHECK(notEqual.isJump);
+    CHECK(notEqual.target == uint64_t(0x1016));
+
+    auto slot = decodeOne(kX64, {0xFF, 0x25, 0x10, 0, 0, 0}, 0x1000);
+    CHECK(slot.target == uint64_t(0x1016));
+    CHECK(slot.targetIsSlot);
+
+    auto viaRegister = decodeOne(kX64, {0xFF, 0xD0}, 0x1000);
+    CHECK(viaRegister.isCall);
+    CHECK_FALSE(viaRegister.target);
+}
+
+TEST_CASE("x86: an indirect jump's slot is an absolute address") {
+    auto slot = decodeOne(kX86, {0xFF, 0x25, 0x00, 0x21, 0x4F, 0x00}, 0x1000);
+    CHECK(slot.target == uint64_t(0x4F2100));
+    CHECK(slot.targetIsSlot);
+}
+
+TEST_CASE("x86: an operand names an address as a value or reads through one") {
+    auto value = decodeOne(kX86, {0xB8, 0x00, 0x21, 0x4F, 0x00}, 0x1000);
+    CHECK(value.immediate == uint64_t(0x4F2100));
+    CHECK_FALSE(value.memory);
+
+    auto read = decodeOne(kX86, {0xA1, 0x00, 0x21, 0x4F, 0x00}, 0x1000);
+    CHECK(read.memory == uint64_t(0x4F2100));
+
+    // mov eax, [eax*4 + 0x4f2100]
+    auto indexed = decodeOne(kX86, {0x8B, 0x04, 0x85, 0x00, 0x21, 0x4F, 0x00},
+                             0x1000);
+    CHECK_FALSE(indexed.memory);
+}
+
+TEST_CASE("ARM64: a branch says where it goes, and ADR names an address") {
+    auto call = decodeOne(kARM64, {0x04, 0x00, 0x00, 0x94}, 0x4000);
+    CHECK(call.isCall);
+    CHECK(call.target == uint64_t(0x4010));
+
+    auto back = decodeOne(kARM64, {0xFF, 0xFF, 0xFF, 0x17}, 0x4000);
+    CHECK(back.isJump);
+    CHECK(back.target == uint64_t(0x3FFC));
+
+    auto notEqual = decodeOne(kARM64, {0x41, 0x00, 0x00, 0x54}, 0x4000);
+    CHECK(notEqual.isJump);
+    CHECK(notEqual.target == uint64_t(0x4008));
+
+    auto viaRegister = decodeOne(kARM64, {0x00, 0x00, 0x1F, 0xD6}, 0x4000);
+    CHECK(viaRegister.isJump);
+    CHECK_FALSE(viaRegister.target);
+
+    auto address = decodeOne(kARM64, {0x00, 0x01, 0x00, 0x10}, 0x4000);
+    CHECK(address.immediate == uint64_t(0x4020));
 }

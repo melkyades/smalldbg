@@ -46,6 +46,7 @@ add_library(smalldbg STATIC
     src/Disassembler.cpp
     src/backends/Backend.cpp
     src/backends/SnapshotBackend.cpp
+    src/DisassemblyAnnotator.cpp
 )
 
 target_link_libraries(smalldbg PRIVATE capstone::capstone)
