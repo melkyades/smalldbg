@@ -3,47 +3,88 @@
 ## Overview
 
 The Webside backend provides a REST API that allows remote debugging and
-inspection of a language VM using the `smalldbg` native debugger library.
-Each VM dialect (Egg, Bee, …) implements a thin adapter layer on top of
-shared infrastructure.
+inspection of a language VM. It sits on two libraries: `smalldbg` for the
+process, its memory and its symbols, and **`vmdbg`** for what those bytes mean
+to the runtime that wrote them -- its objects, classes, frames and processes.
+
+The split matters: `vmdbg` answers in values and knows nothing about HTTP or
+JSON, so a state reporter, or a front end for a language that is not
+Smalltalk, reads a VM through it without taking Webside along. Everything in
+this directory is the part that turns those answers into documents.
+
+Code is shared at the highest layer that can hold it: what any debugger needs
+is in `smalldbg`, what any VM needs in `vmdbg`, what any Smalltalk needs in
+their Smalltalk layers, and a VM's repository holds only what is its own. A
+VM's server adds to the shared documents through hooks; it does not keep a
+copy of them.
 
 ## Architecture
 
 ### Components
 
-1. **HttpServer** – Lightweight HTTP/1.1 server with route registration,
+1. **HttpServer** - Lightweight HTTP/1.1 server with route registration,
    query-string parsing, and URL decoding.
-2. **WebsideServer** – Base class that sets up the common Webside REST routes
-   (classes, methods, workspaces, evaluations, debuggers, …) and delegates
-   VM-specific behaviour to a **DebugSession** subclass.
-3. **DebugSession** – Abstract interface for debugger lifecycle, frame
-   listing, object inspection, and stepping control.  Each dialect provides
-   a concrete implementation (e.g. `EggDebugSession`).
-4. **Inspector** – Per-dialect helper that reads VM object headers, walks
-   green-thread stacks, and formats Smalltalk values for the REST API.
+2. **WebsideServer** - Base class that sets up the common Webside REST routes
+   (classes, methods, debuggers, frames, memory, traces, ...) and answers them
+   out of the session its **Workspace** has open. `smalltalk::WebsideServer`
+   adds the routes about Smalltalk objects, such as `/retainers`.
+3. **Workspace** - What the developer set up: which target to open and how to
+   reach it, plus what they accumulate while working (breakpoints, address
+   labels). There is one of these; a VM is not a kind of workspace, only the
+   kind of session it builds, which it hands over as a factory.
+4. **Session** - One connection to one process, trace or dump, in three layers.
+   `vmdbg::VMSession` opens the target, moves it and answers what the runtime
+   holds; `webside::WebsideSession` derives from it and turns those answers
+   into Webside documents; `smalltalk::Session` adds what every Smalltalk
+   has: class browsing, objects, Smalltalk frames and green threads. Run
+   control lives in the first and is written once for every VM: there is no
+   Smalltalk way to resume a process. A VM says only what goes stale when the
+   target moves (`beforeTargetRuns`, `targetMayHaveMoved`) and what it wants
+   read again once it stops (`afterTargetStops`).
+5. **Inspector** - A VM's reader of object headers, classes, methods and
+   processes. `vmdbg::VMInspector` maps memory into regions;
+   `smalltalk::Inspector` adds the class table, method sources and bytecodes,
+   and what keeps an object alive. It answers in values; the rendering of
+   those values is in `Smalltalk/InspectorJson` and the sessions.
+6. **Frame unwinder** - `smalltalk::FrameUnwinder` walks the frames a VM
+   builds, recovers from a broken link, and attaches a `FrameMetadata` (class,
+   selector, method, receiver, arguments) to each frame it names. A VM gives
+   it its frame layout.
 
 ### Stack Frames: Native vs Smalltalk
 
-The stack trace distinguishes two kinds of frames:
+Every frame, native or Smalltalk, is a `smalldbg::StackFrame` in one
+`StackTrace`, so the same routes answer for both:
 
 #### Native Frames
-- **Type**: `native`
-- **Language**: `C++`
-- **Source**: Resolved via DWARF / PDB debug info when available.
-- **Bindings**: Registers (IP / FP / SP) plus DWARF local variables.
+- **Source**: Resolved via DWARF / PDB debug info when available; the detail
+  shows the function's source with the line marked.
+- **Arguments**: Those the debug info lists, with the engine's text for each
+  value.
+- **Registers**: All of them for the frame a thread stopped in; a caller's
+  frame knows only the ip, sp and fp unwinding recovered.
 
 #### Smalltalk Frames
-- **Type**: `smalltalk`
-- **Language**: `Smalltalk`
-- **Location**: Within the VM's compiled-code region.
-- **Bindings**: receiver (`self`), arguments, and temporaries extracted
-  from the green-thread stack.  Argument / temp names are recovered by
-  parsing the method header source code.
+- **Recognised by**: the `FrameMetadata` the VM's unwinder attached.
+- **Detail**: the class, the method with its source (a block's selector says
+  which block), the receiver, and where in the method the frame is:
+  `bytecodePC` and the source `interval` a client marks.
+- **Arguments**: named by the selector's keywords; a block's are numbered.
+- **Bindings**: receiver, arguments and temporaries, named by parsing the
+  method's source.
+
+#### Green threads
+
+A VM's processes (green threads) are listed with the native threads. A
+running one is shown through the native thread running it. A parked one, whose
+frames the VM saved somewhere else, is answered like a native thread when the
+VM rebuilds its frames (`readGreenFrames`); the session keeps that trace until
+the processes are read again, once for each place the target stops.
 
 ### Integration with smalldbg
 
-All memory access, breakpoints, stepping, and stack unwinding go through
-the `smalldbg` library:
+All memory access, breakpoints, stepping, trace navigation and stack
+unwinding go through the `smalldbg` library:
 
 ```cpp
 // Stack unwinding
@@ -54,11 +95,11 @@ trace.unwind(maxFrames);
 // Memory reads
 uint64_t value;
 process->readMemory(address, &value, sizeof(value));
-```
 
-Stepping variants (step into, step over, step out) and their reverse-debug
-counterparts set temporary breakpoints at the caller's return address and
-resume execution.
+// Trace replay
+auto position = debugger->tracePosition();
+debugger->seekTrace(50.0);
+```
 
 ## API Design
 
@@ -67,12 +108,19 @@ resume execution.
 ```json
 {
   "index": 1,
-  "type": "smalltalk",
   "label": "Array>>at:put:",
-  "language": "Smalltalk",
-  "ip": "0x100400000"
+  "ip": "0x100400010",
+  "functionAddress": "0x100400000",
+  "functionOffset": 16,
+  "framePointer": "0x7ff7bfeff8a0",
+  "stackPointer": "0x7ff7bfeff860",
+  "arguments": [{ "name": "index", "value": "0x3", "printString": "1" }]
 }
 ```
+
+The detail of a Smalltalk frame adds `class`, `method`, `receiver`,
+`hasSource`, and, when the VM can place the frame, `bytecodePC` and
+`interval` (`start` and `end`, counted in characters from 1).
 
 ### Object Descriptor JSON
 
@@ -89,72 +137,41 @@ resume execution.
 }
 ```
 
-### VM Inspector Routes
+See [README.md](README.md#api) for every route.
 
-In addition to the standard Webside debugger routes, each dialect can
-expose low-level inspector endpoints:
+## Adding a VM
 
-| Route           | Description                                  |
-|-----------------|----------------------------------------------|
-| GET /regions    | Code zones, stack, and loaded modules        |
-| GET /classify   | Classify an address (module, stack, symbol)   |
-| GET /inspect    | Inspect a heap object by OOP                 |
-| GET /memory     | Read typed memory (bytes, string, intN)      |
-| GET /symbol     | Look up a native symbol by name              |
-| GET /disassemble| Disassemble native code at an address        |
+A VM is a repository of its own, checked out under `vms/<name>` at the root. It
+holds two halves and a `CMakeLists.txt` that builds them:
 
-## Adding a New Dialect
+In `vmdbg/Smalltalk/<Name>/`, what the VM is:
 
-1. Create a subdirectory under `webside/src/<Dialect>/`.
-2. Implement `<Dialect>DebugSession` (subclass of `DebugSession`).
-3. Implement `<Dialect>Inspector` for object layout / green-thread walking.
-4. Implement `<Dialect>WebsideServer` (subclass of `WebsideServer`),
-   adding any dialect-specific routes.
-5. Add a `CMakeLists.txt` with a platform guard if needed.
+1. `<Name>Inspector`, a `smalltalk::Inspector` that reads the VM's object
+   layout, class table and processes, plus the object model it reads through
+   (`<Name>Object`, `<Name>HeapObject`, `<Name>KnownObjects`). It may decode
+   methods' bytecodes (`bytecodesOf`).
+2. A `smalltalk::FrameUnwinder` subclass, if the platform unwinder cannot
+   follow the VM's frames on its own.
 
-5. **DWARF Type Database** (`DwarfTypes.h/cpp`)
-   - Parses DWARF5 debug info from `.o` files referenced by N_OSO stab entries in the Mach-O binary
-   - Supports standalone `.o` files and `.a` archive members (BSD extended names)
-   - Extracts struct/class/union types with fields, pointer/typedef chains, base types, and global variable-to-type mappings
-   - Provides `findType(name)` and `getVariableTypeName(name)` for type lookup
-   - Expression evaluator in `EggWebsideServer` walks `->` and `.` accessors, reading pointer values from process memory to resolve multi-level paths
-   - Map bytecode offsets to source locations
-   - Show method selectors in stack traces
+In `webside/`, what it answers:
 
-5. **Advanced Object Inspection**
-   - Recognize special object formats (ByteArray, String, etc.)
-   - Display object contents appropriately
-   - Handle circular references
+3. `<Name>DebugSession`, a `smalltalk::Session`. It opens the target
+   (`onTargetOpened`), reads the processes (`readGreenThreads`,
+   `readGreenFrames`), and adds what only it knows through hooks such as
+   `describeHeader`, `addDialectFrameDetail`, `framePosition` and
+   `addMemoryTypeDefaults`.
+4. `<Name>WebsideServer`, for any routes of its own.
+5. A `main.cpp` that names the VM and the session it builds, and hands them to
+   `webside::runWebside`, the `main` every server shares.
 
-6. **Enhanced Frame Extraction**
-   - Implement proper bytecode context analysis
-   - Extract all arguments and temporaries
-   - Show bytecode instruction pointer within method
-
-## Example Usage
-
-```javascript
-// Launch Bee Smalltalk
-POST /debug/launch { "path": "BeeDev.exe" }
-
-// Configure runtime (manually for now)
-POST /debug/runtime/configure {
-  "codeStart": "0x140000000",
-  "codeEnd": "0x140100000",
-  "heapStart": "0x200000000",
-  "heapEnd": "0x300000000"
-}
-
-// Get stack frames (will classify as Smalltalk vs Native)
-GET /debuggers/1/frames
-
-// Inspect an object
-POST /debuggers/1/objects/describe { "handle": "0x200001000" }
-```
+Not every VM needs a live process. OSVM reads an OpenSmalltalk image through a
+`SpurMemory` interface with two backends, one over the `.image` file and one
+over `smalldbg`, so the whole object model runs with no target attached. A VM
+whose heap is self-describing on disk can do the same.
 
 ## References
 
 - `smalldbg::StackTrace` - Native stack unwinding with symbols
 - `smalldbg::SymbolProvider` - Symbol resolution for modules
 - `smalldbg::Thread::getStackTrace()` - Per-thread stack traces
-- Bee Smalltalk object format (internal VM documentation)
+- `vmdbg::VMSession`, `smalltalk::Session` - the hooks a VM implements
