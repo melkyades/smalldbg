@@ -1,8 +1,10 @@
 #include "TTDBackend.h"
 #include "smalldbg/Thread.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
+#include <sstream>
 #include <string>
 
 namespace smalldbg {
@@ -100,6 +102,90 @@ Status TTDBackend::reverseStepOut(Thread* thread) {
 
     if (log) log("(dbgeng) reverseStepOut requested");
     return Status::Ok;
+}
+
+// The engine says where it is as "SEQ:STEP" in hex after one of these.
+std::optional<TracePosition> tracePositionIn(const std::string& output) {
+    for (const char* key : {"Current position: ", "Setting position: "}) {
+        auto at = output.find(key);
+        if (at == std::string::npos) continue;
+        at += std::string(key).size();
+        auto colon = output.find(':', at);
+        if (colon == std::string::npos) return std::nullopt;
+        try {
+            TracePosition position;
+            position.sequence = std::stoull(output.substr(at, colon - at), nullptr, 16);
+            position.step = std::stoull(output.substr(colon + 1), nullptr, 16);
+            return position;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<TracePosition> TTDBackend::tracePosition() const {
+    if (!attached) return std::nullopt;
+    return tracePositionIn(executeCommand("!tt"));
+}
+
+// The ends are found by going to either end and back, which the engine does
+// without running anything.
+std::optional<std::pair<TracePosition, TracePosition>> TTDBackend::traceExtent() const {
+    if (extent || !attached) return extent;
+    auto here = tracePositionIn(executeCommand("!tt"));
+    auto first = tracePositionIn(executeCommand("!tt 0"));
+    auto last = tracePositionIn(executeCommand("!tt 100"));
+    if (here) {
+        std::ostringstream back;
+        back << "!tt " << std::hex << here->sequence << ":" << here->step;
+        executeCommand(back.str());
+    }
+    if (first && last) extent = std::make_pair(*first, *last);
+    return extent;
+}
+
+// The engine reports the new position at once but applies the registers that
+// go with it only when it next runs a command, so one runs straight after.
+Status TTDBackend::seekTo(const std::string& target) {
+    if (!attached) return Status::NotAttached;
+    auto output = executeCommand("!tt " + target + "; !tt");
+    return tracePositionIn(output) ? Status::Ok : Status::Error;
+}
+
+Status TTDBackend::seekTrace(const TracePosition& position) {
+    std::ostringstream target;
+    target << std::hex << position.sequence << ":" << position.step;
+    return seekTo(target.str());
+}
+
+Status TTDBackend::seekTraceFraction(double percent) {
+    std::ostringstream target;
+    target << std::clamp(percent, 0.0, 100.0);
+    return seekTo(target.str());
+}
+
+// The engine's data model lists every execution of an address; the last
+// entry's TimeStart is when it last ran.
+std::optional<TracePosition> TTDBackend::lastExecution(Address address) const {
+    if (!attached) return std::nullopt;
+    std::ostringstream query;
+    query << "@$cursession.TTD.Memory(0x" << std::hex << address << ", 0x"
+          << address + 1 << ", \"e\")";
+    auto counted = executeCommand("dx " + query.str() + ".Count()");
+    auto colon = counted.rfind(':');
+    if (colon == std::string::npos) return std::nullopt;
+    unsigned long count = 0;
+    try { count = std::stoul(counted.substr(colon + 1), nullptr, 0); } catch (...) {}
+    if (count == 0) return std::nullopt;
+
+    auto last = executeCommand("dx " + query.str() + "[" + std::to_string(count - 1) + "]");
+    auto at = last.find("TimeStart");
+    if (at == std::string::npos) return std::nullopt;
+    auto start = last.find(':', at);
+    return start == std::string::npos
+        ? std::nullopt
+        : tracePositionIn("Current position: " + last.substr(start + 1));
 }
 
 Status TTDBackend::reverseResume() {

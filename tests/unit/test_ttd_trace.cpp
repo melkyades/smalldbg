@@ -67,3 +67,29 @@ TEST_CASE("a 32-bit debugger refuses a trace of a 64-bit process") {
 
     std::remove(wide.c_str());
 }
+
+TEST_CASE("the engine's replay output says where the replay is") {
+    auto set = tracePositionIn("Setting position: 1A2:3F\nTime Travel Position: 1A2:3F");
+    REQUIRE(set);
+    CHECK(set->sequence == 0x1A2);
+    CHECK(set->step == 0x3F);
+    auto current = tracePositionIn("Current position: 5:0");
+    REQUIRE(current);
+    CHECK(current->sequence == 5);
+    CHECK_FALSE(tracePositionIn("nothing about positions"));
+}
+
+TEST_CASE("trace positions order by sequence, then by step") {
+    CHECK(TracePosition{1, 9} < TracePosition{2, 0});
+    CHECK(TracePosition{2, 1} < TracePosition{2, 2});
+    CHECK_FALSE(TracePosition{2, 2} < TracePosition{2, 2});
+    CHECK(TracePosition{3, 4} == TracePosition{3, 4});
+}
+
+TEST_CASE("a debugger that is not replaying has no trace to move in") {
+    Debugger dbg(Mode::External, hostArch());
+    CHECK_FALSE(dbg.tracePosition());
+    CHECK_FALSE(dbg.traceExtent());
+    CHECK(dbg.seekTrace(50.0) == Status::NotSupported);
+    CHECK_FALSE(dbg.lastExecution(0x401000));
+}

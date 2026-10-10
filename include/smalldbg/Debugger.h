@@ -85,6 +85,21 @@ public:
     Status reverseRunTo(Address address, int timeoutMs);
     bool isTTDTrace() const;        // Check if we're replaying a TTD trace
 
+    /** Returns where a replay is, or nothing when the target is not a trace.
+     **/
+    std::optional<TracePosition> tracePosition() const;
+    /** Returns the first and the last position of a trace, or nothing when
+     *  the target is not one. **/
+    std::optional<std::pair<TracePosition, TracePosition>> traceExtent() const;
+    /** Moves a replay to `position`. Returns NotSupported unless the target
+     *  is a trace. **/
+    Status seekTrace(const TracePosition& position);
+    /** Moves a replay `percent` of the way through its trace. **/
+    Status seekTrace(double percent);
+    /** Returns the last position at which `address` was executed, or nothing
+     *  when it never was or the target is not a trace. **/
+    std::optional<TracePosition> lastExecution(Address address) const;
+
     // --- Post-mortem crash-dump loading ---
     Status openDump(const std::string& dumpPath);  // Open a crash/WER dump (.dmp)
     bool isDumpFile() const;        // Check if we're inspecting a crash dump

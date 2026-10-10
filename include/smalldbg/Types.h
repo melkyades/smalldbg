@@ -73,6 +73,21 @@ struct Breakpoint {
     std::string name;
 };
 
+/** A TracePosition is a moment of a recorded trace: a sequence number and a
+ *  step within it. Positions order by sequence, then by step. **/
+struct TracePosition {
+    uint64_t sequence{0};
+    uint64_t step{0};
+
+    bool operator==(const TracePosition& other) const {
+        return sequence == other.sequence && step == other.step;
+    }
+    bool operator<(const TracePosition& other) const {
+        return sequence != other.sequence ? sequence < other.sequence
+                                          : step < other.step;
+    }
+};
+
 /** A ModuleSection is one section of a loaded module, such as its code or
  *  its data. **/
 struct ModuleSection {

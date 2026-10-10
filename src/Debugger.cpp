@@ -201,6 +201,28 @@ Status Debugger::reverseResume() {
     return backend->reverseResume();
 }
 
+std::optional<TracePosition> Debugger::tracePosition() const {
+    return backend->tracePosition();
+}
+
+std::optional<std::pair<TracePosition, TracePosition>> Debugger::traceExtent() const {
+    return backend->traceExtent();
+}
+
+Status Debugger::seekTrace(const TracePosition& position) {
+    targetMoved();
+    return backend->seekTrace(position);
+}
+
+Status Debugger::seekTrace(double percent) {
+    targetMoved();
+    return backend->seekTraceFraction(percent);
+}
+
+std::optional<TracePosition> Debugger::lastExecution(Address address) const {
+    return backend->lastExecution(address);
+}
+
 bool Debugger::isTTDTrace() const {
     return backend->isTTDTrace();
 }

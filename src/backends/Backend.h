@@ -42,6 +42,17 @@ public:
     virtual Status reverseStepOver(Thread* thread) { (void)thread; return Status::NotSupported; }
     virtual Status reverseStepOut(Thread* thread) { (void)thread; return Status::NotSupported; }
     virtual Status reverseResume() { return Status::NotSupported; }
+
+    // ---- trace replay: a backend that replays no trace has none of this ----
+    virtual std::optional<TracePosition> tracePosition() const { return std::nullopt; }
+    virtual std::optional<std::pair<TracePosition, TracePosition>> traceExtent() const {
+        return std::nullopt;
+    }
+    virtual Status seekTrace(const TracePosition&) { return Status::NotSupported; }
+    virtual Status seekTraceFraction(double) { return Status::NotSupported; }
+    virtual std::optional<TracePosition> lastExecution(Address) const {
+        return std::nullopt;
+    }
     virtual bool isTTDTrace() const { return false; }
 
     // --- Post-mortem crash-dump loading ---

@@ -220,3 +220,41 @@ TEST_CASE("a replay runs backwards to an address it executed before") {
 
     dbg.detach();
 }
+
+// Any trace will do: what is checked is moving in it, not what it recorded.
+TEST_CASE("a replay says where it is, and goes where it is asked") {
+    std::string trace = obtainTrace();
+    if (trace.empty()) {
+        MESSAGE("SKIP: no TTD trace available");
+        return;
+    }
+    Debugger dbg(Mode::External, hostArch(), Debuggee::Trace);
+    if (dbg.openTrace(trace) != Status::Ok) {
+        MESSAGE("SKIP: openTrace failed");
+        return;
+    }
+
+    auto extent = dbg.traceExtent();
+    REQUIRE(extent);
+    CHECK(extent->first < extent->second);
+    REQUIRE(dbg.tracePosition());
+
+    REQUIRE(dbg.seekTrace(100.0) == Status::Ok);
+    CHECK(*dbg.tracePosition() == extent->second);
+    REQUIRE(dbg.seekTrace(extent->first) == Status::Ok);
+    CHECK(*dbg.tracePosition() == extent->first);
+    REQUIRE(dbg.seekTrace(50.0) == Status::Ok);
+    auto middle = dbg.tracePosition();
+    REQUIRE(middle);
+    CHECK(extent->first < *middle);
+    CHECK(*middle < extent->second);
+
+    Registers regs;
+    REQUIRE(dbg.getRegisters(regs) == Status::Ok);
+    auto ran = dbg.lastExecution(regs.ip());
+    REQUIRE(ran);
+    // The instruction at the replay's ip runs at the replay's position, if
+    // never again.
+    CHECK_FALSE(*ran < *middle);
+    dbg.detach();
+}

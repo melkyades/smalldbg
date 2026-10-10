@@ -20,9 +20,24 @@ public:
     Status reverseResume() override;
     bool isTTDTrace() const override { return true; }
 
+    std::optional<TracePosition> tracePosition() const override;
+    std::optional<std::pair<TracePosition, TracePosition>> traceExtent() const override;
+    Status seekTrace(const TracePosition& position) override;
+    Status seekTraceFraction(double percent) override;
+    std::optional<TracePosition> lastExecution(Address address) const override;
+
 protected:
     bool selectThread(Thread& thread) const override;
+
+private:
+    Status seekTo(const std::string& target);
+    // A trace does not grow, so where it starts and ends is read once.
+    mutable std::optional<std::pair<TracePosition, TracePosition>> extent;
 };
+
+/** Returns the position in a line of the engine's replay output, such as
+ *  "Setting position: 1A2:3", or nothing when the line holds none. **/
+std::optional<TracePosition> tracePositionIn(const std::string& output);
 
 /** Returns the pointer size, in bytes, of the process a TTD trace recorded,
  *  or 0 when the file does not start with a header this reads. **/
