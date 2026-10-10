@@ -81,6 +81,14 @@ std::string Session::getStopReason() const {
     return debugger().isStopped() ? "stopped" : "running";
 }
 
+// Reading a running target blocks until it stops, so a running target's
+// processes are left as they were.
+void Session::refreshGreenThreads() {
+    if (!debugger().isStopped()) return;
+    if (greenThreadsVersion == debugger().stateVersion()) return;
+    if (readGreenThreads()) greenThreadsVersion = debugger().stateVersion();
+}
+
 // ---------------------------------------------------------------------------
 // Class browsing
 // ---------------------------------------------------------------------------

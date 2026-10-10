@@ -49,7 +49,9 @@ public:
     std::unique_ptr<smalldbg::AnnotationSource> annotationSource() const override;
 
     // ---- green threads: none unless the dialect has them -------------------
-    void refreshGreenThreads() override {}
+    /** Reads the VM's processes again when the target has moved since they
+     *  were last read, and otherwise leaves them. **/
+    void refreshGreenThreads() final;
     int greenThreadCount() const override { return 0; }
     std::string getGreenThreadName(int) const override { return {}; }
     std::string listSmalltalkFrames(int) const override { return "[]"; }
@@ -66,6 +68,11 @@ public:
 protected:
     /** Returns the dialect's inspector, which holds the class table. **/
     virtual Inspector& smalltalkInspector() const = 0;
+
+    /** Reads the VM's processes. The session calls this the first time they
+     *  are asked for after the target moved. Returns false when they cannot
+     *  be read, so that the next request tries again. **/
+    virtual bool readGreenThreads() { return true; }
 
     /** Returns one class in the shape the Webside client expects. A dialect
      *  that knows more about its classes adds it. **/
@@ -100,6 +107,8 @@ private:
     void addClassVariables(webside::Json& array,
                            const std::string& name) const;
     std::string printed(uint64_t oop) const;
+
+    std::optional<uint64_t> greenThreadsVersion;  // stateVersion they are from
 };
 
 } // namespace smalltalk

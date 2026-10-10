@@ -66,6 +66,13 @@ protected:
     void describeHeader(Json& json, uint64_t) const override {
         json.set("hash", 42);
     }
+    bool readGreenThreads() override {
+        reads++;
+        return true;
+    }
+
+public:
+    int reads{0};
 };
 
 std::string hex(uint64_t value) { return Json::hex(value).asString(); }
@@ -153,4 +160,15 @@ TEST_CASE("a dialect adds what its header says about a heap object") {
     Json json = Json::parse(session.describeObject(point, 0, 64));
     CHECK(json["hash"].asInt() == 42);
     CHECK(json["slots"].size() == 2);
+}
+
+TEST_CASE("the processes are read once for each place the target stops") {
+    ToySession session;
+    session.refreshGreenThreads();
+    session.refreshGreenThreads();
+    CHECK(session.reads == 1);
+
+    session.debugger().executeCommand("");   // the target may have moved
+    session.refreshGreenThreads();
+    CHECK(session.reads == 2);
 }
