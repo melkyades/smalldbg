@@ -108,6 +108,24 @@ TEST_CASE("a return is recognised on every architecture, and nothing else is") {
     CHECK(arm[1].isReturn);
 }
 
+TEST_CASE("memory at an offset from a register names the register") {
+    const uint8_t x64[] = {0x48, 0x8B, 0x53, 0x18,               // mov rdx, [rbx + 0x18]
+                           0x48, 0x8B, 0x04, 0xCB};              // mov rax, [rbx + rcx*8]
+    auto wide = Disassembler(X64::instance()).disassemble(x64, sizeof(x64), 0);
+    REQUIRE(wide.size() == 2);
+    REQUIRE(wide[0].relative);
+    CHECK(wide[0].relative->base == "rbx");
+    CHECK(wide[0].relative->displacement == 0x18);
+    CHECK_FALSE(wide[1].relative);
+
+    const uint8_t arm64[] = {0x20, 0x04, 0x40, 0xF9};            // ldr x0, [x1, #8]
+    auto arm = Disassembler(ARM64::instance()).disassemble(arm64, sizeof(arm64), 0);
+    REQUIRE(arm.size() == 1);
+    REQUIRE(arm[0].relative);
+    CHECK(arm[0].relative->base == "x1");
+    CHECK(arm[0].relative->displacement == 8);
+}
+
 TEST_CASE("empty input yields no instructions") {
     Disassembler dis(X64::instance());
     auto insns = dis.disassemble(nullptr, 0, 0);

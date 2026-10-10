@@ -33,6 +33,14 @@ struct DisasmInsn {
     // The address of memory the instruction reads or writes, when it is in
     // the encoding rather than in a register.
     std::optional<uint64_t> memory;
+
+    // Memory the instruction reads or writes at an offset from a register,
+    // such as [rbx + 0x18], when no index register is added to it.
+    struct RegisterOffset {
+        std::string base;
+        int64_t displacement{0};
+    };
+    std::optional<RegisterOffset> relative;
 };
 
 class Disassembler {

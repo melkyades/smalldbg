@@ -63,25 +63,36 @@ std::optional<uint64_t> x86Address(const cs_insn& ins, const x86_op_mem& mem,
     return wide ? disp : static_cast<uint32_t>(disp);
 }
 
-void readX86(const cs_insn& ins, bool wide, DisasmInsn& out) {
+void readX86(csh engine, const cs_insn& ins, bool wide, DisasmInsn& out) {
     const cs_x86& x86 = ins.detail->x86;
     for (uint8_t i = 0; i < x86.op_count; i++) {
         const cs_x86_op& op = x86.operands[i];
         if (op.type == X86_OP_IMM && !out.immediate)
             out.immediate = static_cast<uint64_t>(op.imm);
-        if (op.type == X86_OP_MEM && !out.memory)
-            out.memory = x86Address(ins, op.mem, wide);
+        if (op.type != X86_OP_MEM) continue;
+        if (!out.memory) out.memory = x86Address(ins, op.mem, wide);
+        const bool registerBased = op.mem.base != X86_REG_INVALID
+            && op.mem.base != X86_REG_RIP && op.mem.base != X86_REG_EIP;
+        if (!out.relative && registerBased && op.mem.index == X86_REG_INVALID)
+            out.relative = DisasmInsn::RegisterOffset{
+                cs_reg_name(engine, op.mem.base), op.mem.disp};
     }
 }
 
 // An ARM64 instruction names an address only as an immediate: a branch's
 // destination, or an address relative to the instruction, as ADR and a
 // literal load give it.
-void readArm64(const cs_insn& ins, DisasmInsn& out) {
+void readArm64(csh engine, const cs_insn& ins, DisasmInsn& out) {
     const cs_arm64& arm64 = ins.detail->arm64;
-    for (uint8_t i = 0; i < arm64.op_count; i++)
-        if (arm64.operands[i].type == ARM64_OP_IMM)
-            out.immediate = static_cast<uint64_t>(arm64.operands[i].imm);
+    for (uint8_t i = 0; i < arm64.op_count; i++) {
+        const cs_arm64_op& op = arm64.operands[i];
+        if (op.type == ARM64_OP_IMM)
+            out.immediate = static_cast<uint64_t>(op.imm);
+        if (op.type == ARM64_OP_MEM && op.mem.base != ARM64_REG_INVALID
+            && op.mem.index == ARM64_REG_INVALID && !out.relative)
+            out.relative = DisasmInsn::RegisterOffset{
+                cs_reg_name(engine, op.mem.base), op.mem.disp};
+    }
 }
 
 // A branch's destination is the address its operand names: a value for a
@@ -121,8 +132,8 @@ std::vector<DisasmInsn> Disassembler::disassemble(const uint8_t* code, size_t si
         decoded.isJump = cs_insn_group(engine, &ins, CS_GRP_JUMP);
         decoded.isReturn = cs_insn_group(engine, &ins, CS_GRP_RET);
         if (ins.detail) {
-            if (family == CS_ARCH_ARM64) readArm64(ins, decoded);
-            else readX86(ins, wide, decoded);
+            if (family == CS_ARCH_ARM64) readArm64(engine, ins, decoded);
+            else readX86(engine, ins, wide, decoded);
             readBranch(decoded);
         }
         out.push_back(std::move(decoded));
