@@ -3,6 +3,7 @@
 #include "Smalltalk/Inspector.h"
 #include "WebsideSession.h"
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -52,6 +53,9 @@ public:
     /** Reads the VM's processes again when the target has moved since they
      *  were last read, and otherwise leaves them. **/
     void refreshGreenThreads() final;
+    /** Returns the frames of a green thread, or null when the dialect gives
+     *  none. The trace lasts until the processes are read again. **/
+    smalldbg::StackTrace* greenStack(int threadIndex) const override;
     int greenThreadCount() const override { return 0; }
     std::string getGreenThreadName(int) const override { return {}; }
     std::string listSmalltalkFrames(int) const override { return "[]"; }
@@ -81,6 +85,16 @@ protected:
     /** Returns true when `value` may be an object, which the base takes to
      *  be an address in a region of objects. **/
     virtual bool mayBeObject(uint64_t value) const;
+
+    /** Returns the frames of a green thread, innermost first, each with its
+     *  ip, sp and fp and named by the dialect's unwinder. Returns none for a
+     *  dialect whose processes' frames are not native ones. **/
+    virtual std::vector<std::unique_ptr<smalldbg::StackFrame>>
+    readGreenFrames(int /*threadIndex*/) const { return {}; }
+
+    /** Returns the arguments the frame's unwinder read, named by the
+     *  selector's keywords. **/
+    std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const override;
 
     /** Reads the VM's processes. The session calls this the first time they
      *  are asked for after the target moved. Returns false when they cannot
@@ -123,6 +137,7 @@ private:
     void addPrintString(webside::Json& entry, uint64_t value) const;
 
     std::optional<uint64_t> greenThreadsVersion;  // stateVersion they are from
+    mutable std::map<int, std::unique_ptr<smalldbg::StackTrace>> greenStacks;
 };
 
 } // namespace smalltalk

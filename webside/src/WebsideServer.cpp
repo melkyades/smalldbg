@@ -670,40 +670,45 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
             warn(res, frameWarning(thread));
             return res;
         }
-        std::string sub = segments.size() > 4 ? segments[4] : "";
-        if (!isKnownFrameSubRoute(sub)) {
-            res.statusCode = 404;
-            res.body = Json::object().set("error", "Unknown sub-route").dump();
-            return res;
-        }
-        int index = 0;
-        try { index = std::stoi(segments[3]); } catch (...) {
-            res.statusCode = 400;
-            res.body = Json::object().set("error", "Invalid frame index").dump();
-            return res;
-        }
-        auto* trace = thread.getStackTrace(256);
-        if (!trace) {
-            res.body = sub.empty() ? "{}" : "[]";
-            return res;
-        }
-        const auto& frames = trace->getFrames();
-        if (index < 1 || index > static_cast<int>(frames.size())) {
-            res.statusCode = 404;
-            res.body = Json::object().set("error", "Frame not found").dump();
-            return res;
-        }
-        if (sub == "bindings")
-            res.body = session().getFrameBindings(*trace, *frames[index - 1], index);
-        else if (sub == "registers")
-            res.body = session().getFrameRegisters(*frames[index - 1]);
-        else
-            res.body = session().getFrameDetail(*trace, *frames[index - 1], index);
-        return res;
+        return handleFrameRoute(segments, thread.getStackTrace(256));
     }
 
     res.statusCode = 404;
     res.body = Json::object().set("error", "Unknown sub-route").dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleFrameRoute(const std::vector<std::string>& segments,
+                                             smalldbg::StackTrace* trace) const {
+    HttpResponse res;
+    std::string sub = segments.size() > 4 ? segments[4] : "";
+    if (!isKnownFrameSubRoute(sub)) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Unknown sub-route").dump();
+        return res;
+    }
+    int index = 0;
+    try { index = std::stoi(segments[3]); } catch (...) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Invalid frame index").dump();
+        return res;
+    }
+    if (!trace) {
+        res.body = sub.empty() ? "{}" : "[]";
+        return res;
+    }
+    const auto& frames = trace->getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size())) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Frame not found").dump();
+        return res;
+    }
+    if (sub == "bindings")
+        res.body = session().getFrameBindings(*trace, *frames[index - 1], index);
+    else if (sub == "registers")
+        res.body = session().getFrameRegisters(*frames[index - 1]);
+    else
+        res.body = session().getFrameDetail(*trace, *frames[index - 1], index);
     return res;
 }
 
@@ -729,6 +734,13 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
     }
 
     if (segments[2] == "frames") {
+        if (auto* trace = session().greenStack(threadIndex)) {
+            if (segments.size() == 3) {
+                res.body = session().listFrames(*trace);
+                return res;
+            }
+            return handleFrameRoute(segments, trace);
+        }
         if (segments.size() == 3) {
             res.body = session().listSmalltalkFrames(threadIndex);
             return res;

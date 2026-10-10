@@ -6,6 +6,7 @@
 #include "Workspace.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Snapshot.h"
+#include "smalldbg/StackTrace.h"
 #include "smalldbg/Thread.h"
 
 #include <httplib/httplib.h>
@@ -101,9 +102,11 @@ struct GreenSession : LiveSession {
     int greenThreadCount() const override { return greenThreads; }
     std::string getGreenThreadName(int) const override { return "green"; }
     uint64_t nativeThreadOf(int) const override { return runner; }
+    smalldbg::StackTrace* greenStack(int) const override { return parked.get(); }
 
     int greenThreads{0};
     uint64_t runner{0};
+    std::unique_ptr<smalldbg::StackTrace> parked;
 };
 
 // A workspace with the test target launched and stopped, and a server over it.
@@ -466,6 +469,38 @@ TEST_CASE("a running green thread's frames come from the OS thread running it") 
     Json frames = Json::parse(launched.server.handleDebuggerRoute(request).body);
     REQUIRE(frames.size() > 0);
     CHECK(frames[0]["label"].asString().find("break_here") != std::string::npos);
+}
+
+TEST_CASE("a parked green thread's frames are answered as a native thread's") {
+    Launched launched;
+    auto& green = static_cast<GreenSession&>(*launched.workspace.session());
+    green.greenThreads = 1;
+    std::vector<std::unique_ptr<smalldbg::StackFrame>> frames;
+    for (const char* name : {"inner", "outer"}) {
+        auto frame = std::make_unique<smalldbg::StackFrame>();
+        frame->functionName = name;
+        frame->setIp(0x1000);
+        frame->setFp(0x2000);
+        frames.push_back(std::move(frame));
+    }
+    green.parked = std::make_unique<smalldbg::StackTrace>(nullptr, std::move(frames));
+    std::string path = "/debuggers/" + std::to_string(
+        launched.debugger().getProcess()->threads().size() + 1) + "/frames";
+    HttpRequest request;
+    request.method = "GET";
+
+    request.path = path;
+    Json listed = Json::parse(launched.server.handleDebuggerRoute(request).body);
+    REQUIRE(listed.size() == 2);
+    CHECK(listed[1]["label"].asString() == "outer");
+
+    request.path = path + "/2/registers";
+    Json registers = Json::parse(launched.server.handleDebuggerRoute(request).body);
+    CHECK(registers[0]["printString"].asString() == "outer");
+    CHECK(registers[3]["value"].isNull());
+
+    request.path = path + "/3";
+    CHECK(launched.server.handleDebuggerRoute(request).statusCode == 404);
 }
 
 TEST_CASE("a green thread's stack is placed relative to the frame selected") {

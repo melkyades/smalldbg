@@ -5,6 +5,8 @@
 #include <smalldbg/Arch.h>
 #include <smalldbg/Debugger.h>
 #include <smalldbg/DisassemblyAnnotator.h>
+#include <smalldbg/StackFrame.h>
+#include <smalldbg/StackTrace.h>
 #include "Smalltalk/FrameUnwinder.h"
 
 #include <algorithm>
@@ -88,7 +90,20 @@ std::string Session::getStopReason() const {
 void Session::refreshGreenThreads() {
     if (!debugger().isStopped()) return;
     if (greenThreadsVersion == debugger().stateVersion()) return;
+    greenStacks.clear();
     if (readGreenThreads()) greenThreadsVersion = debugger().stateVersion();
+}
+
+smalldbg::StackTrace* Session::greenStack(int threadIndex) const {
+    const_cast<Session*>(this)->refreshGreenThreads();
+    auto found = greenStacks.find(threadIndex);
+    if (found != greenStacks.end()) return found->second.get();
+
+    auto frames = readGreenFrames(threadIndex);
+    if (frames.empty()) return nullptr;
+    auto& stack = greenStacks[threadIndex];
+    stack = std::make_unique<smalldbg::StackTrace>(nullptr, std::move(frames));
+    return stack.get();
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +395,53 @@ void Session::addSmalltalkFrameDetail(Json& json,
         json.set("method", described);
     }
     if (running->receiver != 0) json.set("receiver", printed(running->receiver));
+    if (running->instruction >= 0) json.set("instruction", running->instruction);
 }
+
+namespace {
+
+// Returns the keywords of a keyword selector, or one name for a binary
+// selector's argument, which has no keyword.
+std::vector<std::string> keywordsOf(const std::string& selector) {
+    std::vector<std::string> names;
+    if (selector.find(':') != std::string::npos) {
+        size_t start = 0;
+        for (size_t i = 0; i < selector.size(); i++) {
+            if (selector[i] != ':') continue;
+            names.push_back(selector.substr(start, i - start));
+            start = i + 1;
+        }
+    } else if (!selector.empty()
+               && !std::isalpha(static_cast<unsigned char>(selector[0]))
+               && selector[0] != '_') {
+        names.push_back("arg");
+    }
+    return names;
+}
+
+} // namespace
+
+// A block's arguments, and any the selector does not account for, are
+// numbered instead.
+std::string Session::buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const {
+    const auto* running = dynamic_cast<const FrameMetadata*>(frame.metadata.get());
+    if (!running || running->arguments.empty()) return "[]";
+
+    const auto& values = running->arguments;
+    std::vector<std::string> names;
+    if (!running->isBlock) names = keywordsOf(running->selector);
+    auto array = Json::array();
+    for (size_t i = 0; i < values.size(); i++) {
+        auto entry = Json::object()
+            .set("name", names.size() == values.size() ? names[i]
+                                                       : "arg" + std::to_string(i + 1))
+            .set("value", addressHex(values[i]));
+        addPrintString(entry, values[i]);
+        array.add(std::move(entry));
+    }
+    return array.dump();
+}
+
 
 void Session::describeRegister(Json& entry, const smalldbg::StackFrame& frame,
                                const smalldbg::RegisterValue& reg) const {

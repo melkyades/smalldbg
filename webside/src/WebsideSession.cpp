@@ -30,8 +30,11 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
     prepareFrames();
     auto* trace = thread.getStackTrace(std::max(maxFrames, size_t(64)));
     if (!trace) return "[]";
+    return listFrames(*trace);
+}
 
-    const auto& frames = trace->getFrames();
+std::string WebsideSession::listFrames(const smalldbg::StackTrace& trace) const {
+    const auto& frames = trace.getFrames();
     auto arr = Json::array();
     for (size_t i = 0; i < frames.size(); i++) {
         const smalldbg::StackFrame& frame = *frames[i];

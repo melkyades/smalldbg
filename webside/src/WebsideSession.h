@@ -35,6 +35,7 @@ public:
     // thread and frame from the request, then calls these. A frame is a VM
     // (Smalltalk) frame when frame.metadata != nullptr, native otherwise.
     std::string listFrames(smalldbg::Thread& thread, size_t maxFrames = 256) const;
+    std::string listFrames(const smalldbg::StackTrace& trace) const;
     std::string getFrameDetail(smalldbg::StackTrace& trace,
                                const smalldbg::StackFrame& frame, int index) const;
     std::string getFrameBindings(smalldbg::StackTrace& trace,
@@ -51,6 +52,11 @@ public:
      *  what it holds. Slots inside no frame are left out. **/
     std::string stackDescriptors(const smalldbg::StackTrace& trace, int selectedIndex,
                                  uint64_t from, int slots) const;
+
+    /** Returns the frames of a green thread as a trace, which the frame
+     *  routes answer the way they do a native thread's. Returns null for a
+     *  green thread whose frames are only described by the documents below. **/
+    virtual smalldbg::StackTrace* greenStack(int /*threadIndex*/) const { return nullptr; }
 
     // ---- green threads, as documents ----
     virtual std::string listSmalltalkFrames(int threadIndex) const = 0;

@@ -118,6 +118,10 @@ protected:
     HttpResponse handleSmalltalkDebuggerRoute(
         const std::vector<std::string>& segments, const HttpRequest& req,
         int threadIndex, int debuggerId) const;
+    /** Answers /debuggers/{id}/frames/{index}[/bindings|/registers] from
+     *  `trace`, which is null when the thread's stack cannot be walked. **/
+    HttpResponse handleFrameRoute(const std::vector<std::string>& segments,
+                                  smalldbg::StackTrace* trace) const;
 
     // Native OS threads ordered with the primary thread first (id = index+1).
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;

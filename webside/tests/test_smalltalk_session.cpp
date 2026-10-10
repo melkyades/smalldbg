@@ -6,6 +6,7 @@
 #include "Smalltalk/Session.h"
 #include "ToyHeap.h"
 #include "smalldbg/Debugger.h"
+#include "smalldbg/StackTrace.h"
 
 #include <map>
 #include <memory>
@@ -116,6 +117,22 @@ public:
     using smalltalk::Session::classDefinition;
     using smalltalk::Session::isMetaclassName;
     using smalltalk::Session::buildFrameDetailJson;
+    using smalltalk::Session::buildFrameArgumentsJson;
+
+    // Each green thread has one frame, running Point class>>x:y:.
+    std::vector<std::unique_ptr<smalldbg::StackFrame>>
+    readGreenFrames(int) const override {
+        ++greenReads;
+        auto frame = std::make_unique<smalldbg::StackFrame>();
+        auto running = std::make_unique<smalltalk::FrameMetadata>();
+        running->className = "Point class";
+        running->selector = "x:y:";
+        frame->metadata = std::move(running);
+        std::vector<std::unique_ptr<smalldbg::StackFrame>> frames;
+        frames.push_back(std::move(frame));
+        return frames;
+    }
+    mutable int greenReads{0};
 
 protected:
     bool onTargetOpened(const vmdbg::TargetSpec&) override { return true; }
@@ -321,4 +338,38 @@ TEST_CASE("a Smalltalk frame shows its method's class and source") {
     frame.metadata = std::move(block);
     detail = Json::parse(session.buildFrameDetailJson(frame, 1));
     CHECK(detail["method"]["selector"].asString() == "x [block 1]");
+}
+
+TEST_CASE("a green thread's frames are read once until its processes are") {
+    TestSession session;
+    smalldbg::StackTrace* stack = session.greenStack(0);
+    REQUIRE(stack != nullptr);
+    CHECK(stack->getFrameCount() == 1);
+    CHECK(session.greenStack(0) == stack);
+    CHECK(session.greenReads == 1);
+    session.greenStack(1);
+    CHECK(session.greenReads == 2);
+}
+
+TEST_CASE("a frame's arguments are named by its selector's keywords") {
+    TestSession session;
+    smalldbg::StackFrame frame;
+    auto running = std::make_unique<smalltalk::FrameMetadata>();
+    running->selector = "x:y:";
+    running->arguments = {0x10, 0x20};
+    frame.metadata = std::move(running);
+
+    Json arguments = Json::parse(session.buildFrameArgumentsJson(frame));
+    REQUIRE(arguments.size() == 2);
+    CHECK(arguments[0]["name"].asString() == "x");
+    CHECK(arguments[1]["name"].asString() == "y");
+
+    auto block = std::make_unique<smalltalk::FrameMetadata>();
+    block->selector = "x:y:";
+    block->isBlock = true;
+    block->arguments = {0x10};
+    frame.metadata = std::move(block);
+    arguments = Json::parse(session.buildFrameArgumentsJson(frame));
+    REQUIRE(arguments.size() == 1);
+    CHECK(arguments[0]["name"].asString() == "arg1");
 }
