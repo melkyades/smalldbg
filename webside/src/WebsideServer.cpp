@@ -26,7 +26,8 @@ static bool isKnownFrameSubRoute(const std::string& sub) {
     return sub.empty() || sub == "bindings" || sub == "registers";
 }
 
-static uint64_t param64(const HttpRequest& req, const char* key, uint64_t dflt = 0) {
+uint64_t WebsideServer::param64(const HttpRequest& req, const char* key,
+                               uint64_t dflt) {
     auto it = req.params.find(key);
     if (it == req.params.end()) return dflt;
     try { return std::stoull(it->second, nullptr, 0); } catch (...) { return dflt; }
@@ -1136,6 +1137,172 @@ void WebsideServer::setupInspectorRoutes() {
         return handleInspect(req);
     });
 
+    // Runs a raw command in the debugger's engine, for what no route covers.
+    server.route("POST", "/evaluate", [this](const HttpRequest& req) {
+        HttpResponse res;
+        res.body = session().runEngineCommand(req.body);
+        res.contentType = "text/plain";
+        return res;
+    });
+
+    setupMemoryTypeRoutes();
+}
+
+// Answers how each stretch of memory is shown in a listing: code, data of
+// some width, strings, or a layout the VM defines. A client overrides what the
+// defaults say.
+void WebsideServer::setupMemoryTypeRoutes() {
+    server.route("GET", "/memory-types", [this](const HttpRequest& req) {
+        return handleMemoryTypesGet(req);
+    });
+    server.route("POST", "/memory-types", [this](const HttpRequest& req) {
+        return handleMemoryTypesSet(req);
+    });
+    server.route("DELETE", "/memory-types", [this](const HttpRequest& req) {
+        return handleMemoryTypesClear(req);
+    });
+}
+
+Json WebsideServer::memoryTypeJson(const vmdbg::MemTypeRange& range) const {
+    return Json::object()
+        .set("start", session().addressHex(range.start))
+        .set("end", session().addressHex(range.end))
+        .set("size", static_cast<int64_t>(range.end - range.start))
+        .set("type", session().memoryTypes().typeName(range))
+        .set("user", range.user);
+}
+
+// `heap` tells object memory from other data: a click on an oop belongs in
+// the inspector, a click on module data in the listing.
+HttpResponse WebsideServer::handleMemoryTypesGet(const HttpRequest& req) const {
+    uint64_t start = param64(req, "address");
+    if (start == 0) return badRequest("Missing address parameter");
+    uint64_t count = std::clamp<uint64_t>(param64(req, "count", 256), 1, 65536);
+
+    auto ranges = Json::array();
+    const auto& types = session().memoryTypes();
+    for (const auto& range : types.classify(start, start + count)) {
+        ranges.add(memoryTypeJson(range).set(
+            "heap", session().inspector().isInObjectMemory(range.start)));
+    }
+    HttpResponse res;
+    res.body = Json::object()
+        .set("address", session().addressHex(start))
+        .set("count", static_cast<int64_t>(count))
+        .set("ranges", ranges)
+        .dump();
+    return res;
+}
+
+// A layout the VM defined is named directly, such as "header"; the built-in
+// types have names of their own. Without an end, the type covers what is
+// there.
+HttpResponse WebsideServer::handleMemoryTypesSet(const HttpRequest& req) {
+    auto body = Json::parse(req.body);
+    uint64_t start = addressIn(body["start"]);
+    uint64_t end = addressIn(body["end"]);
+    if (start == 0) start = param64(req, "start");
+    if (end == 0) end = param64(req, "end");
+    std::string typeName = body["type"].asString();
+    if (typeName.empty() && req.params.count("type")) typeName = req.params.at("type");
+
+    auto& types = session().memoryTypes();
+    int structId = types.structIdNamed(typeName);
+    auto type = structId >= 0 ? std::optional<vmdbg::MemType>(vmdbg::MemType::Struct)
+                              : vmdbg::memTypeFromName(typeName);
+    if (!type || start == 0)
+        return badRequest("Expected {start, type} (end optional) with a known type");
+
+    if (end <= start) end = start + typeExtent(start, *type, structId);
+    end = std::min(std::max(end, start + 1), start + (1u << 20));
+    types.setUser(start, end, *type, structId);
+
+    HttpResponse res;
+    res.body = memoryTypeJson({start, end, *type, true, structId}).dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleMemoryTypesClear(const HttpRequest& req) {
+    HttpResponse res;
+    uint64_t start = param64(req, "address");
+    if (start == 0) {
+        session().memoryTypes().clearAllUser();
+        res.body = Json::object().set("cleared", "all").dump();
+        return res;
+    }
+    uint64_t count = param64(req, "count", 1);
+    session().memoryTypes().clearUser(start, start + count);
+    res.body = Json::object()
+        .set("address", session().addressHex(start))
+        .set("count", static_cast<int64_t>(count))
+        .dump();
+    return res;
+}
+
+// Returns how far a type set without an end reaches: one element of data, a string
+// to its terminator, code to its first return, and a layout to its size, or
+// to the extent the VM gives the one there.
+uint64_t WebsideServer::typeExtent(uint64_t start, vmdbg::MemType type,
+                                   int structId) const {
+    switch (type) {
+    case vmdbg::MemType::StringAscii:
+    case vmdbg::MemType::StringUtf16:
+    case vmdbg::MemType::StringUtf32:
+        return stringExtent(start, vmdbg::memTypeElementSize(type));
+    case vmdbg::MemType::Code:
+        return codeExtent(start);
+    case vmdbg::MemType::Struct: {
+        const auto& types = session().memoryTypes();
+        const vmdbg::StructType* layout = types.structType(structId);
+        if (layout && layout->size != 0) return layout->size;
+        auto range = types.rangeAt(start, start, start + 4096);
+        return range.structId == structId && range.end > start
+            ? range.end - start : session().pointerSize();
+    }
+    default:
+        return vmdbg::memTypeElementSize(type);
+    }
+}
+
+// Memory ends somewhere, so a read that would run past it is halved until it
+// fits. Returns how many bytes were read.
+size_t WebsideServer::readUpTo(uint64_t start, std::vector<uint8_t>& buffer) const {
+    for (size_t size = buffer.size(); size > 0; size /= 2)
+        if (session().debugger().readMemory(start, buffer.data(), size)
+            == smalldbg::Status::Ok)
+            return size;
+    return 0;
+}
+
+// Reads up to a hundred characters, ending after the terminator or before the
+// first character that is not text.
+uint64_t WebsideServer::stringExtent(uint64_t start, size_t unit) const {
+    std::vector<uint8_t> buffer(100 * unit);
+    const size_t maxChars = readUpTo(start, buffer) / unit;
+    if (maxChars == 0) return unit;
+    for (size_t i = 0; i < maxChars; i++) {
+        uint64_t code = 0;
+        for (size_t k = 0; k < unit; k++)
+            code |= static_cast<uint64_t>(buffer[i * unit + k]) << (8 * k);
+        if (code == 0) return (i + 1) * unit;
+        bool text = (code >= 0x20 && code < 0x7F) || code == '\t'
+                 || code == '\n' || code == '\r'
+                 || (unit > 1 && code >= 0xA0 && code <= 0xFFFF);
+        if (!text) return std::max<uint64_t>(unit, i * unit);
+    }
+    return maxChars * unit;
+}
+
+uint64_t WebsideServer::codeExtent(uint64_t start) const {
+    std::vector<uint8_t> buffer(4096);
+    const size_t read = readUpTo(start, buffer);
+    if (read == 0) return 1;
+    auto* disassembler = session().debugger().getDisassembler();
+    for (const auto& instruction :
+         disassembler->disassemble(buffer.data(), read, start))
+        if (instruction.isReturn)
+            return instruction.address + instruction.size - start;
+    return read;
 }
 
 // The green threads are listed first, as the program a Smalltalk developer
@@ -1297,11 +1464,97 @@ void WebsideServer::setupWorkspaceRoutes() {
         auto array = Json::array();
         for (const auto& [address, name] : workspace.breakpoints())
             array.add(Json::object()
-                .set("address", Json::hex(address))
+                .set("address", workspaceAddress(address))
                 .set("name", name));
         res.body = array.dump();
         return res;
     });
+    sessionFreeRoute("POST", "/breakpoints", [this](const HttpRequest& req) {
+        auto body = Json::parse(req.body);
+        uint64_t address = addressIn(body["address"]);
+        if (address == 0) return badRequest("Expected {address, name}");
+        HttpResponse res;
+        bool set = workspace.setBreakpoint(address, body["name"].asString());
+        res.body = Json::object().set("success", set).dump();
+        return res;
+    });
+    sessionFreeRoute("DELETE", "/breakpoints", [this](const HttpRequest& req) {
+        uint64_t address = addressIn(Json::parse(req.body)["address"]);
+        if (address == 0) return badRequest("Expected {address}");
+        HttpResponse res;
+        bool cleared = workspace.clearBreakpoint(address);
+        res.body = Json::object().set("success", cleared).dump();
+        return res;
+    });
+
+    sessionFreeRoute("GET", "/labels", [this](const HttpRequest& req) {
+        return handleLabelsGet(req);
+    });
+    sessionFreeRoute("POST", "/labels", [this](const HttpRequest& req) {
+        return handleLabelsSet(req);
+    });
+    sessionFreeRoute("DELETE", "/labels", [this](const HttpRequest& req) {
+        HttpResponse res;
+        uint64_t address = param64(req, "address");
+        if (address == 0) return badRequest("Missing address parameter");
+        workspace.clearLabel(address);
+        res.body = Json::object().set("address", workspaceAddress(address)).dump();
+        return res;
+    });
+}
+
+// An address the workspace keeps is shown at the target's width while one is
+// open.
+Json WebsideServer::workspaceAddress(uint64_t address) const {
+    return workspace.isConnected() ? session().addressHex(address)
+                                   : Json::hex(address);
+}
+
+uint64_t WebsideServer::addressIn(const Json& value) {
+    return value.isNumber() ? value.asUInt() : parseHexParam(value.asString());
+}
+
+HttpResponse WebsideServer::badRequest(const std::string& error) {
+    HttpResponse res;
+    res.statusCode = 400;
+    res.body = Json::object().set("error", error).dump();
+    return res;
+}
+
+// Answers the labels in [address, address + count), or all of them without a
+// range.
+HttpResponse WebsideServer::handleLabelsGet(const HttpRequest& req) const {
+    uint64_t start = param64(req, "address");
+    uint64_t count = param64(req, "count", 0);
+    auto array = Json::array();
+    for (const auto& [address, name] : workspace.labels()) {
+        if (start != 0 && count != 0
+            && (address < start || address >= start + count))
+            continue;
+        array.add(Json::object()
+            .set("address", workspaceAddress(address))
+            .set("name", name));
+    }
+    HttpResponse res;
+    res.body = array.dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleLabelsSet(const HttpRequest& req) {
+    auto body = Json::parse(req.body);
+    uint64_t address = addressIn(body["address"]);
+    if (address == 0) address = param64(req, "address");
+    std::string name = body["name"].asString();
+    if (name.empty() && req.params.count("name")) name = req.params.at("name");
+    if (address == 0 || name.empty()) return badRequest("Expected {address, name}");
+
+    workspace.setLabel(address, name);
+    HttpResponse res;
+    res.body = Json::object()
+        .set("address", workspaceAddress(address))
+        .set("name", name)
+        .dump();
+    return res;
 }
 
 // Run control aimed at one debugger id: resume, suspend, terminate, run to an

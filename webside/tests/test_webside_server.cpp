@@ -43,6 +43,9 @@ struct TestServer : WebsideServer {
     using WebsideServer::handleMemory;
     using WebsideServer::handleRegions;
     using WebsideServer::handleClassify;
+    using WebsideServer::handleMemoryTypesGet;
+    using WebsideServer::handleMemoryTypesSet;
+    using WebsideServer::handleMemoryTypesClear;
     using WebsideServer::handleLoadModuleSymbols;
     using WebsideServer::handleRunTo;
     using WebsideServer::threadListJson;
@@ -187,6 +190,58 @@ TEST_CASE("/classify says which region holds an address and if it is in use") {
     CHECK(used["free"].isNull());
     CHECK(classify(served, kBase + 12)["free"].asBool());
     CHECK(classify(served, kBase + 0x20)["region"].isNull());
+}
+
+HttpRequest request(const std::string& method, const std::string& path,
+                    const std::string& body = {}) {
+    HttpRequest made;
+    made.method = method;
+    made.path = path;
+    made.body = body;
+    return made;
+}
+
+Json memoryTypes(Served& served, uint64_t address, int count) {
+    HttpRequest get = request("GET", "/memory-types");
+    get.params["address"] = Json::hex(address).asString();
+    get.params["count"] = std::to_string(count);
+    return Json::parse(served.server.handleMemoryTypesGet(get).body)["ranges"];
+}
+
+Json setMemoryType(Served& served, uint64_t start, const std::string& type) {
+    std::string body = Json::object().set("start", Json::hex(start))
+                                     .set("type", type).dump();
+    return Json::parse(
+        served.server.handleMemoryTypesSet(request("POST", "/memory-types", body)).body);
+}
+
+TEST_CASE("memory types default to what the regions hold") {
+    Served served(sample());
+    addEden(served);
+    Json ranges = memoryTypes(served, kBase, 16);
+    REQUIRE(ranges.size() == 1);
+    CHECK(ranges[0]["type"].asString() == "data8");
+    CHECK(ranges[0]["heap"].asBool());
+    CHECK_FALSE(ranges[0]["user"].asBool());
+}
+
+TEST_CASE("a memory type set without an end covers what is there") {
+    Served text(sample());
+    Json string = setMemoryType(text, kBase, "ascii");
+    CHECK(string["size"].asInt() == 3);
+    CHECK(string["user"].asBool());
+    Json ranges = memoryTypes(text, kBase, 3);
+    REQUIRE(ranges.size() == 1);
+    CHECK(ranges[0]["type"].asString() == "ascii");
+
+    HttpRequest clear = request("DELETE", "/memory-types");
+    clear.params["address"] = Json::hex(kBase).asString();
+    clear.params["count"] = "3";
+    text.server.handleMemoryTypesClear(clear);
+    CHECK_FALSE(memoryTypes(text, kBase, 3)[0]["user"].asBool());
+
+    Served code({0x90, 0x90, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC});
+    CHECK(setMemoryType(code, kBase, "code")["size"].asInt() == 3);
 }
 
 TEST_CASE("/memory reads bytes as a hex dump beside their ASCII") {
@@ -427,7 +482,7 @@ TEST_CASE("with nothing open, only the routes that need no target answer") {
     serving.join();
 }
 
-TEST_CASE("the workspace and its breakpoints answer with nothing open") {
+TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") {
     constexpr int port = 47233;
     Workspace workspace([](const TargetSpec&) {
         return std::make_unique<StubSession>();
@@ -451,6 +506,27 @@ TEST_CASE("the workspace and its breakpoints answer with nothing open") {
     auto setup = client.Get("/workspace");
     REQUIRE(setup);
     CHECK(Json::parse(setup->body)["breakpoints"].size() == 1);
+
+    auto set = client.Post("/breakpoints",
+                           "{\"address\":\"0x402000\",\"name\":\"two\"}",
+                           "application/json");
+    REQUIRE(set);
+    CHECK(Json::parse(set->body)["success"].asBool());
+    CHECK(Json::parse(client.Get("/breakpoints")->body).size() == 2);
+    auto cleared = client.Delete("/breakpoints", "{\"address\":4198400}",
+                                 "application/json");
+    REQUIRE(cleared);
+    CHECK(Json::parse(cleared->body)["success"].asBool());
+    CHECK(Json::parse(client.Get("/breakpoints")->body).size() == 1);
+
+    REQUIRE(client.Post("/labels", "{\"address\":\"0x403000\",\"name\":\"buffer\"}",
+                        "application/json"));
+    Json labels = Json::parse(client.Get("/labels")->body);
+    REQUIRE(labels.size() == 1);
+    CHECK(labels[0]["name"].asString() == "buffer");
+    CHECK(labels[0]["address"].asString() == Json::hex(uint64_t(0x403000)).asString());
+    REQUIRE(client.Delete("/labels?address=0x403000"));
+    CHECK(Json::parse(client.Get("/labels")->body).size() == 0);
 
     server.stop();
     serving.join();

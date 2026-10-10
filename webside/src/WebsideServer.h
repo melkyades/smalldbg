@@ -80,6 +80,9 @@ protected:
     virtual std::string nativeModulesData() const;
     virtual std::string nativeSymbolDetailData(const std::string& name) const;
     virtual std::string nativeInspectData(const std::string& expression) const;
+    HttpResponse handleMemoryTypesGet(const HttpRequest& req) const;
+    HttpResponse handleMemoryTypesSet(const HttpRequest& req);
+    HttpResponse handleMemoryTypesClear(const HttpRequest& req);
     HttpResponse handleLoadModuleSymbols(const HttpRequest& req);
     HttpResponse handleSymbol(const HttpRequest& req) const;
 
@@ -168,6 +171,18 @@ protected:
     static std::vector<std::string> splitPath(const std::string& path);
     static uint64_t parseHexParam(const std::string& s);
 
+    /** Returns `address` in hex, at the target's width when one is open. **/
+    Json workspaceAddress(uint64_t address) const;
+    /** Returns the address a request body gives as a number or in hex, or 0
+     *  when it gives none. **/
+    static uint64_t addressIn(const Json& value);
+    static HttpResponse badRequest(const std::string& error);
+
+    /** Returns the request's number `key`, in decimal or in hex after "0x",
+     *  or `dflt` when it is missing or not a number. **/
+    static uint64_t param64(const HttpRequest& req, const char* key,
+                            uint64_t dflt = 0);
+
 private:
     void setupBaseRoutes();
     void setupStaticRoutes();
@@ -178,6 +193,14 @@ private:
     void setupInspectorRoutes();
     void setupDebuggerRoutes();
     void setupDebuggerActionRoutes();
+    void setupMemoryTypeRoutes();
+    HttpResponse handleLabelsGet(const HttpRequest& req) const;
+    HttpResponse handleLabelsSet(const HttpRequest& req);
+    Json memoryTypeJson(const vmdbg::MemTypeRange& range) const;
+    uint64_t typeExtent(uint64_t start, vmdbg::MemType type, int structId) const;
+    size_t readUpTo(uint64_t start, std::vector<uint8_t>& buffer) const;
+    uint64_t stringExtent(uint64_t start, size_t unit) const;
+    uint64_t codeExtent(uint64_t start) const;
     HttpResponse answerOrRefuse(const HttpRequest& request,
                                 const HttpHandler& handler) const;
 
