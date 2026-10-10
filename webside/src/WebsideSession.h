@@ -10,6 +10,7 @@
 #include "VMSession.h"
 
 namespace smalldbg {
+    class AnnotationSource;
     class Debugger;
     class Thread;
     class StackTrace;
@@ -94,6 +95,19 @@ public:
 
     // ---- events ----
     virtual std::string waitForEvent(int timeoutMs = 5000) = 0;
+
+    // ---- listings ----
+    /** Returns what names the addresses a listing refers to. The base names
+     *  them by native symbol. **/
+    virtual std::unique_ptr<smalldbg::AnnotationSource> annotationSource() const;
+
+    /** Returns one line saying what a layout the VM defined holds, such as an
+     *  object header's size and flags, read from `bytes`; or an empty text,
+     *  as the base does, to show its bytes instead. **/
+    virtual std::string layoutText(const vmdbg::MemTypeRange& /*range*/,
+                                   const std::vector<uint8_t>& /*bytes*/) const {
+        return {};
+    }
 
     // ---- object description ----
     /** Returns the object at `oop` for /inspect, with up to `maxSlots` of its

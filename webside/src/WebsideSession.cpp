@@ -3,6 +3,7 @@
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Arch.h"
 #include "smalldbg/Debugger.h"
+#include "smalldbg/DisassemblyAnnotator.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 
@@ -10,6 +11,10 @@
 #include <cstring>
 
 namespace webside {
+
+std::unique_ptr<smalldbg::AnnotationSource> WebsideSession::annotationSource() const {
+    return std::make_unique<smalldbg::SymbolAnnotationSource>(debugger());
+}
 
 Json WebsideSession::addressHex(uint64_t address) const {
     return pointerSize() <= 4 ? Json::hex(static_cast<uint32_t>(address))

@@ -1,4 +1,5 @@
 #include "WebsideServer.h"
+#include "MemoryListing.h"
 #include "Json.h"
 #include "VMInspector.h"
 #include "smalldbg/Debugger.h"
@@ -925,53 +926,26 @@ HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
     return res;
 }
 
-HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) {
+// What the memory types say is code is disassembled and annotated; the rest
+// is shown as values, strings and the VM's layouts.
+HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) const {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
-
     auto addrIt = req.params.find("address");
-    if (addrIt == req.params.end()) {
-        res.statusCode = 400;
-        res.body = Json::object().set("error", "Missing address parameter").dump();
-        return res;
-    }
+    if (addrIt == req.params.end()) return badRequest("Missing address parameter");
 
-    uint64_t addr = parseHexParam(addrIt->second);
+    uint64_t address = parseHexParam(addrIt->second);
+    uint64_t count = std::clamp<uint64_t>(param64(req, "count", 256), 1, 16384);
+    std::vector<uint8_t> bytes(count);
+    bytes.resize(readUpTo(address, bytes));
+    if (bytes.empty()) return badRequest("Failed to read memory");
 
-    int byteCount = 64;
-    auto countIt = req.params.find("count");
-    if (countIt != req.params.end()) {
-        try { byteCount = std::stoi(countIt->second); } catch (...) {}
-    }
-    byteCount = std::clamp(byteCount, 1, 4096);
-
-    auto process = session().debugger().getProcess();
-    std::vector<uint8_t> buf(byteCount);
-    if (process->readMemory(addr, buf.data(), byteCount) != smalldbg::Status::Ok) {
-        res.statusCode = 400;
-        res.body = Json::object().set("error", "Failed to read memory").dump();
-        return res;
-    }
-
-    smalldbg::Disassembler* dis = session().debugger().getDisassembler();
-    auto insns = dis->disassemble(buf.data(), buf.size(), addr);
-
-    auto instructions = Json::array();
-    for (const auto& ins : insns) {
-        instructions.add(Json::object()
-            .set("address", Json::hex(ins.address))
-            .set("size", ins.size)
-            .set("bytes", ins.bytes)
-            .set("text", ins.text));
-    }
-
-    auto result = Json::object()
-        .set("address", Json::hex(addr))
-        .set("size", byteCount)
-        .set("hex", formatHexDump(buf))
-        .set("instructions", instructions);
-
-    res.body = result.dump();
+    MemoryListing listing(session(), workspace.labels());
+    res.body = Json::object()
+        .set("address", session().addressHex(address))
+        .set("size", static_cast<int64_t>(bytes.size()))
+        .set("instructions", listing.rows(address, bytes))
+        .dump();
     return res;
 }
 

@@ -46,6 +46,7 @@ struct TestServer : WebsideServer {
     using WebsideServer::handleMemoryTypesGet;
     using WebsideServer::handleMemoryTypesSet;
     using WebsideServer::handleMemoryTypesClear;
+    using WebsideServer::handleDisassemble;
     using WebsideServer::handleLoadModuleSymbols;
     using WebsideServer::handleRunTo;
     using WebsideServer::threadListJson;
@@ -242,6 +243,30 @@ TEST_CASE("a memory type set without an end covers what is there") {
 
     Served code({0x90, 0x90, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC});
     CHECK(setMemoryType(code, kBase, "code")["size"].asInt() == 3);
+}
+
+TEST_CASE("a listing shows code, strings and data as the memory types say") {
+    Served served({0x90, 0xC3, 'h', 'i', 0, 0, 0, 0,
+                   0x2A, 0, 0, 0, 0, 0, 0, 0});
+    REQUIRE(setMemoryType(served, kBase, "code")["size"].asInt() == 2);
+    REQUIRE(setMemoryType(served, kBase + 2, "ascii")["size"].asInt() == 3);
+    served.workspace.setLabel(kBase, "start");
+
+    HttpRequest get = request("GET", "/disassemble");
+    get.params["address"] = Json::hex(kBase).asString();
+    get.params["count"] = "16";
+    Json rows = Json::parse(served.server.handleDisassemble(get).body)["instructions"];
+    REQUIRE(rows.size() >= 5);
+    CHECK(rows[0]["type"].asString() == "label");
+    CHECK(rows[0]["text"].asString() == "start");
+    CHECK(rows[0]["user"].asBool());
+    CHECK(rows[1]["text"].asString().rfind("nop", 0) == 0);
+    CHECK(rows[2]["text"].asString().rfind("ret", 0) == 0);
+    CHECK(rows[3]["type"].asString() == "string");
+    CHECK(rows[3]["value"].asString() == "hi");
+    CHECK(rows[4]["type"].asString() == "data");
+    CHECK(rows[4]["text"].asString() == "db 0x00");
+    CHECK(rows[rows.size() - 1]["text"].asString() == "dq 0x000000000000002a");
 }
 
 TEST_CASE("/memory reads bytes as a hex dump beside their ASCII") {

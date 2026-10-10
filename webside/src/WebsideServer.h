@@ -101,7 +101,7 @@ protected:
                         bool asHex, Json& result) const;
     static Json unitJson(const uint8_t* unit, size_t unitSize, bool isSigned,
                          bool asHex);
-    virtual HttpResponse handleDisassemble(const HttpRequest& req);
+    HttpResponse handleDisassemble(const HttpRequest& req) const;
 
     // ---- suspend/resume hooks (dialects may set up / tear down VM state) ----
     virtual void onPostSuspend() {}
