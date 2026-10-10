@@ -16,6 +16,24 @@
 
 namespace smalldbg {
 
+struct ComReleaser {
+    void operator()(IUnknown* p) const { p->Release(); }
+};
+
+/** A ComPtr holds a COM interface for the length of a scope and releases it
+ *  at the end. **/
+template <typename T>
+using ComPtr = std::unique_ptr<T, ComReleaser>;
+
+/** Returns the requested interface, or nothing when the object does not
+ *  implement it. **/
+template <typename T, typename From>
+ComPtr<T> queryInterface(From* from) {
+    T* raw = nullptr;
+    if (FAILED(from->QueryInterface(__uuidof(T), (void**)&raw))) return {};
+    return ComPtr<T>(raw);
+}
+
 class DbgEngBackend;  // forward declaration for event callbacks
 
 // Strategy for syncing the DbgEng engine's effective processor type before
@@ -26,11 +44,10 @@ class DbgEngBackend;  // forward declaration for event callbacks
 // determines whether that's a no-op or a real fixup.
 class EffectiveTypeSync;
 
-/// Event callbacks — the engine calls into these during WaitForEvent.
-/// Each callback sets stopReason on the backend.
-/// Returning DEBUG_STATUS_BREAK causes WaitForEvent to return S_OK.
-/// Returning DEBUG_STATUS_GO / GO_NOT_HANDLED lets the engine continue
-/// internally (WaitForEvent keeps waiting).
+/** DbgEngEventCallbacks receives the engine's events during WaitForEvent and
+ *  sets the backend's stop reason. A callback returns DEBUG_STATUS_BREAK to
+ *  make WaitForEvent return, and DEBUG_STATUS_GO or GO_NOT_HANDLED to keep
+ *  it waiting. **/
 class DbgEngEventCallbacks : public DebugBaseEventCallbacks {
 public:
     explicit DbgEngEventCallbacks(DbgEngBackend* be) : backend(be) {}
@@ -57,11 +74,8 @@ private:
     DbgEngBackend* backend;
 };
 
-/// Debugging backend that uses the DbgEng (WinDbg) engine.
-///
-/// This is an alternative to the plain-WinAPI WindowsBackend.  It requires
-/// same-architecture debugging: x86 debugger for x86 targets, x64 for x64,
-/// ARM64 for ARM64.  Cross-architecture debugging is NOT supported.
+/** DbgEngBackend debugs through the DbgEng (WinDbg) engine. The debugger
+ *  and its target must have the same architecture. **/
 class DbgEngBackend : public Backend {
 public:
     DbgEngBackend(Debugger* dbg, Mode m, const Arch* a);
@@ -74,6 +88,7 @@ public:
 
     Status resume() override;
     Status step(Thread* thread) override;
+    Status stepOver(Thread* thread) override;
     Status suspend() override;
 
     // --- Post-mortem crash-dump loading ---
@@ -90,18 +105,26 @@ public:
     Status recoverCallerRegisters(Registers& regs) const override;
     std::vector<InlineFrameInfo> getInlineFrames(Address ip, Address sp,
                                                  Address fp) const override;
-    InlineFrameMap getInlineFrameMap(Address ip, Address sp,
-                                     Address fp) const override;
+    std::unique_ptr<StackUnwinder> createUnwinder() const override;
+
+    // The engine's stack walk from the frame at ip/sp/fp, innermost frame
+    // first, with the functions inlined into each frame just before it.
+    std::vector<StackFrame> walkStack(Address ip, Address sp, Address fp,
+                                      size_t maxFrames) const;
 
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
     Address getStopAddress() const override { return stopAddress; }
+    std::optional<ExceptionInfo> getStopException() const override;
     StopReason waitForEvent(StopReason reason = StopReason::None, int timeout_ms = -1) override;
 
     bool isAttached() const override { return attached; }
 
     // Execute a raw DbgEng command (e.g. "kb", "lm") and return output.
     std::string executeCommand(const std::string& cmd) const override;
+
+    // The threads the engine has at the position it is on.
+    std::vector<ThreadId> enumerateThreads() const override;
 
     // Access to underlying DbgEng interfaces (for potential symbol backend use)
     IDebugSymbols3* getDbgEngSymbols() const { return symbols; }
@@ -110,6 +133,7 @@ public:
     // Callbacks invoked by the DbgEngEventCallbacks helper (friend).
     void onBreakpoint(ULONG64 offset);
     void onException(DWORD code, ULONG64 address);
+    void onUnhandledException(const EXCEPTION_RECORD64& record);
 
     // Called by Exception callback to tell the event loop how to continue
     // uninteresting exceptions (GO_NOT_HANDLED for first-chance, GO for
@@ -137,6 +161,9 @@ protected:
     // requestStep pins the thread it applies to; requestResume runs them all.
     void requestStep(ULONG execStatus, Thread& thread);
     void requestResume(ULONG execStatus);
+    // Asks the event loop to step `thread` with an engine command, for a step
+    // that has no execution status of its own.
+    void requestStepCommand(const std::string& command, Thread& thread);
 
     // Make `thread` the engine's current thread. Must run on the engine thread;
     // selectThreadOnEngine() is the version callable from anywhere.
@@ -160,8 +187,8 @@ protected:
     // Register reads and inline-frame expansion, both requiring the engine
     // thread and the right thread selected on it.
     Status readRegisters(Registers& out) const;
-    void collectInlineFrameMap(Address ip, Address sp, Address fp,
-                               InlineFrameMap& out) const;
+    void collectStackWalk(Address ip, Address sp, Address fp, size_t maxFrames,
+                          std::vector<StackFrame>& out) const;
     void collectInlineFrames(Address ip, Address sp, Address fp,
                              std::vector<InlineFrameInfo>& out) const;
     std::string captureCommandOutput(const std::string& cmd) const;
@@ -190,13 +217,19 @@ protected:
     bool initArchAndRegisters();  // validate target arch, resolve register indices
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
+    void selectEventThread();
+    void collectThreadIds(std::vector<ThreadId>& out) const;
 
     void drainSyntheticEvents(uintptr_t targetPid);  // resume briefly to flush queued thread/module events
 
     // Phase 2: main loop helpers
     bool waitForResumeSignal();  // wait for resume/step, false → exit
+    void signalStopped();        // record a stop; take engine work from now on
     void runPendingEngineTasks(std::unique_lock<std::mutex>& lock);
-    void beginExecution(ULONG& execStatus);  // set execution status on engine
+    // Sets the execution status on the engine. Returns false when the engine
+    // refuses it.
+    bool beginExecution(ULONG& execStatus);
+    bool startWithCommand(const std::string& command);
     void pumpEvents(ULONG execStatus);       // inner WaitForEvent pump
     enum class EventAction { Continue, Stop, EndOfTrace, SessionEnded };
     EventAction handleDebugEvent(ULONG execStatus, ULONG64 pc);  // classify & act on one event
@@ -228,9 +261,22 @@ protected:
 
     // Closures marshaled to the event-loop thread (drained in waitForResumeSignal).
     mutable std::deque<std::function<void()>> engineTasks;
-    // Whether the engine thread is parked where it can drain engineTasks.
-    // Guarded by `mutex`; see runOnEngineThread.
-    bool engineIdle = false;
+    // Whether the engine thread accepts engineTasks: from a recorded stop until
+    // it leaves waitForResumeSignal to run the target. Guarded by `mutex`; see
+    // runOnEngineThread.
+    bool acceptsEngineWork = false;
+    mutable std::mutex engineCallMutex;  // held by the caller waiting on the engine
+    // Set when the engine refused to start execution, so resume() can answer
+    // truthfully rather than leave the caller believing the target runs.
+    bool startFailed = false;
+    // Set when the target stopped on an exception the program left unhandled,
+    // which the next resume passes back to it unhandled.
+    bool stoppedOnUnhandledException = false;
+    // A stop requested by suspend() and not answered yet, and whether the
+    // engine thread has raised it, which it does once.
+    mutable std::atomic<bool> interruptRequested{false};
+    mutable std::atomic<bool> interruptRaised{false};
+    void consumePendingInterrupt() const;  // clear a break the stop answered
 
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;
@@ -249,10 +295,12 @@ protected:
     bool stopped          = false;
     StopReason stopReason = StopReason::None;
     Address stopAddress   = 0;
+    std::optional<ExceptionInfo> stopException;  // the exception of this stop
     bool continueRequested= false;
     bool stepRequested    = false;
     DWORD stepThreadId    = 0;
     ULONG pendingExecStatus = 0;              // execution status for event loop (e.g. DEBUG_STATUS_GO)
+    std::string pendingCommand;      // runs instead of pendingExecStatus
     ULONG pendingContinueStatus = 0; // non-zero → auto-continue exception
     Address lastStepPC = 0;          // PC before last step (for TTD breakpoint skip)
     bool stepPending = false;         // true while a step is being executed

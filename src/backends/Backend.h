@@ -3,6 +3,8 @@
 #include "../../include/smalldbg/Types.h"
 #include "../../include/smalldbg/Process.h"
 #include "../../include/smalldbg/StackTrace.h"
+#include "../../include/smalldbg/NativeUnwinder.h"
+#include "../../include/smalldbg/Snapshot.h"
 #include <functional>
 #include <vector>
 #include <optional>
@@ -27,13 +29,30 @@ public:
     virtual Status resume() = 0;
     virtual Status step(Thread* thread) = 0;
     virtual Status suspend() = 0; // Interrupt running process
+
+    // Stepping over a call and out of a frame need nothing but breakpoints, so
+    // every backend has them; one whose engine does better says so.
+    virtual Status stepOver(Thread* thread);
+    virtual Status stepOut(Thread* thread);
     
     // --- Reverse debugging (TTD) ---
     // Default implementations return NotSupported; override in backends that support TTD
     virtual Status openTrace(const std::string& tracePath) { (void)tracePath; return Status::NotSupported; }
     virtual Status stepBack(Thread* thread) { (void)thread; return Status::NotSupported; }
     virtual Status reverseStepOver(Thread* thread) { (void)thread; return Status::NotSupported; }
+    virtual Status reverseStepOut(Thread* thread) { (void)thread; return Status::NotSupported; }
     virtual Status reverseResume() { return Status::NotSupported; }
+
+    // ---- trace replay: a backend that replays no trace has none of this ----
+    virtual std::optional<TracePosition> tracePosition() const { return std::nullopt; }
+    virtual std::optional<std::pair<TracePosition, TracePosition>> traceExtent() const {
+        return std::nullopt;
+    }
+    virtual Status seekTrace(const TracePosition&) { return Status::NotSupported; }
+    virtual Status seekTraceFraction(double) { return Status::NotSupported; }
+    virtual std::optional<TracePosition> lastExecution(Address) const {
+        return std::nullopt;
+    }
     virtual bool isTTDTrace() const { return false; }
 
     // --- Post-mortem crash-dump loading ---
@@ -41,6 +60,9 @@ public:
     // Default returns NotSupported; override in backends that support it.
     virtual Status openDump(const std::string& dumpPath) { (void)dumpPath; return Status::NotSupported; }
     virtual bool isDumpFile() const { return false; }
+
+    // Memory laid out by the caller, which never runs.
+    virtual Status openSnapshot(const std::vector<SnapshotRegion>&) { return Status::NotSupported; }
 
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
     virtual Status clearBreakpoint(Address addr) = 0;
@@ -64,11 +86,12 @@ public:
     virtual std::vector<InlineFrameInfo> getInlineFrames(
         Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
 
-    // Every frame's inline functions in one walk, starting from the frame
-    // described by ip/sp/fp. Backends without inline info return nothing, and
-    // callers fall back to asking frame by frame.
-    virtual InlineFrameMap getInlineFrameMap(
-        Address /*ip*/, Address /*sp*/, Address /*fp*/) const { return {}; }
+    // The debugger's lowest-priority unwinder, so it handles any frame no
+    // other unwinder does. By default the native one, which unwinds a frame at
+    // a time; a backend that can walk the stack itself returns its own.
+    virtual std::unique_ptr<StackUnwinder> createUnwinder() const {
+        return std::make_unique<NativeUnwinder>();
+    }
 
     virtual bool isAttached() const { return false; }
     std::optional<uintptr_t> attachedPid() const {
@@ -79,6 +102,9 @@ public:
     virtual StopReason getStopReason() const = 0;
     virtual bool isStopped() const = 0;
     virtual Address getStopAddress() const = 0;
+    // The exception the target is stopped on. Returns nothing when the stop
+    // was not an exception, or when the backend cannot tell.
+    virtual std::optional<ExceptionInfo> getStopException() const { return std::nullopt; }
     
     // Wait for debugger to stop with a specific reason (or any reason if None)
     // Returns the actual stop reason, or None if timeout/error
@@ -103,10 +129,28 @@ public:
     // Default implementation returns an empty list.
     virtual std::vector<ModuleInfo> enumerateModules() const { return {}; }
 
+    // The threads the target has right now. Returns an empty list for a backend
+    // that learns of threads only from create and exit events.
+    virtual std::vector<ThreadId> enumerateThreads() const { return {}; }
+
+    // Brings the process's thread list in line with the target. A backend that
+    // cannot enumerate leaves the list to the events it reports.
+    void refreshThreads() {
+        if (!process) return;
+        auto live = enumerateThreads();
+        if (live.empty()) return;
+        process->syncThreads(live);
+    }
+
     // The target's architecture, updated once the backend has identified it.
     const Arch* getArch() const { return arch; }
 
 protected:
+    /** Run until the frame `depth` below the current one is returned to. **/
+    Status runToFrameReturn(Thread* thread, size_t depth);
+    /** Run until `address` is reached, by a breakpoint taken away after. **/
+    Status runTo(Address address);
+
     Mode mode{Mode::External};
     const Arch* arch{X64::instance()};
     std::function<void(const std::string &)> log;

@@ -7,8 +7,18 @@ add_executable(unit_tests
     unit/doctest_main.cpp
     unit/test_disassembler.cpp
     unit/test_arch.cpp
+    unit/test_snapshot.cpp
+    unit/test_symbol_loader.cpp
+    unit/test_symbol_database.cpp
+    unit/test_stop_reason.cpp
+    unit/test_disassembly_annotator.cpp
+    unit/test_module_sections.cpp
 )
 target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
+if(WIN32)
+    target_sources(unit_tests PRIVATE unit/test_wow64_syscall_unwinder.cpp
+                                      unit/test_ttd_trace.cpp)
+endif()
 
 # Legacy end-to-end harness. Still built, but not registered with ctest yet:
 # it drives a live target interactively (stdin "wait" mode) and is being
@@ -73,6 +83,24 @@ if(WIN32)
     add_executable(ttd_recorder live/ttd_recorder.cpp)
     target_link_options(ttd_recorder PRIVATE /MANIFESTUAC:level='requireAdministrator')
     add_dependencies(live_tests ttd_recorder)
+endif()
+
+# Performance regression tests. They assert ratios against a round trip they
+# measure on the spot, so they mean the same thing on a fast machine and a slow
+# one. Labelled so a run under load can skip them: ctest -LE perf.
+if(WIN32)
+    add_executable(perf_tests
+        unit/doctest_main.cpp
+        perf/PerfBudget.cpp
+        perf/test_perf_unwind.cpp
+        ${LIVE_UTIL_SRC}
+    )
+    target_include_directories(perf_tests PRIVATE live perf)
+    target_link_libraries(perf_tests PRIVATE smalldbg doctest::doctest shell32)
+    add_dependencies(perf_tests test_target)
+    add_test(NAME perf-tests COMMAND perf_tests)
+    # A hang fails the test rather than holding up the suite.
+    set_tests_properties(perf-tests PROPERTIES LABELS perf TIMEOUT 300)
 endif()
 
 # Include DbgEng register tests (Windows only, separate diagnostic tools)

@@ -1,8 +1,10 @@
 #include "WebsideSession.h"
 #include "Json.h"
+#include "SourceExcerpt.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Arch.h"
 #include "smalldbg/Debugger.h"
+#include "smalldbg/DisassemblyAnnotator.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 
@@ -11,38 +13,13 @@
 
 namespace webside {
 
-// =========================================================================
-// Thread helpers
-// =========================================================================
-
-std::shared_ptr<smalldbg::Thread> WebsideSession::primaryThread() const {
-    auto* dbg = getDebugger();
-    if (!dbg) return nullptr;
-    auto proc = dbg->getProcess();
-    return proc ? proc->primaryThread() : nullptr;
-}
-
-std::shared_ptr<smalldbg::Thread> WebsideSession::resolveThread(uint64_t threadId) const {
-    auto* dbg = getDebugger();
-    if (!dbg) return nullptr;
-    auto proc = dbg->getProcess();
-    if (!proc) return nullptr;
-    auto opt = proc->getThread(threadId);
-    return opt ? *opt : nullptr;
-}
-
-size_t WebsideSession::pointerSize() const {
-    auto* dbg = getDebugger();
-    return dbg ? dbg->arch()->pointerSize() : smalldbg::hostArch()->pointerSize();
+std::unique_ptr<smalldbg::AnnotationSource> WebsideSession::annotationSource() const {
+    return std::make_unique<smalldbg::SymbolAnnotationSource>(debugger());
 }
 
 Json WebsideSession::addressHex(uint64_t address) const {
     return pointerSize() <= 4 ? Json::hex(static_cast<uint32_t>(address))
                               : Json::hex(address);
-}
-
-static bool unwindThread(smalldbg::Thread*, smalldbg::StackTrace& trace, size_t maxFrames) {
-    return trace.unwind(std::max(maxFrames, size_t(64))) == smalldbg::Status::Ok;
 }
 
 // =========================================================================
@@ -51,9 +28,15 @@ static bool unwindThread(smalldbg::Thread*, smalldbg::StackTrace& trace, size_t 
 
 std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrames) const {
     prepareFrames();
-    smalldbg::StackTrace trace(&thread);
-    if (!unwindThread(&thread, trace, maxFrames)) return "[]";
+    auto* trace = thread.getStackTrace(std::max(maxFrames, size_t(64)));
+    if (!trace) return "[]";
+    // The arguments a frame's line shows come with its details.
+    for (size_t i = 0; i < trace->getFrameCount(); i++)
+        trace->resolveFrameDetails(i, &debugger());
+    return listFrames(*trace);
+}
 
+std::string WebsideSession::listFrames(const smalldbg::StackTrace& trace) const {
     const auto& frames = trace.getFrames();
     auto arr = Json::array();
     for (size_t i = 0; i < frames.size(); i++) {
@@ -64,6 +47,13 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
             .set("ip", addressHex(frame.ip()))
             .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
             .set("functionAddress", addressHex(functionAddressOf(frame)));
+
+        // Where the frame sits, so that a client can show it and go to it
+        // without asking for the frame's detail.
+        entry.set("framePointer", addressHex(frame.fp()))
+             .set("stackPointer", addressHex(frame.sp()));
+        if (!frame.moduleName.empty()) entry.set("module", frame.moduleName);
+
         if (frame.inlined) entry.set("inlined", true);
         std::string args = buildFrameArgumentsJson(frame);
         if (args != "[]") entry.set("arguments", Json::parse(args));
@@ -74,13 +64,13 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
 
 std::string WebsideSession::getFrameDetail(smalldbg::StackTrace& trace,
                                            const smalldbg::StackFrame& frame, int index) const {
-    trace.resolveFrameDetails(index - 1, getDebugger());
+    trace.resolveFrameDetails(index - 1, &debugger());
     return buildFrameDetailJson(frame, index);
 }
 
 std::string WebsideSession::getFrameBindings(smalldbg::StackTrace& trace,
                                              const smalldbg::StackFrame& frame, int index) const {
-    trace.resolveFrameDetails(index - 1, getDebugger());
+    trace.resolveFrameDetails(index - 1, &debugger());
     return buildFrameBindingsJson(frame, index);
 }
 
@@ -92,7 +82,21 @@ std::string WebsideSession::stackDescriptors(const smalldbg::StackTrace& trace,
                                              int selectedIndex,
                                              uint64_t from, int slots) const {
     uint64_t to = from + static_cast<uint64_t>(slots) * pointerSize();
-    return buildStackDescriptorsJson(getDebugger(), trace, selectedIndex, from, to);
+    return buildStackDescriptorsJson(trace, selectedIndex, from, to);
+}
+
+// From the innermost frame's sp to the outermost frame's return address.
+std::string WebsideSession::stackDescriptors(const smalldbg::StackTrace& trace,
+                                             int selectedIndex) const {
+    uint64_t from = UINT64_MAX;
+    uint64_t to = 0;
+    for (const auto& frame : trace.getFrames()) {
+        if (frame->inlined) continue;
+        if (frame->sp() != 0) from = std::min(from, frame->sp());
+        if (frame->fp() != 0) to = std::max(to, frame->fp() + 2 * pointerSize());
+    }
+    if (to <= from) return "[]";
+    return buildStackDescriptorsJson(trace, selectedIndex, from, to);
 }
 
 // =========================================================================
@@ -124,14 +128,13 @@ std::string WebsideSession::buildFrameDetailJson(const smalldbg::StackFrame& fra
         .set("functionAddress", addressHex(functionAddressOf(frame)))
         .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
         .set("inlined", frame.inlined)
-        .set("hasSource", false);
+        .set("hasSource", false)
+        .set("interval", Json::object().set("start", 0).set("end", 0));
 
     if (frame.metadata)
         addSmalltalkFrameDetail(j, frame);
     else
         addNativeFrameDetail(j, frame);
-
-    j.set("interval", Json::object().set("start", 0).set("end", 0));
     return j.dump();
 }
 
@@ -147,19 +150,34 @@ void WebsideSession::addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame
         .set("source", frame.functionName));
 }
 
+// The symbols say where a native function's source is, and the function that
+// holds the frame's line is shown with that line marked.
 void WebsideSession::addNativeFrameDetail(Json& j, const smalldbg::StackFrame& frame) const {
     std::string modName = frame.moduleName.empty() ? "<native>" : frame.moduleName;
     j.set("class", Json::object()
         .set("name", modName)
         .set("definition", "")
         .set("category", "native"));
+
+    std::string source = frame.functionName.empty()
+        ? std::string("<native code>") : frame.functionName + " (native code)";
+    if (!frame.sourceFile.empty() && frame.sourceLine > 0) {
+        if (auto excerpt = functionAround(frame.sourceFile, frame.sourceLine)) {
+            source = excerpt->text;
+            j.set("hasSource", true);
+            j.set("interval", Json::object()
+                .set("start", excerpt->lineStart)
+                .set("end", excerpt->lineStart + excerpt->lineLength));
+        } else {
+            source = frame.functionName + " (source file not accessible: "
+                   + frame.sourceFile + ":" + std::to_string(frame.sourceLine) + ")";
+        }
+    }
     j.set("method", Json::object()
         .set("selector", frame.functionName)
         .set("methodClass", frame.moduleName)
         .set("category", "native")
-        .set("source", frame.functionName.empty()
-            ? std::string("<native code>")
-            : frame.functionName + " (native code)"));
+        .set("source", source));
 }
 
 std::string WebsideSession::buildFrameBindingsJson(const smalldbg::StackFrame& frame,
@@ -195,71 +213,137 @@ std::string WebsideSession::addNativeFrameBindings(const smalldbg::StackFrame& f
     return arr.dump();
 }
 
-std::string WebsideSession::buildFrameArgumentsJson(
-    const smalldbg::StackFrame& /*frame*/) const {
-    return "[]";
+// A value the symbols format, such as a string's text, is its print string.
+static Json argumentJson(const smalldbg::LocalVariable& variable) {
+    auto entry = Json::object()
+        .set("name", variable.name)
+        .set("type", variable.typeName);
+    auto value = variable.getValue();
+    if (!value) entry.set("value", variable.valueText);
+    else if (variable.size <= 4) entry.set("value", Json::hex(static_cast<uint32_t>(*value)));
+    else entry.set("value", Json::hex(*value));
+    if (!variable.valueText.empty()) entry.set("printString", variable.valueText);
+    return entry;
+}
+
+std::string WebsideSession::buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const {
+    auto arr = Json::array();
+    for (const auto& variable : frame.localVariables)
+        if (variable.isArgument) arr.add(argumentJson(variable));
+    return arr.dump();
 }
 
 std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& frame) const {
-    const auto& regs = frame.registers;
+    using Role = smalldbg::RegisterValue::Role;
     auto arr = Json::array();
-    auto add = [&](const char* name, uint64_t v, bool isFlags = false) {
-        auto entry = Json::object().set("name", name).set("value", Json::hex(v));
-        if (isFlags) entry.set("description", regs.arch->describeFlags(v));
+    for (const auto& reg : frame.registerValues()) {
+        auto entry = Json::object().set("name", reg.name);
+        if (!reg.value) {
+            arr.add(std::move(entry.set("value", nullptr)));
+            continue;
+        }
+        entry.set("value", addressHex(*reg.value));
+        if (reg.role == Role::Flags)
+            entry.set("description", frame.registers.arch->describeFlags(*reg.value));
+        else
+            describeRegister(entry, frame, reg);
         arr.add(std::move(entry));
-    };
-    if (regs.arch == smalldbg::X86::instance()) {
-        const auto& r = regs.x86;
-        add("eip", r.eip); add("esp", r.esp); add("ebp", r.ebp);
-        add("eax", r.eax); add("ebx", r.ebx); add("ecx", r.ecx);
-        add("edx", r.edx); add("esi", r.esi); add("edi", r.edi);
-        add("eflags", r.eflags, true);
-    } else if (regs.arch == smalldbg::X64::instance()) {
-        const auto& r = regs.x64;
-        add("rip", r.rip); add("rsp", r.rsp); add("rbp", r.rbp);
-        add("rax", r.rax); add("rbx", r.rbx); add("rcx", r.rcx);
-        add("rdx", r.rdx); add("rsi", r.rsi); add("rdi", r.rdi);
-        add("r8", r.r8); add("r9", r.r9); add("r10", r.r10);
-        add("r11", r.r11); add("r12", r.r12); add("r13", r.r13);
-        add("r14", r.r14); add("r15", r.r15);
-        add("rflags", r.rflags, true);
-    } else {
-        add("ip", regs.ip()); add("fp", regs.fp()); add("sp", regs.sp());
     }
     return arr.dump();
 }
 
-void WebsideSession::describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
-                                        int frameIndex, int selectedIndex, size_t slot,
-                                        uint64_t from, uint64_t to) const {
-    int rel = frameIndex < selectedIndex ? -1 : frameIndex == selectedIndex ? 0 : 1;
-    auto describe = [&](uint64_t address, const char* role) {
-        if (address < from || address >= to) return;
-        out.add(Json::object()
-            .set("address", addressHex(address))
-            .set("frameIndex", frameIndex)
-            .set("frameRel", rel)
-            .set("role", role));
-    };
-    describe(frame.sp(), "sp");
-    describe(frame.fp(), "fp");
-    describe(frame.fp() + slot, "retAddr");
+void WebsideSession::describeRegister(Json& entry, const smalldbg::StackFrame& frame,
+                                      const smalldbg::RegisterValue& reg) const {
+    if (reg.role == smalldbg::RegisterValue::Role::Ip)
+        entry.set("printString", buildFrameLabel(frame));
 }
 
-std::string WebsideSession::buildStackDescriptorsJson(smalldbg::Debugger* /*dbg*/,
-                                                      const smalldbg::StackTrace& trace,
+namespace {
+
+// Returns the frame that frame `index`, counted from 1, stands for: an
+// inlined frame's slots are those of the frame it was inlined into.
+int physicalIndex(const std::vector<std::unique_ptr<smalldbg::StackFrame>>& frames,
+                  int index) {
+    size_t at = index < 1 ? 0 : static_cast<size_t>(index - 1);
+    while (at < frames.size() && frames[at]->inlined) ++at;
+    return static_cast<int>(at + 1);
+}
+
+// Returns the role the slot at `address` has in `frame`, or null when it has
+// none.
+const char* abiRole(const smalldbg::StackFrame& frame, uint64_t address, size_t slot) {
+    if (address == frame.fp() + slot) return "retAddr";
+    if (address == frame.fp()) return "fp";
+    if (address == frame.sp()) return "sp";
+    return nullptr;
+}
+
+} // namespace
+
+// A frame owns every slot from its sp up to its return address, so that a
+// client grouping slots by frame finds no gaps. A slot two frames claim is
+// the inner one's.
+std::string WebsideSession::buildStackDescriptorsJson(const smalldbg::StackTrace& trace,
                                                       int selectedIndex,
-                                                      uint64_t from,
-                                                      uint64_t to) const {
+                                                      uint64_t from, uint64_t to) const {
+    const size_t slot = pointerSize();
+    from -= from % slot;
+    to = std::min(to, from + 0x10000);  // at most 64 KB
+    if (to <= from) return "[]";
+    std::vector<uint8_t> words(to - from);
+    if (debugger().readMemory(from, words.data(), words.size()) != smalldbg::Status::Ok)
+        return "[]";
+
     const auto& frames = trace.getFrames();
-    size_t slot = pointerSize();
+    const int selected = physicalIndex(frames, selectedIndex);
     auto arr = Json::array();
+    for (uint64_t address = from; address + slot <= to; address += slot) {
+        const uint8_t* bytes = &words[address - from];
+        const uint64_t value = slot == 4 ? *reinterpret_cast<const uint32_t*>(bytes)
+                                         : *reinterpret_cast<const uint64_t*>(bytes);
+        auto entry = Json::object().set("address", addressHex(address));
+        const smalldbg::StackFrame* owner = nullptr;
+        for (size_t i = 0; i < frames.size() && !owner; ++i) {
+            const smalldbg::StackFrame& frame = *frames[i];
+            if (frame.inlined) continue;
+            const char* role = abiRole(frame, address, slot);
+            // A frame without a frame pointer, such as a leaf, owns only the
+            // slots with a role.
+            bool extentKnown = frame.fp() + slot > frame.sp();
+            bool owned = extentKnown && address >= frame.sp() && address <= frame.fp() + slot;
+            if (!role && !owned) continue;
 
-    for (size_t i = 0; i < frames.size(); i++)
-        describeFrameSlots(arr, *frames[i], static_cast<int>(i + 1), selectedIndex,
-                           slot, from, to);
-
+            owner = &frame;
+            const int index = static_cast<int>(i + 1);
+            entry.set("frameIndex", index)
+                 .set("frameRel", index < selected ? -1 : index == selected ? 0 : 1);
+            if (role) entry.set("role", role);
+            if (role && std::string(role) == "retAddr")
+                addReturnLabel(entry, frames, i, value);
+        }
+        describeSlot(entry, owner, address, value);
+        if (entry.size() > 1) arr.add(std::move(entry));
+    }
     return arr.dump();
 }
+
+// A return address is labelled with where it returns to in the caller: the
+// next frame neither inlined nor sharing the frame pointer, as a leaf does.
+void WebsideSession::addReturnLabel(
+    Json& entry, const std::vector<std::unique_ptr<smalldbg::StackFrame>>& frames,
+    size_t index, uint64_t value) const {
+    size_t caller = index + 1;
+    while (caller < frames.size()
+           && (frames[caller]->inlined || frames[caller]->fp() == frames[index]->fp()))
+        ++caller;
+    if (caller >= frames.size()) return;
+    const uint64_t start = functionAddressOf(*frames[caller]);
+    if (start == 0 || value < start) return;
+    entry.set("printString", buildFrameLabel(*frames[caller]) + "+"
+                             + std::to_string(value - start));
+}
+
+void WebsideSession::describeSlot(Json& /*entry*/, const smalldbg::StackFrame* /*frame*/,
+                                  uint64_t /*address*/, uint64_t /*value*/) const {}
 
 } // namespace webside

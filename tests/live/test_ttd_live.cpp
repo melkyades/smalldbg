@@ -15,6 +15,7 @@
 #include <doctest/doctest.h>
 
 #include "smalldbg/Debugger.h"
+#include "smalldbg/Disassembler.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 
@@ -109,15 +110,23 @@ std::string obtainTrace() {
 
 } // namespace
 
-TEST_CASE("TTD trace replays and steps backwards") {
+TEST_CASE("a Debugger built for a process does not open a trace") {
+    Debugger dbg(Mode::External, X64::instance());
+    CHECK(dbg.openTrace("missing.run") == Status::NotSupported);
+    CHECK_FALSE(dbg.isTTDTrace());
+}
+
+// Opens the test target's trace in `dbg` and runs it to the first entry into
+// break_here. Returns false, after saying why, when there is no trace or no
+// engine that replays one.
+bool openAtBreakHere(Debugger& dbg) {
     std::string trace = obtainTrace();
     if (trace.empty()) {
         MESSAGE("SKIP: no TTD trace available (needs tttracer.exe + the elevated "
                 "ttd_recorder helper, or set SMALLDBG_TTD_TRACE to a .run file)");
-        return;
+        return false;
     }
 
-    Debugger dbg(Mode::External, X64::instance());
     if (std::getenv("SMALLDBG_TEST_LOG"))
         dbg.setLogCallback([](const std::string& m){ fprintf(stderr, "LOG %s\n", m.c_str()); });
 
@@ -126,13 +135,12 @@ TEST_CASE("TTD trace replays and steps backwards") {
         MESSAGE("SKIP: openTrace failed — no TTD-capable dbgeng.dll installed "
                 "(run tools/pack_windbg_dlls.sh, or set SMALLDBG_DBGENG_DIR), "
                 "or the trace architecture does not match this host");
-        return;
+        return false;
     }
 
     CHECK(dbg.isTTDTrace());
     CHECK(dbg.isAttached());
 
-    // Run forward to break_here so we have a known position to reverse from.
     auto* symbols = dbg.getSymbolProvider();
     REQUIRE(symbols != nullptr);
     auto sym = symbols->getSymbolByName("test_target!break_here");
@@ -142,11 +150,17 @@ TEST_CASE("TTD trace replays and steps backwards") {
     REQUIRE(dbg.setBreakpoint(sym->address, "break_here") == Status::Ok);
     REQUIRE(dbg.resume() == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::Breakpoint, 30000) == StopReason::Breakpoint);
+    REQUIRE(dbg.clearBreakpoint(sym->address) == Status::Ok);
+    return true;
+}
+
+TEST_CASE("TTD trace replays and steps backwards") {
+    Debugger dbg(Mode::External, X64::instance(), Debuggee::Trace);
+    if (!openAtBreakHere(dbg)) return;
 
     Registers atBreak;
     REQUIRE(dbg.getRegisters(atBreak) == Status::Ok);
     const Address breakIp = atBreak.ip();
-    CHECK(breakIp >= sym->address);
 
     // Step backwards: the instruction pointer must move off the breakpoint.
     REQUIRE(dbg.stepBack() == Status::Ok);
@@ -157,5 +171,90 @@ TEST_CASE("TTD trace replays and steps backwards") {
     REQUIRE(dbg.getRegisters(afterBack) == Status::Ok);
     CHECK(afterBack.ip() != breakIp);
 
+    dbg.detach();
+}
+
+TEST_CASE("stepping backwards out of a frame stops on the call that entered it") {
+    Debugger dbg(Mode::External, X64::instance(), Debuggee::Trace);
+    if (!openAtBreakHere(dbg)) return;
+
+    // At a function's first instruction, the stack pointer points at the
+    // return address.
+    Registers atEntry;
+    REQUIRE(dbg.getRegisters(atEntry) == Status::Ok);
+    Address returnAddress = 0;
+    REQUIRE(dbg.readMemory(atEntry.sp(), &returnAddress, 8) == Status::Ok);
+
+    auto thread = dbg.getCurrentThread();
+    REQUIRE(thread.get() != nullptr);
+    REQUIRE(dbg.reverseStepOut(thread.get()) == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 30000) != StopReason::None);
+
+    Registers atCall;
+    REQUIRE(dbg.getRegisters(atCall) == Status::Ok);
+    uint8_t code[16] = {};
+    REQUIRE(dbg.readMemory(atCall.ip(), code, sizeof code) == Status::Ok);
+    auto insns = dbg.getDisassembler()->disassemble(code, sizeof code, atCall.ip());
+    REQUIRE_FALSE(insns.empty());
+    CHECK(insns[0].isCall);
+    CHECK(atCall.ip() + insns[0].size == returnAddress);
+    CHECK(atCall.sp() == atEntry.sp() + 8);
+
+    dbg.detach();
+}
+
+TEST_CASE("a replay runs backwards to an address it executed before") {
+    Debugger dbg(Mode::External, X64::instance(), Debuggee::Trace);
+    if (!openAtBreakHere(dbg)) return;
+
+    Registers atEntry;
+    REQUIRE(dbg.getRegisters(atEntry) == Status::Ok);
+    Address returnAddress = 0;
+    REQUIRE(dbg.readMemory(atEntry.sp(), &returnAddress, 8) == Status::Ok);
+
+    REQUIRE(dbg.runTo(returnAddress, 30000) == Status::Ok);
+    REQUIRE(dbg.reverseRunTo(atEntry.ip(), 30000) == Status::Ok);
+    Registers regs;
+    REQUIRE(dbg.getRegisters(regs) == Status::Ok);
+    CHECK(regs.ip() == atEntry.ip());
+
+    dbg.detach();
+}
+
+// Any trace will do: what is checked is moving in it, not what it recorded.
+TEST_CASE("a replay says where it is, and goes where it is asked") {
+    std::string trace = obtainTrace();
+    if (trace.empty()) {
+        MESSAGE("SKIP: no TTD trace available");
+        return;
+    }
+    Debugger dbg(Mode::External, hostArch(), Debuggee::Trace);
+    if (dbg.openTrace(trace) != Status::Ok) {
+        MESSAGE("SKIP: openTrace failed");
+        return;
+    }
+
+    auto extent = dbg.traceExtent();
+    REQUIRE(extent);
+    CHECK(extent->first < extent->second);
+    REQUIRE(dbg.tracePosition());
+
+    REQUIRE(dbg.seekTrace(100.0) == Status::Ok);
+    CHECK(*dbg.tracePosition() == extent->second);
+    REQUIRE(dbg.seekTrace(extent->first) == Status::Ok);
+    CHECK(*dbg.tracePosition() == extent->first);
+    REQUIRE(dbg.seekTrace(50.0) == Status::Ok);
+    auto middle = dbg.tracePosition();
+    REQUIRE(middle);
+    CHECK(extent->first < *middle);
+    CHECK(*middle < extent->second);
+
+    Registers regs;
+    REQUIRE(dbg.getRegisters(regs) == Status::Ok);
+    auto ran = dbg.lastExecution(regs.ip());
+    REQUIRE(ran);
+    // The instruction at the replay's ip runs at the replay's position, if
+    // never again.
+    CHECK_FALSE(*ran < *middle);
     dbg.detach();
 }

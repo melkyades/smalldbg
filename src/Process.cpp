@@ -2,23 +2,46 @@
 #include "smalldbg/Thread.h"
 #include "smalldbg/Debugger.h"
 
+#include <algorithm>
+
 namespace smalldbg {
 
-Process::Process(Debugger* dbg, uintptr_t p) 
-    : debugger(dbg), pid(p), firstThread(nullptr) {
+Process::Process(Debugger* dbg, uintptr_t p)
+    : debugger(dbg), pid(p) {
 }
 
 void Process::registerThread(ThreadId tid) {
     auto thread = std::make_shared<Thread>(this, tid);
     threadMap[tid] = thread;
-    
-    // First thread becomes primary
-    if (!firstThread) {
-        firstThread = thread;
+}
+
+static bool contains(const std::vector<ThreadId>& ids, ThreadId tid) {
+    return std::find(ids.begin(), ids.end(), tid) != ids.end();
+}
+
+void Process::dropDeadThreads(const std::vector<ThreadId>& live) {
+    for (auto it = threadMap.begin(); it != threadMap.end();) {
+        if (contains(live, it->first)) { ++it; continue; }
+        it = threadMap.erase(it);
     }
 }
 
+void Process::registerNewThreads(const std::vector<ThreadId>& live) {
+    for (ThreadId tid : live)
+        if (threadMap.find(tid) == threadMap.end()) registerThread(tid);
+}
+
+// Under replay the set of threads changes in both directions, so a list that
+// only grows describes no single instant.
+void Process::syncThreads(const std::vector<ThreadId>& live) {
+    dropDeadThreads(live);
+    registerNewThreads(live);
+}
+
+// A replay has different threads at each position, and a running target has
+// no position to answer for.
 std::vector<std::shared_ptr<Thread>> Process::threads() {
+    if (debugger->isStopped()) debugger->refreshThreads();
     std::vector<std::shared_ptr<Thread>> result;
     for (const auto& pair : threadMap) {
         result.push_back(pair.second);
@@ -32,10 +55,6 @@ std::optional<std::shared_ptr<Thread>> Process::getThread(ThreadId tid) {
         return it->second;
     }
     return std::nullopt;
-}
-
-std::shared_ptr<Thread> Process::primaryThread() {
-    return firstThread;
 }
 
 Status Process::readMemory(Address address, void* outBuf, size_t size) const {

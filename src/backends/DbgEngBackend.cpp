@@ -15,8 +15,10 @@
 #include "../../include/smalldbg/Debugger.h"
 
 #include "../symbols/DbgEngSymbolBackend.h"
+#include "DbgEngUnwinder.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -33,36 +35,21 @@
 
 typedef HRESULT (STDAPICALLTYPE *PFN_DebugCreate)(REFIID InterfaceId, PVOID* Interface);
 
-namespace {
-
-struct ComReleaser {
-    void operator()(IUnknown* p) const { p->Release(); }
-};
-
-// A COM interface held for the length of a scope.
-template <typename T>
-using ComPtr = std::unique_ptr<T, ComReleaser>;
-
-// The requested interface, or nothing when this engine does not implement it.
-template <typename T, typename From>
-ComPtr<T> queryInterface(From* from) {
-    T* raw = nullptr;
-    if (FAILED(from->QueryInterface(__uuidof(T), (void**)&raw))) return {};
-    return ComPtr<T>(raw);
-}
-
-} // namespace
-
 // The loaded dbgeng module and DebugCreate function pointer
 static HMODULE g_dbgengModule = nullptr;
 static PFN_DebugCreate g_pfnDebugCreate = nullptr;
 static bool g_usingWinDbgPreview = false;
 
-// Load dbgeng.dll dynamically - prefer SDK version for normal use
+static bool loadPackagedDbgEng();
+
+// Loads dbgeng.dll, preferring the packaged WinDbg engine to the one in
+// System32, which has neither the symbol-server client (symsrv.dll) nor the
+// command extensions (winext). Returns false when neither loads.
 static bool ensureDbgEngLoaded() {
     if (g_pfnDebugCreate) return true;
-    
-    // Try loading the system/SDK dbgeng.dll
+
+    if (loadPackagedDbgEng()) return true;
+
     g_dbgengModule = LoadLibraryA("dbgeng.dll");
     if (g_dbgengModule) {
         g_pfnDebugCreate = (PFN_DebugCreate)GetProcAddress(g_dbgengModule, "DebugCreate");
@@ -142,12 +129,12 @@ static bool isWow64Process(ULONG pid) {
     return result;
 }
 
-namespace smalldbg {
-
-// Load a TTD-capable dbgeng.dll from the first location that has one. The DLLs
-// are placed out-of-band by tools/pack_windbg_dlls.sh; this never copies them
-// (loading in-process from the MSIX WinDbg package is ACL-blocked).
-bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
+// Loads the packaged dbgeng.dll from the first place that has one:
+// SMALLDBG_DBGENG_DIR, windbg_dlls beside the executable, or where
+// tools/pack_windbg_dlls.sh installs it for the user. That script copies the
+// DLLs out of the WinDbg package, whose ACLs block loading them from there.
+// Returns false when none loads.
+static bool loadPackagedDbgEng() {
     if (g_usingWinDbgPreview && g_pfnDebugCreate) return true;
 
     wchar_t envDir[MAX_PATH];
@@ -161,6 +148,12 @@ bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
     }
 
     return tryLoadDbgEngFrom(userDbgEngDir());
+}
+
+namespace smalldbg {
+
+bool DbgEngBackend::loadWinDbgPreviewDbgEng() {
+    return loadPackagedDbgEng();
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +247,13 @@ HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::Breakpoint(IDebugBreakpoint* bp)
     return DEBUG_STATUS_BREAK;
 }
 
+// Whether an exception other than a breakpoint or a single step stops the
+// target. The program gets the first chance to handle it; one it leaves
+// unhandled stops the target.
+static bool stopsTarget(ULONG firstChance) {
+    return !firstChance;
+}
+
 HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::Exception(EXCEPTION_RECORD64* ex, ULONG firstChance) {
     DWORD code = ex->ExceptionCode;
 
@@ -282,12 +282,14 @@ HRESULT STDMETHODCALLTYPE DbgEngEventCallbacks::Exception(EXCEPTION_RECORD64* ex
         return DEBUG_STATUS_BREAK;
     }
 
-    // All other exceptions: break so the event loop has control, and tell it
-    // how to auto-continue (like WindowsBackend's ContinueDebugEvent).
-    ULONG contStatus = firstChance
-        ? DEBUG_STATUS_GO_NOT_HANDLED   // let SEH handle it
-        : DEBUG_STATUS_GO;              // mark handled, avoid termination
-    backend->setPendingExceptionContinue(contStatus);
+    if (stopsTarget(firstChance)) {
+        backend->onUnhandledException(*ex);
+        backend->setPendingExceptionContinue(0);
+        return DEBUG_STATUS_BREAK;
+    }
+
+    // The event loop gets control and passes the exception on to the program.
+    backend->setPendingExceptionContinue(DEBUG_STATUS_GO_NOT_HANDLED);
     return DEBUG_STATUS_BREAK;
 }
 
@@ -344,6 +346,10 @@ DbgEngBackend::~DbgEngBackend() {
         // The event loop thread must still be joined before the std::thread
         // member is destroyed, otherwise its destructor calls std::terminate.
         joinEventThread();
+        // The engine is shared by every client in this process, and a session
+        // whose process exited stays open in it until ended: the next debugger
+        // would find the old process there.
+        if (client) client->EndSession(DEBUG_END_PASSIVE);
     }
     releaseInterfaces();
 }
@@ -506,11 +512,32 @@ Status DbgEngBackend::resume() {
 
         stopped = false;
         stopReason = StopReason::None;
+        stopException.reset();
         stepRequested = false;
-        pendingExecStatus = DEBUG_STATUS_GO;
+        startFailed = false;
+        interruptRequested = false;
+        interruptRaised = false;
+        // An unhandled exception goes back to the program unhandled, which
+        // ends the process; going on as if handled would rerun the code that
+        // raised it.
+        pendingExecStatus = stoppedOnUnhandledException
+            ? DEBUG_STATUS_GO_NOT_HANDLED : DEBUG_STATUS_GO;
+        stoppedOnUnhandledException = false;
         continueRequested = true;
     }
     cv.notify_all();
+
+    // Whether the engine accepts the request is only known once the event loop
+    // has tried, so wait for it to either start or refuse.
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait_for(lock, std::chrono::milliseconds(500),
+                    [this]{ return startFailed || !continueRequested; });
+        if (startFailed) {
+            if (log) log("(dbgeng) resume: engine refused to start execution");
+            return Status::Error;
+        }
+    }
 
     if (log) log("(dbgeng) resume");
     return Status::Ok;
@@ -529,6 +556,19 @@ Status DbgEngBackend::step(Thread* thread) {
     return Status::Ok;
 }
 
+Status DbgEngBackend::stepOver(Thread* thread) {
+    if (!attached) return Status::NotAttached;
+    if (isDump) {
+        if (log) log("(dbgeng) stepOver: not supported on a static crash dump");
+        return Status::NotSupported;
+    }
+
+    requestStep(DEBUG_STATUS_STEP_OVER, *thread);
+
+    if (log) log("(dbgeng) stepOver requested");
+    return Status::Ok;
+}
+
 // The engine must be sitting on the thread being stepped, or it steps whichever
 // one it last had selected.
 void DbgEngBackend::requestStep(ULONG execStatus, Thread& thread) {
@@ -540,10 +580,20 @@ void DbgEngBackend::requestStep(ULONG execStatus, Thread& thread) {
         stepThreadId = static_cast<DWORD>(thread.getThreadId());
         stopped = false;
         stopReason = StopReason::None;
+        stopException.reset();
         pendingExecStatus = execStatus;
         continueRequested = true;
     }
     cv.notify_all();
+}
+
+void DbgEngBackend::requestStepCommand(const std::string& command,
+                                       Thread& thread) {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        pendingCommand = command;
+    }
+    requestStep(DEBUG_STATUS_GO, thread);
 }
 
 void DbgEngBackend::requestResume(ULONG execStatus) {
@@ -552,10 +602,23 @@ void DbgEngBackend::requestResume(ULONG execStatus) {
         stepRequested = false;
         stopped = false;
         stopReason = StopReason::None;
+        stopException.reset();
+        interruptRequested = false;
+        interruptRaised = false;
         pendingExecStatus = execStatus;
         continueRequested = true;
     }
     cv.notify_all();
+}
+
+// How long a suspend waits for the engine to actually halt the target.
+static constexpr int kSuspendTimeoutMs = 3000;
+
+// Clears a break request the stop has already answered. One left pending makes
+// the engine fail every later memory read with STATUS_CONTROL_C_EXIT, while
+// registers, which come from the stop, still read.
+void DbgEngBackend::consumePendingInterrupt() const {
+    for (int i = 0; i < 8 && control->GetInterrupt() == S_OK; i++) {}
 }
 
 Status DbgEngBackend::suspend() {
@@ -577,12 +640,21 @@ Status DbgEngBackend::suspend() {
         }
     }
 
-    HRESULT hr = control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
-    if (FAILED(hr) && log)
-        log("(dbgeng) suspend: SetInterrupt failed hr=" + toHex((unsigned long)hr));
-
+    // The engine thread raises the break, once, between event waits. Each
+    // break-in suspends the target once more and a resume repays only one, so
+    // a second break would leave the target suspended for good.
+    interruptRequested = true;
     if (log) log("(dbgeng) suspend requested");
-    return Status::Ok;
+
+    // Returns once the target has actually halted, so the caller never reads
+    // threads and frames off a running process.
+    std::unique_lock<std::mutex> lock(mutex);
+    if (cv.wait_for(lock, std::chrono::milliseconds(kSuspendTimeoutMs),
+                    [this] { return stopped; }))
+        return Status::Ok;
+
+    if (log) log("(dbgeng) suspend: target did not halt");
+    return Status::Error;
 }
 
 // Start the event loop in `mode` and block until it has opened the target.
@@ -896,65 +968,112 @@ std::vector<InlineFrameInfo> DbgEngBackend::getInlineFrames(
 
 static constexpr ULONG kMaxWalkFrames = 512;
 
-// GetStackTraceEx walks the stack from the frame it is given, so asking it
-// once per frame re-walks what the first call already knew. One walk returns
-// the whole stack with inline entries preceding the physical frame that holds
-// them; group them there and the per-frame calls disappear.
-// Inline rows precede the physical frame they belong to, so they accumulate in
-// `pending` until a physical row claims them. Every physical frame the walk saw
-// gets an entry, empty or not: a missing key has to mean "the walk never
-// reached here", or a frame with no inline functions would ask again one at a
-// time.
-static void groupInlineFrame(IDebugSymbols4& symbols4,
-                             const DEBUG_STACK_FRAME_EX& row,
-                             std::vector<InlineFrameInfo>& pending,
-                             InlineFrameMap& out) {
+// Whether a frame of the engine's walk stands for an inlined function rather
+// than a physical frame.
+static bool isInlineFrame(const DEBUG_STACK_FRAME_EX& frame,
+                          const DEBUG_STACK_FRAME_EX* lastPhysical) {
     INLINE_FRAME_CONTEXT ctx;
-    ctx.ContextValue = row.InlineFrameContext;
-    if (ctx.FrameType != STACK_FRAME_TYPE_INLINE) {
-        out[{row.InstructionOffset, row.FrameOffset}] = std::move(pending);
-        pending.clear();
-        return;
-    }
+    ctx.ContextValue = frame.InlineFrameContext;
+    // The engine adds STACK_FRAME_TYPE_RA to the innermost frame's type.
+    if ((ctx.FrameType & ~STACK_FRAME_TYPE_RA) == STACK_FRAME_TYPE_INLINE)
+        return true;
 
+    // A walk started from explicit registers leaves InlineFrameContext unset.
+    // An inlined frame then has the same ip, sp and fp as the frame it was
+    // inlined into; taken for a caller, it would end the unwind.
+    return lastPhysical && lastPhysical->InstructionOffset == frame.InstructionOffset
+           && lastPhysical->StackOffset == frame.StackOffset
+           && lastPhysical->FrameOffset == frame.FrameOffset;
+}
+
+static bool inlineFrameAt(IDebugSymbols4& symbols4,
+                          const DEBUG_STACK_FRAME_EX& engineFrame, StackFrame& out) {
     char name[512] = {};
     ULONG nameSize = 0;
     ULONG64 displacement = 0;
     if (FAILED(symbols4.GetNameByInlineContext(
-            row.InstructionOffset, row.InlineFrameContext,
+            engineFrame.InstructionOffset, engineFrame.InlineFrameContext,
             name, sizeof(name), &nameSize, &displacement)))
-        return;
-    pending.push_back(inlineFrameNamed(name, displacement));
+        return false;
+
+    InlineFrameInfo info = inlineFrameNamed(name, displacement);
+    out.inlined = true;
+    out.functionName = info.name;
+    out.moduleName = info.moduleName;
+    out.functionOffset = info.offset;
+    return true;
 }
 
-void DbgEngBackend::collectInlineFrameMap(Address ip, Address sp, Address fp,
-                                          InlineFrameMap& out) const {
+// Appends a physical frame, preceded by the inlined frames waiting in
+// `pending` for it, which take its registers.
+static void appendPhysicalFrame(const DEBUG_STACK_FRAME_EX& engineFrame, const Arch* arch,
+                                std::vector<StackFrame>& pending,
+                                std::vector<StackFrame>& out) {
+    StackFrame physical;
+    physical.registers.arch = arch;
+    physical.setIp(engineFrame.InstructionOffset);
+    physical.setSp(engineFrame.StackOffset);
+    physical.setFp(engineFrame.FrameOffset);
+    for (StackFrame& inlined : pending) {
+        inlined.registers = physical.registers;
+        inlined.functionStart = inlined.ip() - inlined.functionOffset;
+        out.push_back(std::move(inlined));
+    }
+    pending.clear();
+    out.push_back(std::move(physical));
+}
+
+// Each inlined function takes an engine frame of its own, so ask the engine
+// for twice as many frames as are wanted.
+static ULONG engineFramesFor(size_t maxFrames) {
+    if (maxFrames == 0 || maxFrames > kMaxWalkFrames / 2) return kMaxWalkFrames;
+    return static_cast<ULONG>(maxFrames) * 2;
+}
+
+// One GetStackTraceEx call covers the whole stack; calling it per frame would
+// walk the frames above each one again.
+void DbgEngBackend::collectStackWalk(Address ip, Address sp, Address fp,
+                                     size_t maxFrames,
+                                     std::vector<StackFrame>& out) const {
     auto control5 = queryInterface<IDebugControl5>(control);
     if (!control5) return;
     auto symbols4 = queryInterface<IDebugSymbols4>(symbols);
     if (!symbols4) return;
 
-    std::vector<DEBUG_STACK_FRAME_EX> raw(kMaxWalkFrames);
+    ULONG wanted = engineFramesFor(maxFrames);
+    std::vector<DEBUG_STACK_FRAME_EX> engineFrames(wanted);
     ULONG filled = 0;
-    HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, raw.data(),
-                                           kMaxWalkFrames, &filled);
+    HRESULT hr = control5->GetStackTraceEx(fp, sp, ip, engineFrames.data(), wanted,
+                                           &filled);
     if (FAILED(hr)) {
         if (log) log("(dbgeng) GetStackTraceEx failed hr=" + toHex((unsigned long)hr));
         return;
     }
 
-    std::vector<InlineFrameInfo> pending;
-    for (ULONG i = 0; i < filled; i++)
-        groupInlineFrame(*symbols4, raw[i], pending, out);
+    std::vector<StackFrame> pending;
+    const DEBUG_STACK_FRAME_EX* lastPhysical = nullptr;
+    for (ULONG i = 0; i < filled; i++) {
+        if (isInlineFrame(engineFrames[i], lastPhysical)) {
+            StackFrame inlined;
+            if (inlineFrameAt(*symbols4, engineFrames[i], inlined))
+                pending.push_back(std::move(inlined));
+            continue;
+        }
+        appendPhysicalFrame(engineFrames[i], arch, pending, out);
+        lastPhysical = &engineFrames[i];
+    }
 }
 
-InlineFrameMap DbgEngBackend::getInlineFrameMap(
-    Address ip, Address sp, Address fp) const
-{
-    InlineFrameMap result;
+std::vector<StackFrame> DbgEngBackend::walkStack(Address ip, Address sp, Address fp,
+                                                 size_t maxFrames) const {
+    std::vector<StackFrame> result;
     if (!attached) return result;
-    (void)runOnEngineThread([&]{ collectInlineFrameMap(ip, sp, fp, result); });
+    (void)runOnEngineThread([&]{ collectStackWalk(ip, sp, fp, maxFrames, result); });
     return result;
+}
+
+std::unique_ptr<StackUnwinder> DbgEngBackend::createUnwinder() const {
+    return std::make_unique<DbgEngUnwinder>(*this);
 }
 
 Status DbgEngBackend::recoverCallerRegisters(Registers& regs) const {
@@ -1001,16 +1120,19 @@ Status DbgEngBackend::recoverCallerRegisters(Registers& regs) const {
 // ---------------------------------------------------------------------------
 
 StopReason DbgEngBackend::waitForEvent(StopReason reason, int timeout_ms) {
-    if (!attached) return StopReason::None;
-
     std::unique_lock<std::mutex> lock(mutex);
 
     auto pred = [this, reason]() {
         return stopped && (reason == StopReason::None || stopReason == reason);
     };
 
+    // A stop already recorded is the answer even when the process has gone
+    // since: a target that exits quickly is detached before anyone asks.
+    if (pred()) return stopReason;
+    if (!attached) return StopReason::None;
+
     if (timeout_ms == 0) {
-        return pred() ? stopReason : StopReason::None;
+        return StopReason::None;
     } else if (timeout_ms < 0) {
         cv.wait(lock, pred);
         return stopReason;
@@ -1042,7 +1164,16 @@ void DbgEngBackend::eventLoop() {
         if (!waitForResumeSignal()) break;
 
         ULONG execStatus = DEBUG_STATUS_GO;
-        beginExecution(execStatus);
+        // Nothing is running if the engine would not start it, so go back to
+        // waiting instead of pumping events that will never come.
+        if (!beginExecution(execStatus)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                startFailed = true;
+            }
+            signalStopped();
+            continue;
+        }
         pumpEvents(execStatus);
     }
 
@@ -1089,6 +1220,7 @@ bool DbgEngBackend::initSession() {
     }
 
     enumerateInitialThreads();
+    selectEventThread();
 
     if (!initArchAndRegisters()) {
         signalInit(false);
@@ -1099,11 +1231,7 @@ bool DbgEngBackend::initSession() {
     registerSymbolBackend();
     captureStopState();
 
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        stopped = true;
-    }
-    cv.notify_all();
+    signalStopped();
 
     signalInit(true);
     return true;
@@ -1149,11 +1277,12 @@ bool DbgEngBackend::initLaunch() {
     attached = true;
     initProcess(static_cast<uintptr_t>(sysPid));
 
+    // No drain, unlike an attach: a launched process reports its modules as it
+    // loads them, and draining would set it running.
     if (isWow64Process(sysPid)) {
         effectiveTypeSync = EffectiveTypeSync::wow64();
         effectiveTypeSync->sync(control, log);
         if (log) log("(dbgeng) WoW64 target detected (pid=" + std::to_string(sysPid) + ")");
-        drainSyntheticEvents(static_cast<uintptr_t>(sysPid));
     }
     return true;
 }
@@ -1166,26 +1295,12 @@ bool DbgEngBackend::initAttach() {
         return false;
     }
 
-    // We attached to someone else's process, so it must outlive us. Windows
-    // kills a debuggee when its debugger exits unless told otherwise, which
-    // turns a crash -- or a plain kill of this server -- into killing the
-    // program under study. Launched targets keep the default: we own those.
-    hr = client->SetProcessOptions(DEBUG_PROCESS_DETACH_ON_EXIT);
-    if (FAILED(hr) && log)
-        log("(dbgeng) SetProcessOptions(DETACH_ON_EXIT) failed hr="
-            + toHex((unsigned long)hr));
-
     // Create the Process right away so that synthetic CREATE_THREAD
     // callbacks (fired during the first WaitForEvent) can register threads.
     attached = true;
     initProcess(static_cast<uintptr_t>(attachPid));
 
     bool wow64 = isWow64Process(static_cast<ULONG>(attachPid));
-    if (wow64) {
-        effectiveTypeSync = EffectiveTypeSync::wow64();
-        effectiveTypeSync->sync(control, log);
-        if (log) log("(dbgeng) WoW64 target detected (pid=" + std::to_string(attachPid) + ")");
-    }
 
     // The first WaitForEvent returns at the CREATE_PROCESS event
     // (our callback returns DEBUG_STATUS_BREAK).  Synthetic
@@ -1200,13 +1315,37 @@ bool DbgEngBackend::initAttach() {
         return false;
     }
 
-    if (wow64) drainSyntheticEvents(attachPid);
+    // A process we attached to must outlive us: by default Windows kills a
+    // debuggee when its debugger exits. Launched targets keep that default.
+    // The option needs the process the first event made current; set before
+    // it, it fails with E_UNEXPECTED.
+    hr = client->SetProcessOptions(DEBUG_PROCESS_DETACH_ON_EXIT);
+    if (FAILED(hr) && log)
+        log("(dbgeng) SetProcessOptions(DETACH_ON_EXIT) failed hr="
+            + toHex((unsigned long)hr));
+
+    // A 32-bit target under an x64 engine needs the engine told which machine
+    // its registers and stacks are for. Done before the first event, this
+    // faults inside the engine and takes the debuggee down with it.
+    if (wow64) {
+        effectiveTypeSync = EffectiveTypeSync::wow64();
+        effectiveTypeSync->sync(control, log);
+        if (log) log("(dbgeng) WoW64 target detected (pid="
+                     + std::to_string(attachPid) + ")");
+    }
+
+    // The modules mapped before the attach reach the engine only as events
+    // queued behind the first one; undrained, its module list holds the image
+    // alone.
+    drainSyntheticEvents(attachPid);
     return true;
 }
 
 void DbgEngBackend::drainSyntheticEvents(uintptr_t targetPid) {
-    control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
+    // The engine only breaks into a target it is executing, so the target is
+    // set going before the break is asked for.
     control->SetExecutionStatus(DEBUG_STATUS_GO);
+    control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
     HRESULT hr = control->WaitForEvent(0, 2000);
     if (log) log("(dbgeng) WaitForEvent (drain) hr=" + toHex((unsigned long)hr));
 
@@ -1292,16 +1431,38 @@ bool DbgEngBackend::initOpenDump() {
     return true;
 }
 
+void DbgEngBackend::collectThreadIds(std::vector<ThreadId>& out) const {
+    ULONG count = 0;
+    if (FAILED(sysObjects->GetNumberThreads(&count)) || count == 0) return;
+
+    std::vector<ULONG> engineIds(count), systemIds(count);
+    if (FAILED(sysObjects->GetThreadIdsByIndex(0, count, engineIds.data(),
+                                               systemIds.data())))
+        return;
+    for (ULONG i = 0; i < count; ++i)
+        out.push_back(static_cast<ThreadId>(systemIds[i]));
+}
+
+std::vector<ThreadId> DbgEngBackend::enumerateThreads() const {
+    std::vector<ThreadId> threads;
+    if (!attached) return threads;
+    (void)runOnEngineThread([&]{ collectThreadIds(threads); });
+    return threads;
+}
+
+// Makes the thread the last event happened on the debugger's current thread.
+void DbgEngBackend::selectEventThread() {
+    if (!process) return;
+    ULONG sysId = 0;
+    if (FAILED(sysObjects->GetCurrentThreadSystemId(&sysId))) return;
+    auto thread = process->getThread(static_cast<ThreadId>(sysId));
+    if (thread) debugger->setCurrentThread(*thread);
+}
+
 void DbgEngBackend::enumerateInitialThreads() {
-    ULONG numThreads = 0;
-    sysObjects->GetNumberThreads(&numThreads);
-    std::vector<ULONG> ids(numThreads), sysIds(numThreads);
-    if (numThreads > 0) {
-        sysObjects->GetThreadIdsByIndex(0, numThreads, ids.data(), sysIds.data());
-        for (ULONG i = 0; i < numThreads; ++i)
-            process->registerThread(static_cast<ThreadId>(sysIds[i]));
-    }
-    if (log) log("(dbgeng) enumerated " + std::to_string(numThreads) + " threads");
+    refreshThreads();
+    if (log) log("(dbgeng) enumerated " + std::to_string(process->threads().size())
+                 + " threads");
 }
 
 bool DbgEngBackend::initArchAndRegisters() {
@@ -1374,18 +1535,16 @@ void DbgEngBackend::runPendingEngineTasks(std::unique_lock<std::mutex>& lock) {
     }
 }
 
+// Waits on the engine thread until the target is to run again, running the
+// work other threads queue meanwhile. Returns false when the session ends.
 bool DbgEngBackend::waitForResumeSignal() {
     std::unique_lock<std::mutex> lock(mutex);
-    // Parked here, and only here, the engine can service work for other
-    // threads. The flag is cleared before leaving, under the lock, so nothing
-    // can be queued for an engine that is about to stop draining.
-    engineIdle = true;
     for (;;) {
         cv.wait(lock, [this]{
             return continueRequested || !engineTasks.empty() || !running.load();
         });
         if (!running) {
-            engineIdle = false;
+            acceptsEngineWork = false;
             return false;
         }
 
@@ -1394,33 +1553,58 @@ bool DbgEngBackend::waitForResumeSignal() {
 
         continueRequested = false;
         stopReason = StopReason::None;
-        engineIdle = false;
+        // From here this thread runs the target and accepts no more work. The
+        // flag drops under the same lock as the last drain, so nothing can be
+        // queued in between and left waiting.
+        acceptsEngineWork = false;
+        // resume() waits to hear that the request was taken.
+        cv.notify_all();
         return true;
     }
 }
 
-// The engine thread services tasks only while it is parked waiting for a
-// resume, which is to say only while the debuggee is stopped. Once it enters
-// WaitForEvent nothing is drained until the target stops again, so a task
-// queued then would wait for an event that may never come.
-//
-// Rather than let a caller block on that, the task is refused. The check and
-// the queueing both happen under `mutex`, and the flag is cleared under the
-// same lock after the last drain, so a task is never accepted by an engine
-// that has stopped listening. Refusing is the only safe answer: the callers
-// capture their results by reference, so a queued task can never be abandoned
-// after the fact.
+// Records that the target stopped: wakes whoever waits for it, and lets other
+// threads queue engine work from now on.
+void DbgEngBackend::signalStopped() {
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        stopped = true;
+        stepPending = false;
+        // Work is accepted from now on, not only once this thread parks: a
+        // caller woken by the stop reads registers at once, and its work
+        // waits in waitForResumeSignal, which is all this thread does next.
+        acceptsEngineWork = true;
+    }
+    cv.notify_all();
+}
+
+// Runs `fn` on the engine thread and waits for it. Returns false without
+// running it while the target runs, as the engine thread takes no work then,
+// and while another caller is waiting on the engine thread.
 bool DbgEngBackend::runOnEngineThread(const std::function<void()>& fn) const {
     if (!running || std::this_thread::get_id() == eventThreadId) {
         fn();
         return true;
     }
 
+    // One caller at a time waits on the engine; another is refused rather than
+    // queued, so one slow engine call cannot hold every caller's thread.
+    // Queued work could not be walked away from either, as it writes into its
+    // caller's locals.
+    std::unique_lock<std::mutex> callerTurn(engineCallMutex, std::try_to_lock);
+    if (!callerTurn.owns_lock()) {
+        markEngineBusy();
+        return false;
+    }
+
     std::promise<void> done;
     auto future = done.get_future();
     {
         std::lock_guard<std::mutex> lock(mutex);
-        if (!engineIdle) {
+        // Refused rather than queued: queued work would wait for a stop that
+        // may never come, and `fn` holds its caller's locals by reference, so
+        // it cannot be left behind.
+        if (!acceptsEngineWork) {
             markEngineBusy();
             return false;
         }
@@ -1447,20 +1631,24 @@ void DbgEngBackend::selectThreadOnEngine(Thread& thread) const {
     (void)runOnEngineThread([&]{ (void)selectThread(thread); });
 }
 
-void DbgEngBackend::beginExecution(ULONG& execStatus) {
+bool DbgEngBackend::beginExecution(ULONG& execStatus) {
     DWORD stepTid = 0;
+    std::string command;
     {
         std::lock_guard<std::mutex> lock(mutex);
         execStatus = pendingExecStatus ? pendingExecStatus : DEBUG_STATUS_GO;
         stepTid = stepThreadId;
         stepRequested = false;
         pendingExecStatus = 0;
+        command.swap(pendingCommand);
     }
 
     // Remember PC before stepping (for TTD end-of-trace detection).
     bool isStep = (execStatus == DEBUG_STATUS_STEP_INTO ||
+                   execStatus == DEBUG_STATUS_STEP_OVER ||
                    execStatus == DEBUG_STATUS_REVERSE_STEP_INTO ||
-                   execStatus == DEBUG_STATUS_REVERSE_STEP_OVER);
+                   execStatus == DEBUG_STATUS_REVERSE_STEP_OVER ||
+                   !command.empty());
     stepPending = isStep;
     if (isStep) {
         effectiveTypeSync->sync(control, log);
@@ -1475,16 +1663,50 @@ void DbgEngBackend::beginExecution(ULONG& execStatus) {
         if (SUCCEEDED(hr)) sysObjects->SetCurrentThreadId(engineId);
     }
 
+    if (!command.empty()) return startWithCommand(command);
     HRESULT hr = control->SetExecutionStatus(execStatus);
-    if (FAILED(hr) && log)
-        log("(dbgeng) SetExecutionStatus(" + std::to_string(execStatus) + ") failed");
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) SetExecutionStatus(" + std::to_string(execStatus)
+                     + ") failed hr=" + toHex((unsigned long)hr));
+        return false;
+    }
+    return true;
 }
+
+bool DbgEngBackend::startWithCommand(const std::string& command) {
+    HRESULT hr = control->Execute(DEBUG_OUTCTL_IGNORE, command.c_str(),
+                                  DEBUG_EXECUTE_NOT_LOGGED);
+    if (FAILED(hr)) {
+        if (log) log("(dbgeng) " + command + " failed hr="
+                     + toHex((unsigned long)hr));
+        return false;
+    }
+    return true;
+}
+
+// How often a run looks up to see whether someone asked it to stop.
+static constexpr ULONG kInterruptPollMs = 200;
 
 void DbgEngBackend::pumpEvents(ULONG execStatus) {
     while (running) {
-        HRESULT hr = control->WaitForEvent(0, INFINITE);
+        HRESULT hr = control->WaitForEvent(0, kInterruptPollMs);
 
-        if (hr == S_FALSE) continue;  // should not happen with INFINITE
+        // No event in this slice. A requested stop is raised here, as only the
+        // thread that owns the engine may interrupt it. The request stays set
+        // until the stop arrives: the engine also reports BREAK when a wait
+        // merely times out.
+        if (hr == S_FALSE) {
+            if (interruptRequested && !interruptRaised.exchange(true)) {
+                // The engine only breaks into a target it is executing, and
+                // after a timeout it may not be, so it is set going first.
+                ULONG status = 0;
+                control->GetExecutionStatus(&status);
+                if (status != DEBUG_STATUS_GO)
+                    control->SetExecutionStatus(DEBUG_STATUS_GO);
+                control->SetInterrupt(DEBUG_INTERRUPT_ACTIVE);
+            }
+            continue;
+        }
 
         if (FAILED(hr)) {
             if (log) log("(dbgeng) event loop: WaitForEvent failed hr="
@@ -1536,18 +1758,26 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
     }
 
     // TTD: forward step at same PC → end of trace.
-    if (isTTDTrace() && execStatus == DEBUG_STATUS_STEP_INTO &&
-        pc == static_cast<ULONG64>(lastStepPC)) {
+    bool forwardStep = execStatus == DEBUG_STATUS_STEP_INTO ||
+                       execStatus == DEBUG_STATUS_STEP_OVER;
+    if (isTTDTrace() && forwardStep && pc == static_cast<ULONG64>(lastStepPC)) {
         if (log) log("(dbgeng) TTD forward step at same PC — end of trace");
         {
             std::lock_guard<std::mutex> lock(mutex);
             stopAddress = static_cast<Address>(pc);
             stopReason = StopReason::EndOfTrace;
-            stopped = true;
-            stepPending = false;
         }
-        cv.notify_all();
+        signalStopped();
         return EventAction::EndOfTrace;
+    }
+
+    // The break a suspend asked for arrives as a breakpoint nobody set, which
+    // would otherwise be continued as uninteresting.
+    if (interruptRequested.exchange(false)) {
+        interruptRaised = false;
+        consumePendingInterrupt();
+        std::lock_guard<std::mutex> lock(mutex);
+        stopReason = StopReason::Breakpoint;
     }
 
     // Classify stop reason from engine state if not already set by callback.
@@ -1571,15 +1801,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
         return EventAction::Continue;
     }
 
-    // Set the current thread on the debugger.
-    if (process) {
-        ULONG sysId = 0;
-        sysObjects->GetCurrentThreadSystemId(&sysId);
-        auto threadOpt = process->getThread(static_cast<ThreadId>(sysId));
-        if (threadOpt) {
-            debugger->setCurrentThread(*threadOpt);
-        }
-    }
+    selectEventThread();
 
     // Invoke user event callback.
     if (eventCallback && eventCallback(stopReason, stopAddress)) {
@@ -1588,13 +1810,7 @@ DbgEngBackend::handleDebugEvent(ULONG execStatus, ULONG64 pc) {
         return EventAction::Continue;
     }
 
-    // Stopped — notify waiters.
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        stopped = true;
-        stepPending = false;
-    }
-    cv.notify_all();
+    signalStopped();
     return EventAction::Stop;
 }
 
@@ -1625,6 +1841,19 @@ std::string DbgEngBackend::executeCommand(const std::string& cmd) const {
 // captureStopState — fill stopReason from engine's last event information.
 // ---------------------------------------------------------------------------
 
+// The exception in `record`, with the engine's description of it.
+static ExceptionInfo exceptionFrom(const EXCEPTION_RECORD64& record,
+                                   const std::string& description) {
+    ExceptionInfo info;
+    info.code = record.ExceptionCode;
+    info.address = record.ExceptionAddress;
+    info.flags = record.ExceptionFlags;
+    for (ULONG i = 0; i < record.NumberParameters && i < EXCEPTION_MAXIMUM_PARAMETERS; ++i)
+        info.parameters.push_back(record.ExceptionInformation[i]);
+    info.description = description;
+    return info;
+}
+
 void DbgEngBackend::captureStopState() {
     effectiveTypeSync->sync(control, log);
 
@@ -1643,9 +1872,10 @@ void DbgEngBackend::captureStopState() {
     char desc[256] = {};
     ULONG descUsed = 0;
     ULONG extraSize = 0;
+    EXCEPTION_RECORD64 record = {};
     HRESULT hr = control->GetLastEventInformation(
         &eventType, &processId, &threadId,
-        nullptr, 0, &extraSize,
+        &record, sizeof(record), &extraSize,
         desc, sizeof(desc), &descUsed);
 
     if (SUCCEEDED(hr)) {
@@ -1659,6 +1889,9 @@ void DbgEngBackend::captureStopState() {
             if (stepPending) {
                 stopReason = StopReason::SingleStep;
             } else {
+                // A dump holds the exception it was taken on only here.
+                if (extraSize >= sizeof(record))
+                    stopException = exceptionFrom(record, descUsed > 1 ? desc : "");
                 // If a callback wanted to break it would have already set
                 // stopReason.  Getting here means the exception was
                 // internally handled — treat as "keep going".
@@ -1721,6 +1954,18 @@ void DbgEngBackend::onException(DWORD code, ULONG64 address) {
     }
     stopAddress = static_cast<Address>(address);
     if (log) log("(dbgeng) EXCEPTION code=" + toHex(code) + " at " + toHex(address));
+}
+
+void DbgEngBackend::onUnhandledException(const EXCEPTION_RECORD64& record) {
+    onException(record.ExceptionCode, record.ExceptionAddress);
+    std::lock_guard<std::mutex> lock(mutex);
+    stoppedOnUnhandledException = true;
+    stopException = exceptionFrom(record, {});
+}
+
+std::optional<ExceptionInfo> DbgEngBackend::getStopException() const {
+    std::lock_guard<std::mutex> lock(mutex);
+    return stopException;
 }
 
 bool DbgEngBackend::onThreadCreated() {

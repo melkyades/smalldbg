@@ -62,6 +62,16 @@ struct NativeTypeInfo {
     std::string targetTypeName;          // for pointer/reference/typedef/const/volatile
 };
 
+/** A NativeFieldAt names the field of a global struct variable that covers an
+ *  address. **/
+struct NativeFieldAt {
+    std::string name;      // "segStart"
+    std::string typeName;  // "unsigned long *"
+    std::string owner;     // the struct's type
+    uint64_t start{0};
+    uint64_t size{0};
+};
+
 // Options for symbol loading
 struct SymbolOptions {
     std::string cacheDirectory = "C:\\Symbols";  // Where to cache downloaded symbols
@@ -83,7 +93,23 @@ public:
     // Set options and pass to all backends
     void setOptions(const SymbolOptions& options);
     const SymbolOptions& getOptions() const { return symbolOptions; }
-    
+
+    void setSearchPath(const std::string& path);
+    std::string searchPath() const;
+
+    /** Loads one module's symbols through the first backend that can. Returns
+     *  false when none could. **/
+    bool loadModuleSymbols(const std::string& module,
+                           SymbolMatch match = SymbolMatch::Exact);
+
+    /** The module named `module`, ignoring case and any extension. Returns an
+     *  empty ModuleInfo when there is none. **/
+    ModuleInfo moduleNamed(const std::string& module);
+
+    /** A module to look in first for a name given without one. Symbol engines
+     *  do not search modules whose symbols are not loaded yet. **/
+    void preferModule(const std::string& module);
+
     void shutdown();
     
     // Add a symbol backend (takes ownership)
@@ -92,6 +118,7 @@ public:
     // Symbol lookup - queries all backends in priority order
     std::optional<Symbol> getSymbolByName(const std::string& name);
     std::optional<Symbol> getSymbolByAddress(Address addr);
+    std::optional<Symbol> getSymbolWithExtent(Address addr);
     std::vector<Symbol> findSymbols(const std::string& pattern);
     
     // Source/line information
@@ -108,19 +135,46 @@ public:
     const NativeTypeInfo* getTypeByName(const std::string& name);
     std::optional<std::string> getVariableTypeName(const std::string& name);
 
+    /** Returns the struct, class or union `typeName` names, looking through
+     *  pointers, typedefs and qualifiers, or null when it names none. The type
+     *  stays valid while the provider lives. **/
+    const NativeTypeInfo* getStructType(const std::string& typeName);
+
+    /** Returns the field of a global struct variable that covers `address`, or
+     *  nothing when no global struct covers it. **/
+    std::optional<NativeFieldAt> getFieldAt(Address address);
+
     // Everything known about an address ends up here, whichever producer
     // found it, so a caller asks once instead of merging answers itself.
     SymbolDatabase& database() { return symbolDatabase; }
     const SymbolDatabase& database() const { return symbolDatabase; }
 
-    /// What is at this address. Native symbols are folded in on demand, so a
-    /// caller need not know whether it lies in a module or in a heap.
+    /** Returns what is at `address`, in a module or in a heap, or nothing
+     *  when no symbol covers it. Native symbols are added on demand. **/
     std::optional<SymbolicInfo> symbolicInfoFor(Address address);
 
 private:
-    /// Records a native symbol the first time it is asked for, so repeated
-    /// lookups in the same routine stop reaching the symbol engine.
+    /** Records a native symbol the first time it is asked for, so repeated
+     *  lookups in the same routine stop reaching the symbol engine. **/
     void rememberNativeSymbol(Address address);
+
+    /** A database entry as a Symbol. **/
+    Symbol symbolFor(const SymbolicInfo& info) const;
+
+    /** Sets fieldWindow to the stretch around `address` that one global
+     *  covers, or that no global covers. **/
+    void findFieldOwner(Address address);
+
+    // The addresses the last getFieldAt answer holds for, and the struct that
+    // covers them, if any. A listing asks about each word of a struct in turn,
+    // and each new answer costs a symbol file search.
+    struct FieldWindow {
+        Address start{0};
+        Address end{0};
+        Address ownerStart{0};
+        const NativeTypeInfo* owner{nullptr};
+    };
+    FieldWindow fieldWindow;
 
     Backend* backend;
     std::vector<std::unique_ptr<SymbolBackend>> backends;
@@ -128,6 +182,7 @@ private:
     SymbolDatabase symbolDatabase;
     SourceRef nativeSymbols;
     bool modulesRegistered{false};
+    std::vector<std::string> preferredModules;
 };
 
 } // namespace smalldbg

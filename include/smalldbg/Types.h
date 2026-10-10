@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <optional>
+#include <vector>
 #include "arch/X86Registers.h"
 #include "arch/X64Registers.h"
 #include "arch/ARM64Registers.h"
@@ -14,6 +15,14 @@ namespace smalldbg {
 enum class Mode {
     External,   // attach to an external process
     InProcess,  // operate inside the target process (helper thread)
+};
+
+// What a Debugger is built to debug: a process, running or saved in a dump, a
+// recorded trace to replay, or a snapshot of memory that never runs.
+enum class Debuggee {
+    Process,
+    Trace,
+    Snapshot,
 };
 
 enum class Status {
@@ -42,8 +51,21 @@ enum class StopReason {
     EndOfTrace         // TTD trace reached beginning or end
 };
 
+/** Returns a short name for `reason` that a person can read, such as "single
+ *  step". **/
+const char* stopReasonName(StopReason reason);
+
 using Address = uint64_t;
 using ThreadId = uint64_t;
+
+/** The exception a target stopped on. **/
+struct ExceptionInfo {
+    uint32_t code{0};                   // e.g. 0xC0000005 for an access violation
+    Address address{0};                 // where it was raised
+    uint32_t flags{0};
+    std::vector<uint64_t> parameters;
+    std::string description;            // the engine's own words, when it has any
+};
 
 struct Breakpoint {
     Address addr{0};
@@ -51,7 +73,31 @@ struct Breakpoint {
     std::string name;
 };
 
-/// Information about a loaded module (executable or shared library).
+/** A TracePosition is a moment of a recorded trace: a sequence number and a
+ *  step within it. Positions order by sequence, then by step. **/
+struct TracePosition {
+    uint64_t sequence{0};
+    uint64_t step{0};
+
+    bool operator==(const TracePosition& other) const {
+        return sequence == other.sequence && step == other.step;
+    }
+    bool operator<(const TracePosition& other) const {
+        return sequence != other.sequence ? sequence < other.sequence
+                                          : step < other.step;
+    }
+};
+
+/** A ModuleSection is one section of a loaded module, such as its code or
+ *  its data. **/
+struct ModuleSection {
+    std::string name;
+    Address start{0};
+    Address end{0};          // exclusive
+    bool executable{false};
+};
+
+/** A ModuleInfo describes a loaded executable or shared library. **/
 struct ModuleInfo {
     std::string path;         // File path on disk
     std::string shortName;    // Filename component only
@@ -61,6 +107,15 @@ struct ModuleInfo {
     Address endAddress{0};    // Upper bound of text segment
     Address slide{0};         // ASLR slide (loadAddress - preferredBase)
     uint64_t symbolCount{0};  // Number of resolved symbols
+
+    /** Returns true when the module has a symbol file, rather than only its
+     *  export table or nothing loaded yet. When the symbol type is unknown,
+     *  any symbols count. **/
+    bool hasSymbolFile() const {
+        if (symbolType.empty()) return symbolCount > 0;
+        return symbolType != "none" && symbolType != "deferred"
+            && symbolType != "export";
+    }
 };
 
 struct Registers {
@@ -97,6 +152,8 @@ struct LocalVariable {
     int64_t offset{0};      // Offset from base (rbp/rsp) or register number
     Address address{0};     // Absolute address if locationType == Memory
     const StackFrame* frame{nullptr};  // Back-reference to containing frame
+    bool isArgument{false};
+    std::string valueText;  // The value as the symbols format it, when they do
     
     // Read the value of this variable from its frame
     // Returns std::nullopt if the value cannot be read

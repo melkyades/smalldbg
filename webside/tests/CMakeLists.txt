@@ -3,11 +3,15 @@ find_package(doctest REQUIRED)
 
 add_executable(webside_tests
     test_websidesession.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/WebsideSession.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/Json.cpp
+    test_http_server.cpp
+    test_inspector_json.cpp
+    test_main.cpp
+    test_smalltalk_session.cpp
+    test_webside_server.cpp
 )
-target_include_directories(webside_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(webside_tests PRIVATE smalldbg doctest::doctest)
+target_include_directories(webside_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/vmdbg/tests)
+target_link_libraries(webside_tests PRIVATE webside_common doctest::doctest)
 
 # The live frame-API test drives a real target process.
 add_dependencies(webside_tests test_target)

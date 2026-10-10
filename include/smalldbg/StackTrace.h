@@ -1,89 +1,13 @@
 #pragma once
 
 #include "Types.h"
+#include "StackFrame.h"
 #include <string>
 #include <vector>
 #include <memory>
-#include <map>
-#include <utility>
 #include <cstdint>
 
 namespace smalldbg {
-
-class Thread;  // Forward declaration
-class StackFrameProcessor;  // Forward declaration
-
-/// A function the compiler folded into another function's code. The debug
-/// info records the call site, so a single physical frame can stand for
-/// several logical calls; DbgEng's `k` prints these as "(Inline)" rows.
-struct InlineFrameInfo {
-    std::string name;
-    std::string moduleName;
-    uint64_t offset{0};   // displacement within the inlined function
-};
-
-/// Inline frames for a whole stack, keyed by the (ip, fp) of the physical
-/// frame that holds them. Asking per frame costs a stack walk each time.
-using InlineFrameMap =
-    std::map<std::pair<Address, Address>, std::vector<InlineFrameInfo>>;
-
-/// Processor-specific metadata attached to a frame.
-/// Each processor subtype defines its own derived struct
-/// (e.g. SmalltalkFrameMetadata).  Clients cast based on
-/// the processor pointer.
-struct FrameMetadata {
-    virtual ~FrameMetadata() = default;
-};
-
-// Represents a single frame in a stack trace
-struct StackFrame {
-    // Register context at this frame (for local variable access)
-    // Note: Not all registers may be accurate (only callee-saved registers
-    // can be reliably restored during unwinding)
-    Registers registers;
-    bool hasRegisters = false;   // Whether register context is available
-    
-    // Back-reference to thread (for memory reads by local variables)
-    const Thread* thread{nullptr};
-    
-    // The processor that handled this frame
-    StackFrameProcessor* processor{nullptr};
-
-    // Processor-specific metadata (null for processors that don't set it)
-    std::unique_ptr<FrameMetadata> metadata;
-
-    // Previous frame in the trace (towards the top of the stack / most recent call)
-    StackFrame* prev{nullptr};
-    
-    // Arch-aware accessors — delegate to registers
-    Address ip() const { return registers.ip(); }
-    Address fp() const { return registers.fp(); }
-    Address sp() const { return registers.sp(); }
-    void setIp(Address v) { registers.setIp(v); }
-    void setFp(Address v) { registers.setFp(v); }
-    void setSp(Address v) { registers.setSp(v); }
-    
-    std::string functionName;    // Resolved function name (if available)
-    std::string moduleName;      // Module containing this frame
-    uint64_t functionOffset;     // Offset from function start
-    // Entry point of the function. Not always ip()-functionOffset: a frame
-    // parked in a VM stub has an ip outside its own code.
-    Address functionStart{0};
-
-    // True for a synthesized inline frame: it shares the physical frame's
-    // registers, so ip()/fp()/sp() describe the enclosing physical frame.
-    bool inlined = false;
-
-    // Source location (if available)
-    std::string sourceFile;
-    uint32_t sourceLine = 0;
-    
-    // Local variables at this frame
-    std::vector<LocalVariable> localVariables;
-    
-    // Print this frame to an output stream
-    void print(std::ostream& os, size_t frameNumber) const;
-};
 
 class Debugger;
 
@@ -91,6 +15,9 @@ class Debugger;
 class StackTrace {
 public:
     StackTrace(const Thread* thread);
+    /** A trace of frames found some other way than by unwinding, innermost
+     *  first, such as the ones a VM saved for a thread it parked. **/
+    StackTrace(const Thread* thread, std::vector<std::unique_ptr<StackFrame>> frames);
     ~StackTrace();
 
     // Unwind the stack
@@ -105,6 +32,17 @@ public:
     size_t getFrameCount() const { return frames.size(); }
 
 private:
+    bool appendFramesFrom(Registers& regs, size_t maxFrames);
+    bool appendRun(std::vector<StackFrame>& run, StackUnwinder& unwinder,
+                   Registers& regs, size_t maxFrames);
+    bool appendRunFrames(std::vector<StackFrame>& run, size_t from, size_t to,
+                         const Registers& regs, StackUnwinder& unwinder,
+                         size_t maxFrames);
+    bool appendFrame(StackUnwinder& unwinder, Registers& regs, size_t maxFrames);
+    bool atThreadTop() const;
+    bool shouldKeepUnwinding(const Registers& regs, const Registers& previous,
+                             size_t maxFrames) const;
+
     // A physical frame can stand for several logical calls when the compiler
     // inlined them. Emit those above it, innermost first, so the frame list
     // matches what the engine's own backtrace shows.

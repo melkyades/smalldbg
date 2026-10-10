@@ -25,6 +25,9 @@ struct HttpResponse {
     std::string statusMessage = "OK";
     std::string body;
     std::string contentType = "application/json";
+    // Extra headers, for saying something about an answer that the Webside
+    // protocol has no place for in the body.
+    std::map<std::string, std::string> headers;
 };
 
 // HTTP request handler
@@ -56,6 +59,7 @@ public:
 
 private:
     HttpResponse dispatch(const HttpRequest& request);
+    void bindAndListen();
     const HttpHandler* handlerFor(const HttpRequest& request) const;
     std::string getRouteKey(const std::string& method, const std::string& path) const;
 

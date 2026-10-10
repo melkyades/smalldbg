@@ -12,7 +12,19 @@
 
 #include "platform/Platform.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 volatile int g_test_value = 42;
+
+// A global of a struct type, whose layout the native type tests read.
+struct TestRecord {
+    int id;
+    double weight;
+    const char* label;
+};
+TestRecord g_test_record = {7, 1.5, "record"};
 
 // Marked noinline: tests set a breakpoint on this function's own symbol
 // address, so the compiler must not fold it into its caller (it would
@@ -39,8 +51,42 @@ static void workload_loop(int iterations) {
     for (int i = 0; i < iterations; ++i) {
         // touch global memory so tests can read/write it
         g_test_value += i;
+        g_test_record.id = i;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+}
+
+// "deep" mode: the main thread and kWorkerThreads workers each recurse
+// kDeepFrames levels and then wait, so tests get deep stacks on several threads.
+static const int kDeepFrames = 30;
+static const int kWorkerThreads = 4;
+
+// noinline, and the result is used after the call, so the optimizer keeps one
+// frame per level instead of turning the recursion into a loop.
+static SMALLDBG_NOINLINE int recurse(int depth, void (*atBottom)()) {
+    if (depth <= 0) {
+        atBottom();
+        return 0;
+    }
+    return recurse(depth - 1, atBottom) + depth;
+}
+
+#ifdef _WIN32
+static bool debuggerAttached() { return ::IsDebuggerPresent() != 0; }
+#else
+static bool debuggerAttached() { return true; }
+#endif
+
+// Waits while a debugger holds the process, so its stacks stay put for as long
+// as a test looks at them, and returns once the debugger lets go. At most ten
+// seconds, for a debugger that never does.
+static void park() {
+    for (int i = 0; i < 200 && debuggerAttached(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+static void deep_worker() {
+    g_test_value += recurse(kDeepFrames, park);
 }
 
 static void do_a_crash() {
@@ -68,6 +114,26 @@ int main(int argc, char **argv) {
 
     // Clear and reuse global value so memory read/write tests have deterministic state
     g_test_value = 100;
+
+    // The workers never return, so they are not joined.
+    if (mode == "deep") {
+        for (int i = 0; i < kWorkerThreads; ++i)
+            std::thread(deep_worker).detach();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        g_test_value += recurse(kDeepFrames, break_here);
+        park();
+        return 0;
+    }
+
+    // "threads" mode: threads that have ended by the time break_here runs.
+    if (mode == "threads") {
+        std::vector<std::thread> workers;
+        for (int i = 0; i < kWorkerThreads; ++i)
+            workers.emplace_back([] {});
+        for (auto& worker : workers) worker.join();
+        break_here();
+        return 0;
+    }
 
     // Known function to place a breakpoint on
     break_here();

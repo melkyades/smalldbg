@@ -7,92 +7,73 @@
 #include <cstdint>
 #include <cstddef>
 
+#include "VMSession.h"
+
 namespace smalldbg {
+    class AnnotationSource;
     class Debugger;
     class Thread;
     class StackTrace;
     struct StackFrame;
+    struct RegisterValue;
 }
+
+namespace vmdbg { class Json; }
 
 namespace webside {
 
-class Json;             // forward declaration
-class WebsideInspector; // forward declaration
+using vmdbg::Json;
 
-/// Abstract interface for all Webside debug sessions.
-///
-/// Concrete sessions drive a real smalldbg::Debugger; DisconnectedSession
-/// provides safe "disconnected" answers so callers never have to null-check
-/// the session.
-class WebsideSession {
+/** A WebsideSession answers the Webside API for one VM session, in the
+ *  shapes the Webside client expects. The VM's state comes from
+ *  vmdbg::VMSession; a dialect's subclass describes its own frames, classes
+ *  and objects. **/
+class WebsideSession : public vmdbg::VMSession {
 public:
-    virtual ~WebsideSession() = default;
-
-    // ---- session lifecycle ----
-    virtual bool launch(const std::string& target,
-                        const std::vector<std::string>& args = {}) = 0;
-    virtual bool attach(int pid) = 0;
-    virtual void detach() = 0;
-    virtual bool isActive() const = 0;
-    virtual std::optional<int> getPid() const = 0;
-
-    // ---- debug control ----
-    virtual bool resume() = 0;
-    virtual bool suspend() = 0;
-    virtual bool step() = 0;
-    virtual bool stepOver() = 0;
-    virtual bool stepOver(int frameIndex) = 0;
-    virtual bool stepOut() = 0;
-    virtual bool stepBack() = 0;
-    virtual bool reverseStepOver() = 0;
-    virtual bool reverseStepOut() = 0;
-
-    // ---- state queries ----
-    virtual std::string getStopReason() const = 0;
-    virtual std::string getRegisters() const = 0;
-
     // ---- frame API ----
     // These take real debugger objects; the WebsideServer layer resolves the
     // thread and frame from the request, then calls these. A frame is a VM
     // (Smalltalk) frame when frame.metadata != nullptr, native otherwise.
     std::string listFrames(smalldbg::Thread& thread, size_t maxFrames = 256) const;
+    std::string listFrames(const smalldbg::StackTrace& trace) const;
     std::string getFrameDetail(smalldbg::StackTrace& trace,
                                const smalldbg::StackFrame& frame, int index) const;
     std::string getFrameBindings(smalldbg::StackTrace& trace,
                                  const smalldbg::StackFrame& frame, int index) const;
     std::string getFrameRegisters(const smalldbg::StackFrame& frame) const;
-    /// Where the frame's function starts, for a client that disassembles it.
+    /** Returns where the frame's function starts, for disassembling it. **/
     static uint64_t functionAddressOf(const smalldbg::StackFrame& frame);
 
-    /// The target's pointer width, or the host's while there is no target.
-    size_t pointerSize() const;
-
-    /// A target address in hex at that width, so a 32-bit target's addresses
-    /// are not padded out to 16 digits.
+    /** Returns `address` in hex at the target's width, so a 32-bit target's
+     *  addresses are not padded to 16 digits. **/
     Json addressHex(uint64_t address) const;
 
-    /// What the addresses in [from, to) mean in terms of the frames on this
-    /// stack. Contents come from /memory; this says which frame owns a slot
-    /// and what it holds. Addresses inside no frame are simply absent.
+    /** Returns which frame owns each of the `slots` slots from `from`, and
+     *  what it holds. Slots inside no frame are left out. **/
     std::string stackDescriptors(const smalldbg::StackTrace& trace, int selectedIndex,
                                  uint64_t from, int slots) const;
+    /** Returns the descriptors of every slot of the frames of `trace`. **/
+    std::string stackDescriptors(const smalldbg::StackTrace& trace,
+                                 int selectedIndex) const;
 
-    // ---- green threads (Smalltalk-level) ----
-    virtual void refreshGreenThreads() = 0;
-    virtual int greenThreadCount() const = 0;
-    virtual std::string getGreenThreadName(int threadIndex) const = 0;
+    /** Returns the frames of a green thread as a trace, which the frame
+     *  routes answer the way they do a native thread's. Returns null for a
+     *  green thread whose frames are only described by the documents below. **/
+    virtual smalldbg::StackTrace* greenStack(int /*threadIndex*/) const { return nullptr; }
+
+    // ---- green threads, as documents ----
     virtual std::string listSmalltalkFrames(int threadIndex) const = 0;
     virtual std::string getSmalltalkFrameDetail(int threadIndex, int frameIndex) const = 0;
     virtual std::string getSmalltalkFrameBindings(int threadIndex, int frameIndex) const = 0;
-    virtual std::string getSmalltalkStackContents(int threadIndex) const = 0;
-    /// The green thread this OS thread is currently executing, if any.
-    virtual std::string greenThreadOn(uint64_t /*nativeThreadId*/) const { return {}; }
-    /// Registers for one green-thread frame. A dialect whose activations are
-    /// not native frames has nothing to say here.
+    /** Returns a green thread's stack slots, each placed relative to the
+     *  frame `selectedFrame`. **/
+    virtual std::string getSmalltalkStackContents(int threadIndex,
+                                                  int selectedFrame) const = 0;
+    /** Returns the registers of one green-thread frame. The base returns
+     *  none. **/
     virtual std::string getSmalltalkFrameRegisters(int, int) const { return "[]"; }
 
     // ---- class browsing ----
-    virtual bool discoverClasses() = 0;
     virtual std::string listClasses(const std::string& root = "",
                                     bool namesOnly = false,
                                     bool tree = false,
@@ -109,76 +90,86 @@ public:
     virtual std::string getMethods(const std::string& name) const = 0;
     virtual std::string getMethod(const std::string& className,
                                   const std::string& selector) const = 0;
+    /** Returns a method's bytecodes as {class, selector, bytecodes}, each
+     *  with its pc, bytes, text, and the selector a send sends; or "{}" when
+     *  there is no such method or its bytecodes cannot be read. **/
+    virtual std::string getMethodBytecodes(const std::string& /*className*/,
+                                           const std::string& /*selector*/) const {
+        return "{}";
+    }
     virtual std::string search(const std::string& text, bool ignoreCase,
                                const std::string& condition,
                                const std::string& type) const = 0;
 
-    // ---- breakpoints ----
-    virtual bool setBreakpoint(uint64_t address, const std::string& name = "") = 0;
-    virtual bool clearBreakpoint(uint64_t address) = 0;
-    virtual std::string listBreakpoints() const = 0;
+    // ---- listings ----
+    /** Returns what names the addresses a listing refers to. The base names
+     *  them by native symbol. **/
+    virtual std::unique_ptr<smalldbg::AnnotationSource> annotationSource() const;
 
-    // ---- memory ----
-    virtual std::string readMemory(uint64_t address, size_t size) const = 0;
-
-    // ---- events ----
-    virtual std::string waitForEvent(int timeoutMs = 5000) = 0;
+    /** Returns one line saying what a layout the VM defined holds, such as an
+     *  object header's size and flags, read from `bytes`; or an empty text,
+     *  as the base does, to show its bytes instead. **/
+    virtual std::string layoutText(const vmdbg::MemTypeRange& /*range*/,
+                                   const std::vector<uint8_t>& /*bytes*/) const {
+        return {};
+    }
 
     // ---- object description ----
-    virtual std::string describeObject(uint64_t handle, size_t maxDepth = 1) const = 0;
-
-    // ---- underlying debugger / VM inspector ----
-    virtual smalldbg::Debugger* getDebugger() const = 0;
-    virtual WebsideInspector* getInspector() const = 0;
-
-    // ---- thread helpers ----
-    std::shared_ptr<smalldbg::Thread> resolveThread(uint64_t threadId) const;
-    std::shared_ptr<smalldbg::Thread> primaryThread() const;
+    /** Returns the object at `oop` for /inspect, with up to `maxSlots` of its
+     *  slots from `firstSlot`. **/
+    virtual std::string describeObject(uint64_t oop, int firstSlot,
+                                       int maxSlots) const = 0;
 
 protected:
     // ---- virtual hooks for frame formatting ----
     // Dialects override these; the base builds generic native JSON.
 
-    /// Runs before a stack walk: an unwind leaves the engine unable to serve
-    /// some reads, so a dialect reads what it needs for frames here.
-    virtual void prepareFrames() const {}
-
-    /// Display label for a frame (used by listFrames).
+    /** Returns the label listFrames shows for `frame`. **/
     virtual std::string buildFrameLabel(const smalldbg::StackFrame& frame) const;
 
-    /// JSON detail for one frame; dispatches to the smalltalk/native hook
-    /// based on whether the frame carries processor metadata.
+    /** JSON detail for one frame; dispatches to the smalltalk/native hook
+     *  based on whether the frame carries unwinder metadata. **/
     virtual std::string buildFrameDetailJson(const smalldbg::StackFrame& frame,
                                              int index) const;
     virtual void addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
     virtual void addNativeFrameDetail(Json& j, const smalldbg::StackFrame& frame) const;
 
-    /// JSON bindings (locals + IP/FP/SP) for one frame; dispatches on metadata.
+    /** Returns the locals and IP, FP and SP of `frame` as JSON. **/
     virtual std::string buildFrameBindingsJson(const smalldbg::StackFrame& frame,
                                                int index) const;
     virtual std::string addSmalltalkFrameBindings(const smalldbg::StackFrame& frame) const;
     virtual std::string addNativeFrameBindings(const smalldbg::StackFrame& frame) const;
 
-    /// Arguments of one frame as [{name, value}]. Empty where a dialect
-    /// cannot tell arguments from locals, which is the base case.
+    /** Returns the frame's arguments as [{name, type, value, printString}].
+     *  The base returns the ones the symbols list for a native frame. **/
     virtual std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const;
 
-    /// JSON register dump for one frame (arch-aware).
-    virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
+    /** Returns the registers of `frame` as JSON, with a null value for each
+     *  one the frame does not know. **/
+    std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
 
-    /// Descriptors for the slots of one frame that fall in [from, to).
-    void describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
-                            int frameIndex, int selectedIndex, size_t slot,
-                            uint64_t from, uint64_t to) const;
+    /** Adds to `entry` what the value of a register of `frame` is. The base
+     *  names the code the ip is in. **/
+    virtual void describeRegister(Json& entry, const smalldbg::StackFrame& frame,
+                                  const smalldbg::RegisterValue& reg) const;
 
-    /// One descriptor per meaningful address in [from, to). The base names the
-    /// slots any frame-pointer ABI has; dialects add what their own frame
-    /// layout means and may read the target to describe a slot's value.
-    virtual std::string buildStackDescriptorsJson(smalldbg::Debugger* dbg,
-                                                  const smalldbg::StackTrace& trace,
-                                                  int selectedIndex,
-                                                  uint64_t from,
-                                                  uint64_t to) const;
+    /** Returns a descriptor for each slot in [from, to) that a frame of
+     *  `trace` owns or that describeSlot says something about: the frame it
+     *  belongs to, where that frame is from the one selected, and its role. **/
+    std::string buildStackDescriptorsJson(const smalldbg::StackTrace& trace,
+                                          int selectedIndex, uint64_t from,
+                                          uint64_t to) const;
+
+    /** Adds to `entry` what the slot at `address`, which holds `value`, is
+     *  to `frame`, which is null for a slot no frame owns. The base adds
+     *  nothing. **/
+    virtual void describeSlot(Json& entry, const smalldbg::StackFrame* frame,
+                              uint64_t address, uint64_t value) const;
+
+private:
+    void addReturnLabel(Json& entry,
+                        const std::vector<std::unique_ptr<smalldbg::StackFrame>>& frames,
+                        size_t index, uint64_t value) const;
 };
 
 } // namespace webside

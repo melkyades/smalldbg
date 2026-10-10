@@ -1,6 +1,7 @@
 #include "WebsideServer.h"
+#include "MemoryListing.h"
 #include "Json.h"
-#include "WebsideInspector.h"
+#include "VMInspector.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
@@ -26,152 +27,155 @@ static bool isKnownFrameSubRoute(const std::string& sub) {
     return sub.empty() || sub == "bindings" || sub == "registers";
 }
 
-static uint64_t param64(const HttpRequest& req, const char* key, uint64_t dflt = 0) {
+uint64_t WebsideServer::param64(const HttpRequest& req, const char* key,
+                               uint64_t dflt) {
     auto it = req.params.find(key);
     if (it == req.params.end()) return dflt;
     try { return std::stoull(it->second, nullptr, 0); } catch (...) { return dflt; }
 }
 
-// The symbol the thread's PC sits in. Needs a stopped target: reading the
-// registers of a running one blocks in the engine until it stops.
-static std::string threadTopFrameName(smalldbg::Debugger& dbg, smalldbg::Thread& thread) {
-    smalldbg::Registers regs;
-    if (dbg.getRegisters(&thread, regs) != smalldbg::Status::Ok) return "";
-    auto sym = dbg.getSymbolProvider()->getSymbolByAddress(regs.ip());
-    if (!sym) return "";
-    return (sym->moduleName.empty() ? "" : sym->moduleName + "!") + sym->name;
-}
+WebsideServer::WebsideServer(Workspace& workspace, int port)
+    : server(port), workspace(workspace) {}
 
-WebsideServer::WebsideServer(int port) : server(port) {}
+static HttpResponse refusal(int code, const char* status, const char* message) {
+    HttpResponse response;
+    response.statusCode = code;
+    response.statusMessage = status;
+    response.body = Json::object().set("error", message).dump();
+    return response;
+}
 
 // A refused handler still answers something shaped like the truth, an empty
 // list or a zeroed read, which a client cannot tell from the real thing.
-static HttpResponse answerOrConflict(const HttpRequest& request,
-                                     const HttpHandler& handler) {
+HttpResponse WebsideServer::answerOrRefuse(const HttpRequest& request,
+                                           const HttpHandler& handler) const {
+    if (!workspace.isConnected()
+        && !sessionFree.count(request.method + " " + request.path))
+        return refusal(503, "Service Unavailable", "nothing is open");
+
     smalldbg::clearEngineBusy();
     HttpResponse response = handler(request);
     if (!smalldbg::engineWasBusy()) return response;
+    return refusal(409, "Conflict", "debuggee is running");
+}
 
-    HttpResponse conflict;
-    conflict.statusCode = 409;
-    conflict.statusMessage = "Conflict";
-    conflict.body = "{\"error\":\"debuggee is running\"}";
-    return conflict;
+void WebsideServer::sessionFreeRoute(const std::string& method,
+                                     const std::string& path,
+                                     HttpHandler handler) {
+    sessionFree.insert(method + " " + path);
+    server.route(method, path, std::move(handler));
+}
+
+// On a replay, a thread that was not running at this position has no
+// registers, so its stack is unknown rather than empty.
+std::string WebsideServer::frameWarning(smalldbg::Thread& thread) const {
+    smalldbg::Registers regs;
+    if (session().debugger().getRegisters(&thread, regs) != smalldbg::Status::Ok)
+        return "registers for this thread could not be read";
+    if (regs.sp() == 0)
+        return "this thread has no register context here; it was not running "
+               "at this position";
+    return {};
+}
+
+// A listing asks this once rather than once per thread, since answering it
+// may walk every thread the target has.
+smalldbg::ThreadId WebsideServer::vmThreadId() const {
+    auto thread = session().vmThread();
+    return thread ? thread->getThreadId() : 0;
+}
+
+void WebsideServer::warn(HttpResponse& res, const std::string& warning) {
+    if (!warning.empty()) res.headers["X-Webside-Warning"] = warning;
+}
+
+std::string WebsideServer::runControlResult(bool success) const {
+    smalldbg::clearEngineBusy();
+    return Json::object().set("success", success).dump();
 }
 
 void WebsideServer::run() {
     setupBaseRoutes();
     setupRoutes();
-    server.setHandlerWrapper(answerOrConflict);
+    server.setHandlerWrapper([this](const HttpRequest& request,
+                                    const HttpHandler& handler) {
+        return answerOrRefuse(request, handler);
+    });
     server.run();
 }
 
 std::string WebsideServer::version() const { return "0.1.0"; }
 
-bool WebsideServer::launch(const std::string& target, const std::vector<std::string>& args) {
-    session = createSession();
-    return session->launch(target, args);
-}
-
 // ---- run control / session state / class browsing: delegate to the session ----
-bool WebsideServer::openTrace(const std::string&, const std::string&) {
-    return false;  // dialects with time-travel support override this
-}
-
-bool WebsideServer::openDump(const std::string&) {
-    return false;  // dialects with dump support override this
-}
-
 bool WebsideServer::resume() {
     onPreResume();
-    return session->resume();
+    return session().resume();
 }
 
 bool WebsideServer::suspend() {
-    if (!session->suspend()) return false;
-    session->discoverClasses();
-    session->refreshGreenThreads();
+    if (!session().suspend()) return false;
+    session().discoverClasses();
+    session().refreshGreenThreads();
     onPostSuspend();
     return true;
 }
 
-bool WebsideServer::isActive() const          { return session->isActive(); }
-std::string WebsideServer::stopReason() const { return session->getStopReason(); }
-std::optional<int> WebsideServer::pid() const { return session->getPid(); }
-
-std::string WebsideServer::classListData(const std::string& root, bool namesOnly) const {
-    return session->listClasses(root, namesOnly);
+bool WebsideServer::isActive() const {
+    return workspace.isConnected() && session().isActive();
 }
-std::string WebsideServer::classDetailData(const std::string& name) const { return session->getClass(name); }
-std::string WebsideServer::searchData(const std::string& text, bool ignoreCase,
-                                      const std::string& condition, const std::string& type) const {
-    return session->search(text, ignoreCase, condition, type);
-}
-std::string WebsideServer::subclassesData(const std::string& name) const { return session->getSubclasses(name); }
-std::string WebsideServer::superclassesData(const std::string& name) const { return session->getSuperclasses(name); }
-std::string WebsideServer::variablesData(const std::string& name) const { return session->getVariables(name); }
-std::string WebsideServer::instanceVariablesData(const std::string& name) const { return session->getInstanceVariables(name); }
-std::string WebsideServer::classVariablesData(const std::string& name) const { return session->getClassVariables(name); }
-std::string WebsideServer::categoriesData(const std::string& name) const { return session->getCategories(name); }
-std::string WebsideServer::usedCategoriesData(const std::string& name) const { return session->getUsedCategories(name); }
-std::string WebsideServer::selectorsData(const std::string& name) const { return session->getSelectors(name); }
-std::string WebsideServer::methodsData(const std::string& name) const { return session->getMethods(name); }
-std::string WebsideServer::methodDetailData(const std::string& className,
-                                            const std::string& selector) const {
-    return session->getMethod(className, selector);
-}
+std::string WebsideServer::stopReason() const { return session().getStopReason(); }
+std::optional<int> WebsideServer::pid() const { return session().getPid(); }
 
 // ---- frame API: resolve the current thread/frame, then let the session format ----
 
 std::string WebsideServer::listFrames() const {
     // Unwinding a running target blocks in the engine until it stops, so
     // decline the way the engine would rather than answer an empty stack.
-    if (!session->getDebugger()->isStopped()) {
+    if (!session().debugger().isStopped()) {
         smalldbg::markEngineBusy();
         return "[]";
     }
-    auto thread = session->primaryThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
-    return session->listFrames(*thread);
+    return session().listFrames(*thread);
 }
 
 std::string WebsideServer::getFrameDetail(int index) const {
-    auto thread = session->primaryThread();
+    auto thread = session().vmThread();
     if (!thread) return "{}";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "{}";
-    const auto& frames = trace.getFrames();
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "{}";
+    const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "{}";
-    return session->getFrameDetail(trace, *frames[index - 1], index);
+    return session().getFrameDetail(*trace, *frames[index - 1], index);
 }
 
 std::string WebsideServer::getFrameBindings(int index) const {
-    auto thread = session->primaryThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    const auto& frames = trace.getFrames();
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "[]";
+    const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
-    return session->getFrameBindings(trace, *frames[index - 1], index);
+    return session().getFrameBindings(*trace, *frames[index - 1], index);
 }
 
 std::string WebsideServer::getFrameRegisters(int index) const {
-    auto thread = session->primaryThread();
+    auto thread = session().vmThread();
     if (!thread) return "[]";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    const auto& frames = trace.getFrames();
+    auto* trace = thread->getStackTrace(256);
+    if (!trace) return "[]";
+    const auto& frames = trace->getFrames();
     if (index < 1 || index > static_cast<int>(frames.size())) return "[]";
-    return session->getFrameRegisters(*frames[index - 1]);
+    return session().getFrameRegisters(*frames[index - 1]);
 }
 
-std::string WebsideServer::stackDescriptors(int selectedIndex, uint64_t from,
-                                           int slots) const {
-    auto thread = session->primaryThread();
-    if (!thread) return "[]";
-    smalldbg::StackTrace trace(thread.get());
-    if (trace.unwind(256) != smalldbg::Status::Ok) return "[]";
-    return session->stackDescriptors(trace, selectedIndex, from, slots);
+std::string WebsideServer::stackDescriptors(smalldbg::Thread& thread,
+                                            int selectedIndex, uint64_t from,
+                                            int slots) const {
+    auto* trace = thread.getStackTrace(256);
+    if (!trace) return "[]";
+    return session().stackDescriptors(*trace, selectedIndex, from, slots);
 }
 
 // =========================================================================
@@ -188,44 +192,93 @@ static const char* symbolTypeString(smalldbg::SymbolType type) {
     }
 }
 
-static Json symbolToJson(const smalldbg::Symbol& sym) {
+static Json symbolToJson(const smalldbg::Symbol& sym,
+                         const WebsideSession& session) {
     return Json::object()
         .set("name", sym.name)
-        .set("address", Json::hex(sym.address))
+        .set("address", session.addressHex(sym.address))
         .set("size", static_cast<int64_t>(sym.size))
         .set("type", symbolTypeString(sym.type))
         .set("module", sym.moduleName);
 }
 
+// Returns the pattern to search for what a person typed. The symbol engine
+// matches whole names, so text without a wildcard is looked for anywhere in a
+// name.
+static std::string symbolPattern(const std::string& filter) {
+    if (filter.empty()) return "*";
+    if (filter.find('*') != std::string::npos
+        || filter.find('?') != std::string::npos)
+        return filter;
+    return "*" + filter + "*";
+}
+
 std::string WebsideServer::nativeSymbolsData(const std::string& filter) const {
-    auto* provider = session->getDebugger()->getSymbolProvider();
-    auto symbols = provider->findSymbols(filter);
+    auto* provider = session().debugger().getSymbolProvider();
+    auto symbols = provider->findSymbols(symbolPattern(filter));
     auto arr = Json::array();
     for (auto& sym : symbols)
-        arr.add(symbolToJson(sym));
+        arr.add(symbolToJson(sym, session()));
     return arr.dump();
 }
 
 std::string WebsideServer::nativeModulesData() const {
-    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto modules = provider->getModules();
     auto arr = Json::array();
     for (auto& mod : modules) {
         arr.add(Json::object()
             .set("path", mod.path)
             .set("name", mod.shortName)
-            .set("loadAddress", Json::hex(mod.loadAddress))
-            .set("endAddress", Json::hex(mod.endAddress))
-            .set("symbolCount", static_cast<int64_t>(mod.symbolCount)));
+            .set("loadAddress", session().addressHex(mod.loadAddress))
+            .set("endAddress", session().addressHex(mod.endAddress))
+            .set("symbolCount", static_cast<int64_t>(mod.symbolCount))
+            .set("symbolType", mod.symbolType)
+            .set("symbolFile", mod.symbolFile));
     }
     return arr.dump();
 }
 
+// POST /native-modules/<name>/symbols
+HttpResponse WebsideServer::handleLoadModuleSymbols(const HttpRequest& req) {
+    HttpResponse res;
+    auto segments = splitPath(req.path);
+    if (segments.size() < 2) {
+        res.statusCode = 400;
+        res.body = Json::object()
+            .set("error", "expected /native-modules/<name>/symbols").dump();
+        return res;
+    }
+    std::string name = segments[1];
+
+    session().loadModuleSymbols(name);
+
+    // A module counts as loaded only when a symbol file was found. Only those
+    // are remembered, so that later sessions do not search again for files
+    // that do not exist.
+    auto* provider = session().debugger().getSymbolProvider();
+    for (const auto& mod : provider->getModules()) {
+        if (mod.shortName != name) continue;
+        bool loaded = !mod.symbolFile.empty();
+        if (loaded) workspace.rememberSymbolModule(name);
+        res.body = Json::object()
+            .set("name", mod.shortName)
+            .set("symbolType", mod.symbolType)
+            .set("symbolFile", mod.symbolFile)
+            .set("loaded", loaded)
+            .dump();
+        return res;
+    }
+    res.statusCode = 404;
+    res.body = Json::object().set("error", "no module named " + name).dump();
+    return res;
+}
+
 std::string WebsideServer::nativeSymbolDetailData(const std::string& name) const {
-    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto sym = provider->getSymbolByName(name);
     if (!sym) return "{}";
-    return symbolToJson(*sym).dump();
+    return symbolToJson(*sym, session()).dump();
 }
 
 // ---- Expression parser for native struct traversal ----
@@ -239,6 +292,16 @@ struct ParsedExpression {
     std::string rootSymbol;
     std::vector<PathStep> steps;
 };
+
+// Returns the name that starts at `pos`, up to the next '.' or '->', and moves
+// `pos` to that separator.
+static std::string readFieldName(const std::string& expr, size_t& pos) {
+    size_t start = pos;
+    while (pos < expr.size() && expr[pos] != '.' &&
+           !(expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>'))
+        pos++;
+    return expr.substr(start, pos - start);
+}
 
 static ParsedExpression parseNativeExpression(const std::string& expr) {
     ParsedExpression result;
@@ -267,12 +330,7 @@ static ParsedExpression parseNativeExpression(const std::string& expr) {
             break;
         }
 
-        size_t start = pos;
-        while (pos < expr.size() && expr[pos] != '.' &&
-               !(expr[pos] == '-' && pos + 1 < expr.size() && expr[pos + 1] == '>'))
-            pos++;
-
-        step.fieldName = expr.substr(start, pos - start);
+        step.fieldName = readFieldName(expr, pos);
         result.steps.push_back(std::move(step));
     }
 
@@ -314,31 +372,53 @@ static Json fieldsToJson(const std::vector<smalldbg::NativeField>& fields) {
     return arr;
 }
 
-// Resolve a type through pointer/typedef/const/volatile wrappers
-// to find the underlying struct/class type with fields.
-static const smalldbg::NativeTypeInfo* resolveToStruct(
-    const std::string& typeName, smalldbg::SymbolProvider* provider) {
-    auto* info = provider->getTypeByName(typeName);
-    if (!info) return nullptr;
-
-    int depth = 0;
-    while (info && depth < 20) {
-        if (info->kind == smalldbg::NativeTypeKind::Struct ||
-            info->kind == smalldbg::NativeTypeKind::Class ||
-            info->kind == smalldbg::NativeTypeKind::Union) {
-            return info;
-        }
-        if (info->targetTypeName.empty()) return nullptr;
-        info = provider->getTypeByName(info->targetTypeName);
-        depth++;
-    }
+// Returns the field of `info` named `name`, or null when it has none.
+static const smalldbg::NativeField* fieldNamed(const smalldbg::NativeTypeInfo& info,
+                                               const std::string& name) {
+    for (const auto& field : info.fields)
+        if (field.name == name) return &field;
     return nullptr;
 }
 
+/** Follows `steps` from `address`, which holds a `typeName`, reading a pointer
+ *  wherever a step dereferences one. Sets the address, type and size of the
+ *  field reached. Returns false when a step names no field of its struct or a
+ *  pointer cannot be read. **/
+static bool followPath(const std::vector<PathStep>& steps,
+                       smalldbg::Debugger& debugger,
+                       uint64_t& address, std::string& typeName,
+                       uint64_t& size) {
+    auto& provider = *debugger.getSymbolProvider();
+    for (const auto& step : steps) {
+        if (step.dereference) {
+            uint64_t pointer = 0;
+            if (debugger.readMemory(address, &pointer,
+                                    debugger.arch()->pointerSize())
+                != smalldbg::Status::Ok)
+                return false;
+            address = pointer;
+        }
+
+        auto* structInfo = provider.getStructType(typeName);
+        if (!structInfo) return false;
+
+        const smalldbg::NativeField* field = fieldNamed(*structInfo, step.fieldName);
+        if (!field) return false;
+
+        address += field->offset;
+        typeName = field->typeName;
+        // The struct says how wide its own member is. Looking the member's
+        // type up by name would ask the engine about "unsigned int*", which
+        // belongs to no module and reads back as eight bytes on a 32-bit
+        // target.
+        size = field->size;
+    }
+    return true;
+}
+
 std::string WebsideServer::nativeInspectData(const std::string& expression) const {
-    auto* provider = session->getDebugger()->getSymbolProvider();
-    auto process = session->getDebugger()->getProcess();
-    if (!provider || !process) return "{}";
+    auto& debugger = session().debugger();
+    auto* provider = debugger.getSymbolProvider();
 
     auto parsed = parseNativeExpression(expression);
     if (parsed.rootSymbol.empty()) return "{}";
@@ -351,40 +431,21 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
 
     uint64_t currentAddr = rootSym->address;
     std::string currentTypeName = *rootTypeName;
+    uint64_t fieldSize = 0;
+    if (!followPath(parsed.steps, debugger, currentAddr, currentTypeName,
+                    fieldSize))
+        return "{}";
 
-    for (auto& step : parsed.steps) {
-        if (step.dereference) {
-            uint64_t ptrVal = 0;
-            if (process->readMemory(currentAddr, &ptrVal, 8) != smalldbg::Status::Ok)
-                return "{}";
-            currentAddr = ptrVal;
-        }
-
-        auto* structInfo = resolveToStruct(currentTypeName, provider);
-        if (!structInfo) return "{}";
-
-        const smalldbg::NativeField* field = nullptr;
-        for (auto& f : structInfo->fields) {
-            if (f.name == step.fieldName) {
-                field = &f;
-                break;
-            }
-        }
-        if (!field) return "{}";
-
-        currentAddr += field->offset;
-        currentTypeName = field->typeName;
-    }
-
-    uint64_t rawValue = 0;
+    // A field's own size is the one to trust; see followPath.
     auto* typeInfo = provider->getTypeByName(currentTypeName);
-    size_t readSize = 8;
-    if (typeInfo && typeInfo->size > 0 && typeInfo->size <= 8)
-        readSize = static_cast<size_t>(typeInfo->size);
-    process->readMemory(currentAddr, &rawValue, readSize);
+    uint64_t size = fieldSize ? fieldSize : typeInfo ? typeInfo->size : 0;
+    size_t readSize = size > 0 && size <= 8 ? static_cast<size_t>(size)
+                                            : debugger.arch()->pointerSize();
+    uint64_t rawValue = 0;
+    debugger.readMemory(currentAddr, &rawValue, readSize);
 
     std::vector<smalldbg::NativeField> visibleFields;
-    auto* structInfo = resolveToStruct(currentTypeName, provider);
+    auto* structInfo = provider->getStructType(currentTypeName);
     if (structInfo)
         visibleFields = structInfo->fields;
 
@@ -394,65 +455,59 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
         .set("value", Json::hex(rawValue))
         .set("type", currentTypeName)
         .set("kind", typeKindString(typeInfo ? typeInfo->kind : smalldbg::NativeTypeKind::Unknown))
-        .set("size", static_cast<int64_t>(typeInfo ? typeInfo->size : 0))
+        .set("size", static_cast<int64_t>(size))
         .set("fields", fieldsToJson(visibleFields));
 
     return result.dump();
 }
 
 // =========================================================================
-// VM inspector routes — delegate VM specifics to session->getInspector()
+// VM inspector routes: what is VM-specific comes from the session's inspector
 // =========================================================================
 
-static Json moduleToCodeZone(const smalldbg::ModuleInfo& mod) {
-    return Json::object()
-        .set("start", Json::hex(mod.loadAddress))
-        .set("end", Json::hex(mod.endAddress))
-        .set("size", static_cast<int64_t>(mod.endAddress - mod.loadAddress));
+Json WebsideServer::regionJson(const vmdbg::Region& region) const {
+    auto json = Json::object()
+        .set("name", region.name)
+        .set("kind", vmdbg::regionKindName(region.kind))
+        .set("start", session().addressHex(region.start))
+        .set("end", session().addressHex(region.end))
+        .set("size", static_cast<int64_t>(region.size()));
+    if (region.top != 0) json.set("top", session().addressHex(region.top));
+    if (!region.note.empty()) json.set("note", region.note);
+    return json;
 }
 
+// The spaces move when the VM collects garbage, so they are read again on
+// every request.
 HttpResponse WebsideServer::handleRegions(const HttpRequest&) const {
     HttpResponse res;
-    auto* inspector = session->getInspector();
-    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+    if (!isActive()) { res.body = "{}"; return res; }
 
-    auto* provider = session->getDebugger()->getSymbolProvider();
-    auto result = Json::object();
+    vmdbg::VMInspector& inspector = session().inspector();
+    inspector.refreshRegions();
+    auto regions = Json::array();
+    for (const vmdbg::Region& region : inspector.regions())
+        regions.add(regionJson(region));
 
-    auto codeZones = Json::object();
-    auto modules = provider->getModules();
-    for (auto& mod : modules)
-        codeZones.set(mod.shortName, moduleToCodeZone(mod));
-    result.set("codeZones", codeZones);
-
-    auto stack = inspector->evaluatorStack();
-    if (stack.valid) {
-        result.set("stack", Json::object()
-            .set("base", Json::hex(stack.base))
-            .set("sp", Json::hex(stack.sp))
-            .set("bp", Json::hex(stack.bp)));
-    } else {
-        result.set("stack", Json::null());
+    auto modules = Json::array();
+    auto* provider = session().debugger().getSymbolProvider();
+    for (const auto& module : provider->getModules()) {
+        modules.add(Json::object()
+            .set("name", module.shortName)
+            .set("path", module.path)
+            .set("start", session().addressHex(module.loadAddress))
+            .set("end", session().addressHex(module.endAddress)));
     }
-
-    auto moduleList = Json::array();
-    for (auto& mod : modules) {
-        moduleList.add(Json::object()
-            .set("name", mod.shortName)
-            .set("path", mod.path)
-            .set("start", Json::hex(mod.loadAddress))
-            .set("end", Json::hex(mod.endAddress)));
-    }
-    result.set("modules", moduleList);
-
-    res.body = result.dump();
+    res.body = Json::object().set("regions", regions)
+                             .set("modules", modules).dump();
     return res;
 }
 
+// Answers what an address is: the region and the module holding it, and the
+// symbol it is in.
 HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
     HttpResponse res;
-    auto* inspector = session->getInspector();
-    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+    if (!isActive()) { res.body = "{}"; return res; }
 
     auto addrIt = req.params.find("address");
     if (addrIt == req.params.end()) {
@@ -460,43 +515,29 @@ HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
         res.body = Json::object().set("error", "Missing address parameter").dump();
         return res;
     }
+    uint64_t address = parseHexParam(addrIt->second);
+    auto result = Json::object().set("address", session().addressHex(address));
 
-    uint64_t addr = parseHexParam(addrIt->second);
-    auto* provider = session->getDebugger()->getSymbolProvider();
+    vmdbg::VMInspector& inspector = session().inspector();
+    inspector.refreshRegions();
+    if (const vmdbg::Region* region = inspector.regionAt(address)) {
+        result.set("region", region->name)
+              .set("kind", vmdbg::regionKindName(region->kind))
+              .set("regionOffset", static_cast<int64_t>(address - region->start));
+        if (region->isFree(address)) result.set("free", true);
+    }
 
-    auto result = Json::object();
-    result.set("address", Json::hex(addr));
-
-    std::string moduleName;
-    auto modules = provider->getModules();
-    for (auto& mod : modules) {
-        if (addr >= mod.loadAddress && addr < mod.endAddress) {
-            moduleName = mod.shortName;
+    auto* provider = session().debugger().getSymbolProvider();
+    for (const auto& module : provider->getModules()) {
+        if (address >= module.loadAddress && address < module.endAddress) {
+            result.set("module", module.shortName);
             break;
         }
     }
-    result.set("module", moduleName.empty() ? Json::null() : Json::string(moduleName));
-
-    auto stack = inspector->evaluatorStack();
-    bool inStack = false;
-    if (stack.valid && stack.base != 0 && stack.sp > 0) {
-        uint64_t stackStart = stack.base;
-        uint64_t stackEnd = stack.base + stack.sp * 8;
-        inStack = (addr >= stackStart && addr < stackEnd);
+    if (auto symbol = provider->getSymbolByAddress(address)) {
+        result.set("symbol", symbol->name);
+        result.set("offset", static_cast<int64_t>(address - symbol->address));
     }
-    result.set("stack", inStack);
-
-    auto sym = provider->getSymbolByAddress(addr);
-    if (sym) {
-        result.set("symbol", sym->name);
-        result.set("offset", static_cast<int64_t>(addr - sym->address));
-    } else {
-        result.set("symbol", nullptr);
-        result.set("offset", nullptr);
-    }
-
-    result.set("space", nullptr);
-    result.set("codeZone", moduleName.empty() ? Json::null() : Json::string(moduleName));
 
     res.body = result.dump();
     return res;
@@ -504,7 +545,7 @@ HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
 
 HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
     HttpResponse res;
-    auto* inspector = session->getInspector();
+    auto* inspector = &session().inspector();
     if (!isActive() || !inspector) { res.body = "{}"; return res; }
 
     auto oopIt = req.params.find("oop");
@@ -514,14 +555,18 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
         return res;
     }
 
-    uint64_t addr = parseHexParam(oopIt->second);
-    int maxSlots = 20;
-    auto maxIt = req.params.find("maxSlots");
-    if (maxIt != req.params.end()) {
-        try { maxSlots = std::stoi(maxIt->second); } catch (...) {}
-    }
+    // An object can have more slots than one answer should carry, so a
+    // client pages through them with `offset`.
+    auto number = [&](const char* name, int fallback) {
+        auto it = req.params.find(name);
+        if (it == req.params.end()) return fallback;
+        try { return std::stoi(it->second); } catch (...) { return fallback; }
+    };
+    const int maxSlots = std::clamp(number("maxSlots", 64), 0, 1024);
+    const int offset = std::max(number("offset", 0), 0);
 
-    res.body = inspector->inspectObject(addr, maxSlots);
+    res.body = session().describeObject(parseHexParam(oopIt->second), offset,
+                                        maxSlots);
     return res;
 }
 
@@ -532,12 +577,12 @@ HttpResponse WebsideServer::handleInspect(const HttpRequest& req) const {
 // Primary first, so the id a client remembers stays the main thread.
 std::vector<std::shared_ptr<smalldbg::Thread>>
 WebsideServer::nativeThreads() const {
-    auto* dbg = session->getDebugger();
+    auto* dbg = &session().debugger();
     if (!dbg) return {};
     auto proc = dbg->getProcess();
     if (!proc) return {};
 
-    auto primary = proc->primaryThread();
+    auto primary = session().vmThread();
     std::vector<std::shared_ptr<smalldbg::Thread>> ordered;
     if (primary) ordered.push_back(primary);
     for (auto& t : proc->threads()) {
@@ -578,13 +623,22 @@ HttpResponse WebsideServer::handleDebuggerRoute(const HttpRequest& req) const {
         return handleNativeDebuggerRoute(segments, req, *threads[debuggerId - 1], debuggerId);
 
     int threadIndex = debuggerId - nativeCount - 1;  // 0-based green index
-    if (threadIndex < 0 || threadIndex >= session->greenThreadCount()) {
+    if (threadIndex < 0 || threadIndex >= session().greenThreadCount()) {
         res.statusCode = 404;
         res.body = Json::object().set("error", "Debugger not found").dump();
         return res;
     }
 
-    return handleSmalltalkDebuggerRoute(segments, threadIndex, debuggerId);
+    // A green thread that is running has its current frames on the OS thread
+    // running it; what the VM saved for it is from when it last stopped.
+    if (segments.size() > 2) {
+        uint64_t runner = session().nativeThreadOf(threadIndex);
+        for (int i = 0; runner != 0 && i < nativeCount; i++)
+            if (threads[i]->getThreadId() == runner)
+                return handleNativeDebuggerRoute(segments, req, *threads[i], i + 1);
+    }
+
+    return handleSmalltalkDebuggerRoute(segments, req, threadIndex, debuggerId);
 }
 
 HttpResponse WebsideServer::handleNativeDebuggerRoute(
@@ -596,14 +650,15 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
         res.body = Json::object()
             .set("id", debuggerId)
             .set("description", "Native thread " + threadIdHex(thread.getThreadId())
-                              + (debuggerId == 1 ? " (main)" : ""))
+                              + (thread.getThreadId() == vmThreadId() ? " (main)" : ""))
             .set("status", stopReason())
             .dump();
         return res;
     }
 
     if (segments[2] == "stack") {
-        res.body = stackDescriptors(static_cast<int>(param64(req, "frame", 1)),
+        res.body = stackDescriptors(thread,
+                                    static_cast<int>(param64(req, "frame", 1)),
                                     param64(req, "address"),
                                     static_cast<int>(param64(req, "count", 64)));
         return res;
@@ -611,39 +666,11 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
 
     if (segments[2] == "frames") {
         if (segments.size() == 3) {
-            res.body = session->listFrames(thread);
+            res.body = session().listFrames(thread);
+            warn(res, frameWarning(thread));
             return res;
         }
-        std::string sub = segments.size() > 4 ? segments[4] : "";
-        if (!isKnownFrameSubRoute(sub)) {
-            res.statusCode = 404;
-            res.body = Json::object().set("error", "Unknown sub-route").dump();
-            return res;
-        }
-        int index = 0;
-        try { index = std::stoi(segments[3]); } catch (...) {
-            res.statusCode = 400;
-            res.body = Json::object().set("error", "Invalid frame index").dump();
-            return res;
-        }
-        smalldbg::StackTrace trace(&thread);
-        if (trace.unwind(256) != smalldbg::Status::Ok) {
-            res.body = sub.empty() ? "{}" : "[]";
-            return res;
-        }
-        const auto& frames = trace.getFrames();
-        if (index < 1 || index > static_cast<int>(frames.size())) {
-            res.statusCode = 404;
-            res.body = Json::object().set("error", "Frame not found").dump();
-            return res;
-        }
-        if (sub == "bindings")
-            res.body = session->getFrameBindings(trace, *frames[index - 1], index);
-        else if (sub == "registers")
-            res.body = session->getFrameRegisters(*frames[index - 1]);
-        else
-            res.body = session->getFrameDetail(trace, *frames[index - 1], index);
-        return res;
+        return handleFrameRoute(segments, thread.getStackTrace(256));
     }
 
     res.statusCode = 404;
@@ -651,29 +678,79 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
     return res;
 }
 
+HttpResponse WebsideServer::handleFrameRoute(const std::vector<std::string>& segments,
+                                             smalldbg::StackTrace* trace) const {
+    HttpResponse res;
+    std::string sub = segments.size() > 4 ? segments[4] : "";
+    if (!isKnownFrameSubRoute(sub)) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Unknown sub-route").dump();
+        return res;
+    }
+    int index = 0;
+    try { index = std::stoi(segments[3]); } catch (...) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Invalid frame index").dump();
+        return res;
+    }
+    if (!trace) {
+        res.body = sub.empty() ? "{}" : "[]";
+        return res;
+    }
+    const auto& frames = trace->getFrames();
+    if (index < 1 || index > static_cast<int>(frames.size())) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "Frame not found").dump();
+        return res;
+    }
+    if (sub == "bindings")
+        res.body = session().getFrameBindings(*trace, *frames[index - 1], index);
+    else if (sub == "registers")
+        res.body = session().getFrameRegisters(*frames[index - 1]);
+    else
+        res.body = session().getFrameDetail(*trace, *frames[index - 1], index);
+    return res;
+}
+
 HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
-    const std::vector<std::string>& segments, int threadIndex,
-    int debuggerId) const {
+    const std::vector<std::string>& segments, const HttpRequest& req,
+    int threadIndex, int debuggerId) const {
     HttpResponse res;
 
     if (segments.size() == 2) {
         res.body = Json::object()
             .set("id", debuggerId)
             .set("description", "Smalltalk: " +
-                session->getGreenThreadName(threadIndex))
+                session().getGreenThreadName(threadIndex))
             .set("status", stopReason())
             .dump();
         return res;
     }
 
     if (segments[2] == "stack") {
-        res.body = session->getSmalltalkStackContents(threadIndex);
+        const int selected = static_cast<int>(param64(req, "frame", 1));
+        auto* trace = session().greenStack(threadIndex);
+        if (!trace)
+            res.body = session().getSmalltalkStackContents(threadIndex, selected);
+        else if (req.params.count("address"))
+            res.body = session().stackDescriptors(
+                *trace, selected, param64(req, "address"),
+                static_cast<int>(param64(req, "count", 64)));
+        else
+            res.body = session().stackDescriptors(*trace, selected);
         return res;
     }
 
     if (segments[2] == "frames") {
+        if (auto* trace = session().greenStack(threadIndex)) {
+            if (segments.size() == 3) {
+                res.body = session().listFrames(*trace);
+                return res;
+            }
+            return handleFrameRoute(segments, trace);
+        }
         if (segments.size() == 3) {
-            res.body = session->listSmalltalkFrames(threadIndex);
+            res.body = session().listSmalltalkFrames(threadIndex);
             return res;
         }
         int index = 0;
@@ -684,14 +761,14 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
         }
         std::string sub = segments.size() > 4 ? segments[4] : "";
         if (sub == "bindings") {
-            res.body = session->getSmalltalkFrameBindings(threadIndex, index);
+            res.body = session().getSmalltalkFrameBindings(threadIndex, index);
         } else if (sub == "registers") {
-            res.body = session->getSmalltalkFrameRegisters(threadIndex, index);
+            res.body = session().getSmalltalkFrameRegisters(threadIndex, index);
         } else if (!sub.empty()) {
             res.statusCode = 404;
             res.body = Json::object().set("error", "Unknown sub-route").dump();
         } else {
-            res.body = session->getSmalltalkFrameDetail(threadIndex, index);
+            res.body = session().getSmalltalkFrameDetail(threadIndex, index);
             if (res.body == "{}") {
                 res.statusCode = 404;
                 res.body = Json::object().set("error", "Frame not found").dump();
@@ -725,9 +802,17 @@ static size_t typeUnitSize(const std::string& type) {
     return 1;
 }
 
+static uint64_t rawUnit(const uint8_t* unit, size_t unitSize) {
+    switch (unitSize) {
+    case 2: return *reinterpret_cast<const uint16_t*>(unit);
+    case 4: return *reinterpret_cast<const uint32_t*>(unit);
+    case 8: return *reinterpret_cast<const uint64_t*>(unit);
+    }
+    return *unit;
+}
+
 static int64_t readTypedValue(const uint8_t* buf, size_t unitSize, bool isSigned) {
-    uint64_t raw = 0;
-    std::memcpy(&raw, buf, unitSize);
+    uint64_t raw = rawUnit(buf, unitSize);
     if (isSigned) {
         switch (unitSize) {
         case 1: return static_cast<int8_t>(raw);
@@ -757,6 +842,63 @@ static std::string formatAsciiDump(const std::vector<uint8_t>& buf) {
     return ascii;
 }
 
+bool WebsideServer::readByteDump(uint64_t address, int count,
+                                 Json& result) const {
+    std::vector<uint8_t> buf(count);
+    if (session().debugger().readMemory(address, buf.data(), count)
+        != smalldbg::Status::Ok)
+        return false;
+    result.set("hex", formatHexDump(buf));
+    result.set("ascii", formatAsciiDump(buf));
+    result.set("size", count);
+    return true;
+}
+
+bool WebsideServer::readStringAt(uint64_t address, int count,
+                                 Json& result) const {
+    std::vector<uint8_t> buf(count);
+    if (session().debugger().readMemory(address, buf.data(), count)
+        != smalldbg::Status::Ok)
+        return false;
+    std::string text;
+    for (int i = 0; i < count && buf[i] != 0; i++)
+        text += static_cast<char>(buf[i]);
+    result.set("type", "string");
+    result.set("value", text);
+    result.set("size", static_cast<int64_t>(text.size()));
+    return true;
+}
+
+bool WebsideServer::readTypedUnits(uint64_t address, int count,
+                                   const std::string& type, bool asHex,
+                                   Json& result) const {
+    size_t unitSize = typeUnitSize(type);
+    bool isSigned = !type.empty() && type[0] == 'i';
+    size_t totalBytes = std::min(unitSize * count, static_cast<size_t>(32768));
+
+    std::vector<uint8_t> buf(totalBytes, 0);
+    if (session().debugger().readMemory(address, buf.data(), totalBytes)
+        != smalldbg::Status::Ok)
+        return false;
+
+    auto values = Json::array();
+    int unitCount = static_cast<int>(totalBytes / unitSize);
+    for (int i = 0; i < unitCount; i++)
+        values.add(unitJson(buf.data() + i * unitSize, unitSize, isSigned,
+                            asHex));
+
+    result.set("type", type);
+    result.set("values", values);
+    return true;
+}
+
+Json WebsideServer::unitJson(const uint8_t* unit, size_t unitSize,
+                             bool isSigned, bool asHex) {
+    if (!asHex) return Json::number(readTypedValue(unit, unitSize, isSigned));
+    uint64_t raw = rawUnit(unit, unitSize);
+    return unitSize <= 4 ? Json::hex(static_cast<uint32_t>(raw)) : Json::hex(raw);
+}
+
 HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
@@ -781,113 +923,49 @@ HttpResponse WebsideServer::handleMemory(const HttpRequest& req) const {
     }
     count = std::clamp(count, 1, 4096);
 
-    auto process = session->getDebugger()->getProcess();
     auto result = Json::object();
     result.set("address", Json::hex(addr));
 
+    bool read = false;
     if (type == "bytes") {
-        std::vector<uint8_t> buf(count);
-        if (process->readMemory(addr, buf.data(), count) != smalldbg::Status::Ok) {
-            res.statusCode = 400;
-            res.body = Json::object().set("error", "Failed to read memory").dump();
-            return res;
-        }
-        result.set("hex", formatHexDump(buf));
-        result.set("ascii", formatAsciiDump(buf));
-        result.set("size", count);
+        read = readByteDump(addr, count, result);
     } else if (type == "string") {
-        std::vector<uint8_t> buf(count);
-        process->readMemory(addr, buf.data(), count);
-        std::string str;
-        for (int i = 0; i < count && buf[i] != 0; i++)
-            str += static_cast<char>(buf[i]);
-        result.set("type", "string");
-        result.set("value", str);
-        result.set("size", static_cast<int64_t>(str.size()));
+        read = readStringAt(addr, count, result);
     } else {
-        size_t unitSize = typeUnitSize(type);
-        bool isSigned = !type.empty() && type[0] == 'i';
-        size_t totalBytes = unitSize * count;
-        totalBytes = std::min(totalBytes, static_cast<size_t>(32768));
-
-        std::vector<uint8_t> buf(totalBytes, 0);
-        process->readMemory(addr, buf.data(), totalBytes);
-
-        // A 64-bit value does not survive JSON's number type intact, so a
-        // client that needs it exact asks for hex.
-        bool asHex = false;
         auto formatIt = req.params.find("format");
-        if (formatIt != req.params.end()) asHex = formatIt->second == "hex";
-
-        auto values = Json::array();
-        int actualCount = static_cast<int>(totalBytes / unitSize);
-        for (int i = 0; i < actualCount; i++) {
-            const uint8_t* unit = buf.data() + i * unitSize;
-            if (!asHex) {
-                values.add(readTypedValue(unit, unitSize, isSigned));
-                continue;
-            }
-            uint64_t raw = 0;
-            std::memcpy(&raw, unit, unitSize);
-            values.add(unitSize <= 4 ? Json::hex(static_cast<uint32_t>(raw))
-                                     : Json::hex(raw));
-        }
-
-        result.set("type", type);
-        result.set("values", values);
+        bool asHex = formatIt != req.params.end() && formatIt->second == "hex";
+        read = readTypedUnits(addr, count, type, asHex, result);
+    }
+    if (!read) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "Failed to read memory").dump();
+        return res;
     }
 
     res.body = result.dump();
     return res;
 }
 
-HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) {
+// What the memory types say is code is disassembled and annotated; the rest
+// is shown as values, strings and the VM's layouts.
+HttpResponse WebsideServer::handleDisassemble(const HttpRequest& req) const {
     HttpResponse res;
     if (!isActive()) { res.body = "{}"; return res; }
-
     auto addrIt = req.params.find("address");
-    if (addrIt == req.params.end()) {
-        res.statusCode = 400;
-        res.body = Json::object().set("error", "Missing address parameter").dump();
-        return res;
-    }
+    if (addrIt == req.params.end()) return badRequest("Missing address parameter");
 
-    uint64_t addr = parseHexParam(addrIt->second);
+    uint64_t address = parseHexParam(addrIt->second);
+    uint64_t count = std::clamp<uint64_t>(param64(req, "count", 256), 1, 16384);
+    std::vector<uint8_t> bytes(count);
+    bytes.resize(readUpTo(address, bytes));
+    if (bytes.empty()) return badRequest("Failed to read memory");
 
-    int byteCount = 64;
-    auto countIt = req.params.find("count");
-    if (countIt != req.params.end()) {
-        try { byteCount = std::stoi(countIt->second); } catch (...) {}
-    }
-    byteCount = std::clamp(byteCount, 1, 4096);
-
-    auto process = session->getDebugger()->getProcess();
-    std::vector<uint8_t> buf(byteCount);
-    if (process->readMemory(addr, buf.data(), byteCount) != smalldbg::Status::Ok) {
-        res.statusCode = 400;
-        res.body = Json::object().set("error", "Failed to read memory").dump();
-        return res;
-    }
-
-    smalldbg::Disassembler* dis = session->getDebugger()->getDisassembler();
-    auto insns = dis->disassemble(buf.data(), buf.size(), addr);
-
-    auto instructions = Json::array();
-    for (const auto& ins : insns) {
-        instructions.add(Json::object()
-            .set("address", Json::hex(ins.address))
-            .set("size", ins.size)
-            .set("bytes", ins.bytes)
-            .set("text", ins.text));
-    }
-
-    auto result = Json::object()
-        .set("address", Json::hex(addr))
-        .set("size", byteCount)
-        .set("hex", formatHexDump(buf))
-        .set("instructions", instructions);
-
-    res.body = result.dump();
+    MemoryListing listing(session(), workspace.labels());
+    res.body = Json::object()
+        .set("address", session().addressHex(address))
+        .set("size", static_cast<int64_t>(bytes.size()))
+        .set("instructions", listing.rows(address, bytes))
+        .dump();
     return res;
 }
 
@@ -902,7 +980,7 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
         return res;
     }
 
-    auto* provider = session->getDebugger()->getSymbolProvider();
+    auto* provider = session().debugger().getSymbolProvider();
     auto sym = provider->getSymbolByName(nameIt->second);
     if (!sym) {
         res.statusCode = 404;
@@ -910,12 +988,15 @@ HttpResponse WebsideServer::handleSymbol(const HttpRequest& req) const {
         return res;
     }
 
-    auto result = symbolToJson(*sym);
+    auto result = symbolToJson(*sym, session());
 
+    // A pointer-sized read: on a 32-bit target the next four bytes belong to
+    // whatever follows the symbol.
     uint64_t value = 0;
-    auto process = session->getDebugger()->getProcess();
-    if (process->readMemory(sym->address, &value, 8) == smalldbg::Status::Ok)
-        result.set("value", Json::hex(value));
+    auto process = session().debugger().getProcess();
+    if (process->readMemory(sym->address, &value, session().pointerSize())
+        == smalldbg::Status::Ok)
+        result.set("value", session().addressHex(value));
     else
         result.set("value", nullptr);
 
@@ -941,7 +1022,7 @@ void WebsideServer::setupRoutes() {
         it = req.params.find("type");
         if (it != req.params.end()) type = it->second;
 
-        res.body = searchData(text, ignoreCase, condition, type);
+        res.body = session().search(text, ignoreCase, condition, type);
         return res;
     });
 
@@ -955,6 +1036,14 @@ void WebsideServer::setupRoutes() {
         return handleClassesPrefix(req);
     });
 
+    setupSymbolRoutes();
+    setupInspectorRoutes();
+    setupDebuggerRoutes();
+}
+
+// Symbols, modules, memory and disassembly: what the target looks like
+// as a native program.
+void WebsideServer::setupSymbolRoutes() {
     // ---- Native symbols ----
     server.route("GET", "/native-symbols", [this](const HttpRequest& req) {
         HttpResponse res;
@@ -992,6 +1081,11 @@ void WebsideServer::setupRoutes() {
         return res;
     });
 
+    // A module's symbols load when they are first needed; this loads them now.
+    server.routePrefix("POST", "/native-modules", [this](const HttpRequest& req) {
+        return handleLoadModuleSymbols(req);
+    });
+
     server.route("GET", "/symbol", [this](const HttpRequest& req) {
         return handleSymbol(req);
     });
@@ -1002,142 +1096,6 @@ void WebsideServer::setupRoutes() {
 
     server.route("GET", "/disassemble", [this](const HttpRequest& req) {
         return handleDisassemble(req);
-    });
-
-    // ---- VM inspector ----
-    server.route("GET", "/regions", [this](const HttpRequest& req) {
-        return handleRegions(req);
-    });
-    server.route("GET", "/classify", [this](const HttpRequest& req) {
-        return handleClassify(req);
-    });
-    server.route("GET", "/inspect", [this](const HttpRequest& req) {
-        return handleInspect(req);
-    });
-
-    // ---- Debuggers: native OS threads 1..N (primary first), green threads N+1.. ----
-    server.route("GET", "/debuggers", [this](const HttpRequest&) {
-        HttpResponse res;
-        if (!isActive()) {
-            res.body = "[]";
-            return res;
-        }
-        auto arr = Json::array();
-        auto threads = nativeThreads();
-        int id = 1;
-        for (size_t i = 0; i < threads.size(); i++, id++) {
-            arr.add(Json::object()
-                .set("id", id)
-                .set("description", "Native thread " + threadIdHex(threads[i]->getThreadId())
-                                  + (id == 1 ? " (main)" : ""))
-                .set("status", stopReason()));
-        }
-        for (int i = 0; i < session->greenThreadCount(); i++, id++) {
-            arr.add(Json::object()
-                .set("id", id)
-                .set("description", "Smalltalk: " + session->getGreenThreadName(i))
-                .set("status", stopReason()));
-        }
-        res.body = arr.dump();
-        return res;
-    });
-
-    // ---- Threads: native OS threads (+ green threads); debuggerId maps to /debuggers/<id> ----
-    server.route("GET", "/threads", [this](const HttpRequest&) {
-        HttpResponse res;
-        auto* dbg = session->getDebugger();
-        if (!isActive() || !dbg) { res.body = "[]"; return res; }
-        auto current = dbg->getCurrentThread();
-        auto arr = Json::array();
-        auto threads = nativeThreads();
-        const bool stopped = dbg->isStopped();
-        int id = 1;
-        for (size_t i = 0; i < threads.size(); i++, id++) {
-            auto entry = Json::object()
-                .set("debuggerId", id)
-                .set("id", threadIdHex(threads[i]->getThreadId()))
-                .set("type", "native")
-                .set("name", stopped ? threadTopFrameName(*dbg, *threads[i])
-                                     : std::string())
-                .set("isMain", i == 0)
-                .set("isCurrent", current && current->getThreadId() == threads[i]->getThreadId())
-                .set("status", stopReason());
-            std::string green =
-                stopped ? session->greenThreadOn(threads[i]->getThreadId())
-                        : std::string();
-            if (!green.empty()) entry.set("runs", green);
-            arr.add(std::move(entry));
-        }
-        for (int i = 0; i < session->greenThreadCount(); i++, id++) {
-            arr.add(Json::object()
-                .set("debuggerId", id)
-                .set("id", std::to_string(i + 1))
-                .set("type", "smalltalk")
-                .set("name", session->getGreenThreadName(i))
-                .set("isMain", false)
-                .set("isCurrent", false)
-                .set("status", stopReason()));
-        }
-        res.body = arr.dump();
-        return res;
-    });
-
-    server.routePrefix("GET", "/debuggers", [this](const HttpRequest& req) {
-        return handleDebuggerRoute(req);
-    });
-
-    // POST actions for any debugger (resume, stepping, suspend, terminate)
-    server.routePrefix("POST", "/debuggers", [this](const HttpRequest& req) {
-        HttpResponse res;
-        auto segments = splitPath(req.path);
-
-        if (segments.size() >= 3 && segments[2] == "resume") {
-            res.body = Json::object().set("success", resume()).dump();
-            return res;
-        }
-
-        if (segments.size() >= 3 && segments[2] == "suspend") {
-            res.body = Json::object().set("success", suspend()).dump();
-            return res;
-        }
-
-        if (segments.size() >= 3 && segments[2] == "terminate") {
-            session->detach();
-            res.body = Json::object().set("success", true).dump();
-            return res;
-        }
-
-        if (segments.size() >= 5 && segments[2] == "frames") {
-            std::string action = segments[4];
-            bool success = false;
-
-            // Step the thread this debugger id resolves to, not just primary.
-            int debuggerId = 0;
-            try { debuggerId = std::stoi(segments[1]); } catch (...) {}
-            auto* dbg = session->getDebugger();
-            auto threads = nativeThreads();
-            if (dbg && debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
-                dbg->setCurrentThread(threads[debuggerId - 1]);
-
-            if (action == "stepinto")              success = session->step();
-            else if (action == "stepover")         success = session->stepOver();
-            else if (action == "stepout")          success = session->stepOut();
-            else if (action == "reversestepinto")  success = session->stepBack();
-            else if (action == "reversestepover")  success = session->reverseStepOver();
-            else if (action == "reversestepout")   success = session->reverseStepOut();
-            else {
-                res.statusCode = 404;
-                res.body = Json::object().set("error", "Unknown action: " + action).dump();
-                return res;
-            }
-
-            res.body = Json::object().set("success", success).dump();
-            return res;
-        }
-
-        res.statusCode = 404;
-        res.body = Json::object().set("error", "Unknown action").dump();
-        return res;
     });
 
     server.route("GET", "/native-inspect", [this](const HttpRequest& req) {
@@ -1159,23 +1117,556 @@ void WebsideServer::setupRoutes() {
     });
 }
 
-// =========================================================================
-// Class name parsing
-// =========================================================================
+// The VM's own view of its memory: spaces, what an address is, what an
+// object holds.
+void WebsideServer::setupInspectorRoutes() {
+    // ---- VM inspector ----
+    server.route("GET", "/regions", [this](const HttpRequest& req) {
+        return handleRegions(req);
+    });
+    server.route("GET", "/classify", [this](const HttpRequest& req) {
+        return handleClassify(req);
+    });
+    server.route("GET", "/inspect", [this](const HttpRequest& req) {
+        return handleInspect(req);
+    });
 
-WebsideServer::ClassIdent WebsideServer::parseClassName(const std::string& name) {
-    ClassIdent id;
-    id.className = name;
-    const std::string suffix = " class";
-    if (name.size() > suffix.size() &&
-        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        id.isMetaclass = true;
-        id.baseName = name.substr(0, name.size() - suffix.size());
-    } else {
-        id.isMetaclass = false;
-        id.baseName = name;
+    // Runs a raw command in the debugger's engine, for what no route covers.
+    server.route("POST", "/evaluate", [this](const HttpRequest& req) {
+        HttpResponse res;
+        res.body = session().runEngineCommand(req.body);
+        res.contentType = "text/plain";
+        return res;
+    });
+
+    setupMemoryTypeRoutes();
+}
+
+// Answers how each stretch of memory is shown in a listing: code, data of
+// some width, strings, or a layout the VM defines. A client overrides what the
+// defaults say.
+void WebsideServer::setupMemoryTypeRoutes() {
+    server.route("GET", "/memory-types", [this](const HttpRequest& req) {
+        return handleMemoryTypesGet(req);
+    });
+    server.route("POST", "/memory-types", [this](const HttpRequest& req) {
+        return handleMemoryTypesSet(req);
+    });
+    server.route("DELETE", "/memory-types", [this](const HttpRequest& req) {
+        return handleMemoryTypesClear(req);
+    });
+}
+
+Json WebsideServer::memoryTypeJson(const vmdbg::MemTypeRange& range) const {
+    return Json::object()
+        .set("start", session().addressHex(range.start))
+        .set("end", session().addressHex(range.end))
+        .set("size", static_cast<int64_t>(range.end - range.start))
+        .set("type", session().memoryTypes().typeName(range))
+        .set("user", range.user);
+}
+
+// `heap` tells object memory from other data: a click on an oop belongs in
+// the inspector, a click on module data in the listing.
+HttpResponse WebsideServer::handleMemoryTypesGet(const HttpRequest& req) const {
+    uint64_t start = param64(req, "address");
+    if (start == 0) return badRequest("Missing address parameter");
+    uint64_t count = std::clamp<uint64_t>(param64(req, "count", 256), 1, 65536);
+
+    auto ranges = Json::array();
+    const auto& types = session().memoryTypes();
+    for (const auto& range : types.classify(start, start + count)) {
+        ranges.add(memoryTypeJson(range).set(
+            "heap", session().inspector().isInObjectMemory(range.start)));
     }
-    return id;
+    HttpResponse res;
+    res.body = Json::object()
+        .set("address", session().addressHex(start))
+        .set("count", static_cast<int64_t>(count))
+        .set("ranges", ranges)
+        .dump();
+    return res;
+}
+
+// A layout the VM defined is named directly, such as "header"; the built-in
+// types have names of their own. Without an end, the type covers what is
+// there.
+HttpResponse WebsideServer::handleMemoryTypesSet(const HttpRequest& req) {
+    auto body = Json::parse(req.body);
+    uint64_t start = addressIn(body["start"]);
+    uint64_t end = addressIn(body["end"]);
+    if (start == 0) start = param64(req, "start");
+    if (end == 0) end = param64(req, "end");
+    std::string typeName = body["type"].asString();
+    if (typeName.empty() && req.params.count("type")) typeName = req.params.at("type");
+
+    auto& types = session().memoryTypes();
+    int structId = types.structIdNamed(typeName);
+    auto type = structId >= 0 ? std::optional<vmdbg::MemType>(vmdbg::MemType::Struct)
+                              : vmdbg::memTypeFromName(typeName);
+    if (!type || start == 0)
+        return badRequest("Expected {start, type} (end optional) with a known type");
+
+    if (end <= start) end = start + typeExtent(start, *type, structId);
+    end = std::min(std::max(end, start + 1), start + (1u << 20));
+    types.setUser(start, end, *type, structId);
+
+    HttpResponse res;
+    res.body = memoryTypeJson({start, end, *type, true, structId}).dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleMemoryTypesClear(const HttpRequest& req) {
+    HttpResponse res;
+    uint64_t start = param64(req, "address");
+    if (start == 0) {
+        session().memoryTypes().clearAllUser();
+        res.body = Json::object().set("cleared", "all").dump();
+        return res;
+    }
+    uint64_t count = param64(req, "count", 1);
+    session().memoryTypes().clearUser(start, start + count);
+    res.body = Json::object()
+        .set("address", session().addressHex(start))
+        .set("count", static_cast<int64_t>(count))
+        .dump();
+    return res;
+}
+
+// Returns how far a type set without an end reaches: one element of data, a string
+// to its terminator, code to its first return, and a layout to its size, or
+// to the extent the VM gives the one there.
+uint64_t WebsideServer::typeExtent(uint64_t start, vmdbg::MemType type,
+                                   int structId) const {
+    switch (type) {
+    case vmdbg::MemType::StringAscii:
+    case vmdbg::MemType::StringUtf16:
+    case vmdbg::MemType::StringUtf32:
+        return stringExtent(start, vmdbg::memTypeElementSize(type));
+    case vmdbg::MemType::Code:
+        return codeExtent(start);
+    case vmdbg::MemType::Struct: {
+        const auto& types = session().memoryTypes();
+        const vmdbg::StructType* layout = types.structType(structId);
+        if (layout && layout->size != 0) return layout->size;
+        auto range = types.rangeAt(start, start, start + 4096);
+        return range.structId == structId && range.end > start
+            ? range.end - start : session().pointerSize();
+    }
+    default:
+        return vmdbg::memTypeElementSize(type);
+    }
+}
+
+// Memory ends somewhere, so a read that would run past it is halved until it
+// fits. Returns how many bytes were read.
+size_t WebsideServer::readUpTo(uint64_t start, std::vector<uint8_t>& buffer) const {
+    for (size_t size = buffer.size(); size > 0; size /= 2)
+        if (session().debugger().readMemory(start, buffer.data(), size)
+            == smalldbg::Status::Ok)
+            return size;
+    return 0;
+}
+
+// Reads up to a hundred characters, ending after the terminator or before the
+// first character that is not text.
+uint64_t WebsideServer::stringExtent(uint64_t start, size_t unit) const {
+    std::vector<uint8_t> buffer(100 * unit);
+    const size_t maxChars = readUpTo(start, buffer) / unit;
+    if (maxChars == 0) return unit;
+    for (size_t i = 0; i < maxChars; i++) {
+        uint64_t code = 0;
+        for (size_t k = 0; k < unit; k++)
+            code |= static_cast<uint64_t>(buffer[i * unit + k]) << (8 * k);
+        if (code == 0) return (i + 1) * unit;
+        bool text = (code >= 0x20 && code < 0x7F) || code == '\t'
+                 || code == '\n' || code == '\r'
+                 || (unit > 1 && code >= 0xA0 && code <= 0xFFFF);
+        if (!text) return std::max<uint64_t>(unit, i * unit);
+    }
+    return maxChars * unit;
+}
+
+uint64_t WebsideServer::codeExtent(uint64_t start) const {
+    std::vector<uint8_t> buffer(4096);
+    const size_t read = readUpTo(start, buffer);
+    if (read == 0) return 1;
+    auto* disassembler = session().debugger().getDisassembler();
+    for (const auto& instruction :
+         disassembler->disassemble(buffer.data(), read, start))
+        if (instruction.isReturn)
+            return instruction.address + instruction.size - start;
+    return read;
+}
+
+// The green threads are listed first, as the program a Smalltalk developer
+// came to look at. Ids still count the native threads first.
+std::string WebsideServer::debuggerListJson() const {
+    auto array = Json::array();
+    auto threads = nativeThreads();
+    addGreenThreadDebuggers(array, static_cast<int>(threads.size()) + 1);
+    const smalldbg::ThreadId main = vmThreadId();
+    int id = 1;
+    for (size_t i = 0; i < threads.size(); i++, id++) {
+        array.add(Json::object()
+            .set("id", id)
+            .set("description", "Native thread " + threadIdHex(threads[i]->getThreadId())
+                              + (threads[i]->getThreadId() == main ? " (main)" : ""))
+            .set("status", stopReason()));
+    }
+    return array.dump();
+}
+
+void WebsideServer::addGreenThreadDebuggers(Json& array, int id) const {
+    const int count = session().greenThreadCount();
+    for (int i = 0; i < count; i++, id++) {
+        array.add(Json::object()
+            .set("id", id)
+            .set("description", "Smalltalk: " + session().getGreenThreadName(i))
+            .set("status", stopReason()));
+    }
+}
+
+std::string WebsideServer::threadListJson() const {
+    auto array = Json::array();
+    auto threads = nativeThreads();
+    addGreenThreads(array, static_cast<int>(threads.size()) + 1);
+    const smalldbg::ThreadId main = vmThreadId();
+    int id = 1;
+    for (size_t i = 0; i < threads.size(); i++, id++) {
+        Json entry = nativeThreadJson(*threads[i], id, main);
+        if (!entry.isNull()) array.add(std::move(entry));
+    }
+    return array.dump();
+}
+
+Json WebsideServer::nativeThreadJson(smalldbg::Thread& thread, int id,
+                                     smalldbg::ThreadId main) const {
+    auto* debugger = &session().debugger();
+    const bool stopped = debugger->isStopped();
+    smalldbg::ThreadIdentity identity = stopped
+        ? debugger->threadIdentity(thread) : smalldbg::ThreadIdentity{};
+    if (stopped && !identity.hasContext) return Json::null();
+
+    auto current = debugger->getCurrentThread();
+
+    auto entry = Json::object()
+        .set("debuggerId", id)
+        .set("id", threadIdHex(thread.getThreadId()))
+        .set("type", "native")
+        .set("name", identity.name)
+        .set("isMain", thread.getThreadId() == main)
+        .set("isCurrent", current && current->getThreadId() == thread.getThreadId())
+        .set("status", stopReason());
+
+    std::string green = stopped ? session().greenThreadOn(thread.getThreadId())
+                                : std::string();
+    if (!green.empty()) entry.set("runs", green);
+    return entry;
+}
+
+void WebsideServer::addGreenThreads(Json& array, int id) const {
+    const int count = session().greenThreadCount();
+    for (int i = 0; i < count; i++, id++) {
+        array.add(Json::object()
+            .set("debuggerId", id)
+            .set("id", std::to_string(i + 1))
+            .set("type", "smalltalk")
+            .set("name", session().getGreenThreadName(i))
+            .set("isMain", false)
+            .set("isCurrent", false)
+            .set("terminated", !session().isGreenThreadLive(i))
+            .set("status", stopReason()));
+    }
+}
+
+// Threads and the frames on them, plus the run control that moves them.
+void WebsideServer::setupDebuggerRoutes() {
+    // ---- Debuggers: native OS threads 1..N (primary first), green threads N+1.. ----
+    server.route("GET", "/debuggers", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = isActive() ? debuggerListJson() : "[]";
+        return res;
+    });
+
+    // ---- Threads: native OS threads (+ green threads); debuggerId maps to /debuggers/<id> ----
+    server.route("GET", "/threads", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = isActive() ? threadListJson() : "[]";
+        return res;
+    });
+
+    server.routePrefix("GET", "/debuggers", [this](const HttpRequest& req) {
+        return handleDebuggerRoute(req);
+    });
+
+    setupDebuggerActionRoutes();
+    setupTraceRoutes();
+}
+
+bool WebsideServer::stepAction(const std::vector<std::string>& segments) {
+    int debuggerId = 0;
+    try { debuggerId = std::stoi(segments[1]); } catch (...) {}
+    auto threads = nativeThreads();
+    if (debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
+        session().debugger().setCurrentThread(threads[debuggerId - 1]);
+
+    const std::string& action = segments[4];
+    if (action == "stepinto")          return session().step();
+    if (action == "stepover")          return session().stepOver();
+    if (action == "stepout")           return session().stepOut();
+    if (action == "reversestepinto")   return session().stepBack();
+    if (action == "reversestepover")   return session().reverseStepOver();
+    if (action == "reversestepout")    return session().reverseStepOut();
+    return false;
+}
+
+HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) {
+    HttpResponse res;
+    auto segments = splitPath(req.path);
+    int debuggerId = 0;
+    try { debuggerId = std::stoi(segments[1]); } catch (...) {}
+    auto threads = nativeThreads();
+    if (debuggerId >= 1 && debuggerId <= static_cast<int>(threads.size()))
+        session().debugger().setCurrentThread(threads[debuggerId - 1]);
+
+    auto body = Json::parse(req.body);
+    uint64_t address = 0;
+    if (body["address"].isNumber()) address = body["address"].asUInt();
+    else address = parseHexParam(body["address"].asString());
+    if (address == 0) {
+        res.statusCode = 400;
+        res.body = Json::object().set("error", "address required").dump();
+        return res;
+    }
+
+    bool reached = backwards ? session().reverseRunToAddress(address)
+                             : session().runToAddress(address);
+    res.body = runControlResult(reached);
+    return res;
+}
+
+// What the developer set up, which is there whether or not a target is open.
+void WebsideServer::setupWorkspaceRoutes() {
+    sessionFreeRoute("GET", "/workspace", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = workspace.toJson();
+        return res;
+    });
+
+    sessionFreeRoute("GET", "/breakpoints", [this](const HttpRequest&) {
+        HttpResponse res;
+        auto array = Json::array();
+        for (const auto& [address, name] : workspace.breakpoints())
+            array.add(Json::object()
+                .set("address", workspaceAddress(address))
+                .set("name", name));
+        res.body = array.dump();
+        return res;
+    });
+    sessionFreeRoute("POST", "/breakpoints", [this](const HttpRequest& req) {
+        auto body = Json::parse(req.body);
+        uint64_t address = addressIn(body["address"]);
+        if (address == 0) return badRequest("Expected {address, name}");
+        HttpResponse res;
+        bool set = workspace.setBreakpoint(address, body["name"].asString());
+        res.body = Json::object().set("success", set).dump();
+        return res;
+    });
+    sessionFreeRoute("DELETE", "/breakpoints", [this](const HttpRequest& req) {
+        uint64_t address = addressIn(Json::parse(req.body)["address"]);
+        if (address == 0) return badRequest("Expected {address}");
+        HttpResponse res;
+        bool cleared = workspace.clearBreakpoint(address);
+        res.body = Json::object().set("success", cleared).dump();
+        return res;
+    });
+
+    sessionFreeRoute("GET", "/labels", [this](const HttpRequest& req) {
+        return handleLabelsGet(req);
+    });
+    sessionFreeRoute("POST", "/labels", [this](const HttpRequest& req) {
+        return handleLabelsSet(req);
+    });
+    sessionFreeRoute("DELETE", "/labels", [this](const HttpRequest& req) {
+        HttpResponse res;
+        uint64_t address = param64(req, "address");
+        if (address == 0) return badRequest("Missing address parameter");
+        workspace.clearLabel(address);
+        res.body = Json::object().set("address", workspaceAddress(address)).dump();
+        return res;
+    });
+}
+
+// An address the workspace keeps is shown at the target's width while one is
+// open.
+Json WebsideServer::workspaceAddress(uint64_t address) const {
+    return workspace.isConnected() ? session().addressHex(address)
+                                   : Json::hex(address);
+}
+
+uint64_t WebsideServer::addressIn(const Json& value) {
+    return value.isNumber() ? value.asUInt() : parseHexParam(value.asString());
+}
+
+HttpResponse WebsideServer::badRequest(const std::string& error) {
+    HttpResponse res;
+    res.statusCode = 400;
+    res.body = Json::object().set("error", error).dump();
+    return res;
+}
+
+// Answers the labels in [address, address + count), or all of them without a
+// range.
+HttpResponse WebsideServer::handleLabelsGet(const HttpRequest& req) const {
+    uint64_t start = param64(req, "address");
+    uint64_t count = param64(req, "count", 0);
+    auto array = Json::array();
+    for (const auto& [address, name] : workspace.labels()) {
+        if (start != 0 && count != 0
+            && (address < start || address >= start + count))
+            continue;
+        array.add(Json::object()
+            .set("address", workspaceAddress(address))
+            .set("name", name));
+    }
+    HttpResponse res;
+    res.body = array.dump();
+    return res;
+}
+
+HttpResponse WebsideServer::handleLabelsSet(const HttpRequest& req) {
+    auto body = Json::parse(req.body);
+    uint64_t address = addressIn(body["address"]);
+    if (address == 0) address = param64(req, "address");
+    std::string name = body["name"].asString();
+    if (name.empty() && req.params.count("name")) name = req.params.at("name");
+    if (address == 0 || name.empty()) return badRequest("Expected {address, name}");
+
+    workspace.setLabel(address, name);
+    HttpResponse res;
+    res.body = Json::object()
+        .set("address", workspaceAddress(address))
+        .set("name", name)
+        .dump();
+    return res;
+}
+
+// Answers where a replay is, as "SEQ:STEP" in hex and as how far through its
+// trace, and moves it to a position or a percentage.
+void WebsideServer::setupTraceRoutes() {
+    server.route("GET", "/trace/position", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = tracePositionJson().dump();
+        return res;
+    });
+    server.route("POST", "/trace/position", [this](const HttpRequest& req) {
+        auto body = Json::parse(req.body);
+        std::string position = body["position"].asString();
+        if (position.empty() && req.params.count("position"))
+            position = req.params.at("position");
+        if (!seekTraceTo(position))
+            return badRequest("Expected {position} as SEQ:STEP in hex, or a "
+                              "percentage of the trace such as 50 or 12.5%");
+        HttpResponse res;
+        res.body = tracePositionJson().dump();
+        return res;
+    });
+    server.route("POST", "/trace/end", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = Json::object().set("success", session().seekTrace(100.0)).dump();
+        return res;
+    });
+}
+
+std::string WebsideServer::positionText(const smalldbg::TracePosition& position) {
+    std::ostringstream text;
+    text << std::hex << std::uppercase << position.sequence << ":" << position.step;
+    return text.str();
+}
+
+Json WebsideServer::tracePositionJson() const {
+    auto& debugger = session().debugger();
+    auto position = debugger.tracePosition();
+    if (!position) return Json::object();
+    auto json = Json::object().set("position", positionText(*position));
+    if (auto extent = debugger.traceExtent()) {
+        double span = static_cast<double>(extent->second.sequence - extent->first.sequence);
+        double done = static_cast<double>(position->sequence - extent->first.sequence);
+        json.set("start", positionText(extent->first))
+            .set("end", positionText(extent->second))
+            .set("percent", Json::number(span > 0 ? std::clamp(100.0 * done / span, 0.0, 100.0)
+                                                  : 0.0));
+    }
+    return json;
+}
+
+// A position is SEQ:STEP in hex; a number on its own is how far through the
+// trace to go, with or without a '%'.
+bool WebsideServer::seekTraceTo(std::string target) {
+    if (!target.empty() && target.back() == '%') target.pop_back();
+    if (target.empty()) return false;
+    auto colon = target.find(':');
+    try {
+        size_t used = 0;
+        if (colon == std::string::npos) {
+            double percent = std::stod(target, &used);
+            return used == target.size() && percent >= 0 && percent <= 100
+                && session().seekTrace(percent);
+        }
+        smalldbg::TracePosition position;
+        position.sequence = std::stoull(target.substr(0, colon), &used, 16);
+        if (used != colon) return false;
+        position.step = std::stoull(target.substr(colon + 1), &used, 16);
+        return used == target.size() - colon - 1 && session().seekTrace(position);
+    } catch (...) {
+        return false;
+    }
+}
+
+// Run control aimed at one debugger id: resume, suspend, terminate, run to an
+// address, and the steps.
+void WebsideServer::setupDebuggerActionRoutes() {
+    server.routePrefix("POST", "/debuggers", [this](const HttpRequest& req) {
+        HttpResponse res;
+        auto segments = splitPath(req.path);
+
+        if (segments.size() >= 3 && segments[2] == "resume") {
+            res.body = runControlResult(resume());
+            return res;
+        }
+
+        if (segments.size() >= 3 && segments[2] == "suspend") {
+            res.body = runControlResult(suspend());
+            return res;
+        }
+
+        if (segments.size() >= 3 && segments[2] == "terminate") {
+            workspace.close();
+            res.body = Json::object().set("success", true).dump();
+            return res;
+        }
+
+        if (segments.size() >= 3 && segments[2] == "runto")
+            return handleRunTo(req, false);
+
+        if (segments.size() >= 3 && segments[2] == "reverserunto")
+            return handleRunTo(req, true);
+
+        if (segments.size() >= 3 && segments[2] == "reverseresume") {
+            res.body = runControlResult(session().reverseResume());
+            return res;
+        }
+
+        if (segments.size() >= 5 && segments[2] == "frames") {
+            res.body = runControlResult(stepAction(segments));
+            return res;
+        }
+
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "unknown debugger action").dump();
+        return res;
+    });
 }
 
 // =========================================================================
@@ -1183,16 +1674,22 @@ WebsideServer::ClassIdent WebsideServer::parseClassName(const std::string& name)
 // =========================================================================
 
 HttpResponse WebsideServer::handleClassList(const HttpRequest& req) const {
-    HttpResponse res;
+    auto flag = [&](const char* name) {
+        auto it = req.params.find(name);
+        return it != req.params.end()
+            && (it->second == "true" || it->second == "1");
+    };
     std::string root;
-    bool namesOnly = false;
-
     auto it = req.params.find("root");
     if (it != req.params.end()) root = it->second;
-    it = req.params.find("names");
-    if (it != req.params.end()) namesOnly = (it->second == "true" || it->second == "1");
+    int depth = -1;
+    it = req.params.find("depth");
+    if (it != req.params.end()) {
+        try { depth = std::stoi(it->second); } catch (...) {}
+    }
 
-    res.body = classListData(root, namesOnly);
+    HttpResponse res;
+    res.body = session().listClasses(root, flag("names"), flag("tree"), depth);
     return res;
 }
 
@@ -1202,7 +1699,7 @@ HttpResponse WebsideServer::handleClassList(const HttpRequest& req) const {
 
 HttpResponse WebsideServer::handleClassDetail(const std::string& className) const {
     HttpResponse res;
-    res.body = classDetailData(className);
+    res.body = session().getClass(className);
     if (res.body == "{}") {
         res.statusCode = 404;
         res.body = Json::object().set("error", "Class not found").dump();
@@ -1219,17 +1716,11 @@ HttpResponse WebsideServer::handleClassesPrefix(const HttpRequest& req) const {
     auto segments = splitPath(req.path);
 
     if (segments.size() < 2) {
-        res.body = classListData();
+        res.body = session().listClasses();
         return res;
     }
-
-    auto id = parseClassName(segments[1]);
-
-    if (segments.size() == 2)
-        return handleClassDetail(id.className);
-
-    std::string subRoute = segments[2];
-    return handleClassSubRoute(id.className, subRoute, segments);
+    if (segments.size() == 2) return handleClassDetail(segments[1]);
+    return handleClassSubRoute(segments[1], segments[2], segments);
 }
 
 // =========================================================================
@@ -1243,24 +1734,29 @@ HttpResponse WebsideServer::handleClassSubRoute(
 
     HttpResponse res;
 
-    if (subRoute == "subclasses")               res.body = subclassesData(className);
-    else if (subRoute == "superclasses")         res.body = superclassesData(className);
-    else if (subRoute == "variables")            res.body = variablesData(className);
-    else if (subRoute == "instance-variables")   res.body = instanceVariablesData(className);
-    else if (subRoute == "class-variables")      res.body = classVariablesData(className);
-    else if (subRoute == "categories")           res.body = categoriesData(className);
-    else if (subRoute == "used-categories")      res.body = usedCategoriesData(className);
-    else if (subRoute == "selectors")            res.body = selectorsData(className);
+    const WebsideSession& s = session();
+    if (subRoute == "subclasses")               res.body = s.getSubclasses(className);
+    else if (subRoute == "superclasses")         res.body = s.getSuperclasses(className);
+    else if (subRoute == "variables")            res.body = s.getVariables(className);
+    else if (subRoute == "instance-variables")   res.body = s.getInstanceVariables(className);
+    else if (subRoute == "class-variables")      res.body = s.getClassVariables(className);
+    else if (subRoute == "categories")           res.body = s.getCategories(className);
+    else if (subRoute == "used-categories")      res.body = s.getUsedCategories(className);
+    else if (subRoute == "selectors")            res.body = s.getSelectors(className);
     else if (subRoute == "methods") {
+        // A binary selector may hold a slash, so the selector is every
+        // segment after "methods", up to "bytecodes" when that ends the path.
+        const bool bytecodes = segments.size() > 4 && segments.back() == "bytecodes";
         if (segments.size() == 3) {
-            res.body = methodsData(className);
+            res.body = s.getMethods(className);
         } else {
             std::string selector;
-            for (size_t i = 3; i < segments.size(); i++) {
+            for (size_t i = 3; i < segments.size() - (bytecodes ? 1 : 0); i++) {
                 if (i > 3) selector += "/";
                 selector += segments[i];
             }
-            res.body = methodDetailData(className, selector);
+            res.body = bytecodes ? s.getMethodBytecodes(className, selector)
+                                 : s.getMethod(className, selector);
             if (res.body == "{}")
                 res.statusCode = 404;
         }
@@ -1278,67 +1774,49 @@ HttpResponse WebsideServer::handleClassSubRoute(
 void WebsideServer::setupBaseRoutes() {
     // ---- General ----
 
-    server.route("GET", "/dialect", [this](const HttpRequest&) {
+    sessionFreeRoute("GET", "/dialect", [this](const HttpRequest&) {
         HttpResponse res;
         res.body = Json::string(dialect()).dump();
         return res;
     });
 
-    server.route("GET", "/version", [this](const HttpRequest&) {
+    sessionFreeRoute("GET", "/version", [this](const HttpRequest&) {
         HttpResponse res;
         res.body = Json::string(version()).dump();
         return res;
     });
 
-    server.route("GET", "/logo", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "\"\"";
-        return res;
-    });
+    setupStaticRoutes();
+    setupLegacyFrameRoutes();
+    setupRunControlRoutes();
+    setupWorkspaceRoutes();
+}
 
-    server.route("GET", "/themes", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
+// A client asks for these at startup. Their answers do not depend on the
+// target, so they answer even while nothing is open.
+void WebsideServer::setupStaticRoutes() {
+    static const std::pair<const char*, const char*> fixedAnswers[] = {
+        {"/logo", "\"\""},
+        {"/themes", "[]"},
+        // The documented shape is an object with the two dialect colors, and
+        // the client reads both fields straight off it.
+        {"/colors", "{\"primary\":\"#1976d2\",\"secondary\":\"#42a5f5\"}"},
+        {"/extensions", "[]"},
+        {"/icons", "[]"},
+        {"/usual-categories", "[]"},
+        {"/command-definitions", "[]"},
+        {"/stats", "{}"},
+        {"/objects", "[]"},
+    };
+    for (const auto& [path, body] : fixedAnswers) {
+        sessionFreeRoute("GET", path, [body = body](const HttpRequest&) {
+            HttpResponse res;
+            res.body = body;
+            return res;
+        });
+    }
 
-    server.route("GET", "/colors", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/extensions", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/icons", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/usual-categories", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/command-definitions", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    server.route("GET", "/stats", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "{}";
-        return res;
-    });
-
-    server.route("GET", "/objects", [](const HttpRequest&) {
+    sessionFreeRoute("POST", "/autocompletions", [](const HttpRequest&) {
         HttpResponse res;
         res.body = "[]";
         return res;
@@ -1347,39 +1825,21 @@ void WebsideServer::setupBaseRoutes() {
     server.routePrefix("GET", "/objects", [](const HttpRequest&) {
         HttpResponse res;
         res.statusCode = 404;
-        res.body = "{\"error\":\"Object not found\"}";
+        res.body = Json::object().set("error", "Object not found").dump();
         return res;
     });
+}
 
-    server.route("POST", "/autocompletions", [](const HttpRequest&) {
-        HttpResponse res;
-        res.body = "[]";
-        return res;
-    });
-
-    // ---- Debugger listing ----
-
-    server.route("GET", "/debuggers", [this](const HttpRequest&) {
-        HttpResponse res;
-        if (isActive()) {
-            res.body = Json::array()
-                .add(Json::object()
-                    .set("id", 1)
-                    .set("description", description())
-                    .set("status", stopReason()))
-                .dump();
-        } else {
-            res.body = "[]";
-        }
-        return res;
-    });
-
+// The frame routes of the single-debugger API act on the primary thread.
+void WebsideServer::setupLegacyFrameRoutes() {
     // ---- Frames ----
 
     server.route("GET", "/debuggers/1/frames", [this](const HttpRequest&) {
         HttpResponse res;
         if (isActive()) {
             res.body = listFrames();
+            auto walked = session().vmThread();
+            if (walked) warn(res, frameWarning(*walked));
         } else {
             res.statusCode = 404;
             res.body = Json::object().set("error", "Debugger not found").dump();
@@ -1426,11 +1886,15 @@ void WebsideServer::setupBaseRoutes() {
         return res;
     });
 
+}
+
+// Resuming, suspending and reporting where the target stopped.
+void WebsideServer::setupRunControlRoutes() {
     // ---- Debug control ----
 
     server.route("POST", "/debuggers/1/resume", [this](const HttpRequest&) {
         HttpResponse res;
-        res.body = Json::object().set("success", resume()).dump();
+        res.body = runControlResult(resume());
         if (res.body.find("false") != std::string::npos)
             res.statusCode = 500;
         return res;
@@ -1438,7 +1902,7 @@ void WebsideServer::setupBaseRoutes() {
 
     server.route("POST", "/debug/suspend", [this](const HttpRequest&) {
         HttpResponse res;
-        res.body = Json::object().set("success", suspend()).dump();
+        res.body = runControlResult(suspend());
         if (res.body.find("false") != std::string::npos)
             res.statusCode = 500;
         return res;
@@ -1447,11 +1911,10 @@ void WebsideServer::setupBaseRoutes() {
     server.route("GET", "/debug/state", [this](const HttpRequest&) {
         HttpResponse res;
         auto p = pid();
-        auto* debugger = session ? session->getDebugger() : nullptr;
         res.body = Json::object()
             .set("active", isActive())
             .set("pid", p ? *p : 0)
-            .set("stopped", debugger && debugger->isStopped())
+            .set("stopped", session().debugger().isStopped())
             .set("stopReason", stopReason())
             .dump();
         return res;

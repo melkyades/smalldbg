@@ -874,6 +874,7 @@ bool WindowsBackend::handleCreateProcessEvent(const DEBUG_EVENT &ev) {
     // Create Process object
     initProcess(static_cast<uintptr_t>(ev.dwProcessId));
     process->registerThread(mainThreadId);
+    debugger->setCurrentThread(*process->getThread(mainThreadId));
     
     // Create and initialize DbgHelp backend now that we have a process handle
     auto dbgHelp = std::make_unique<DbgHelpBackend>();

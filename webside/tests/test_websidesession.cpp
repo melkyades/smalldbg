@@ -1,89 +1,128 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include "Json.h"
+#include "SourceExcerpt.h"
+#include "StubSession.h"
 #include "WebsideSession.h"
-#include "DisconnectedSession.h"
+#include "Workspace.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Thread.h"
 
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <memory>
 
 using namespace webside;
 
 namespace {
+
 // Exposes the protected frame-formatting hooks for direct testing.
-struct HookProbe : DisconnectedSession {
+struct HookProbe : StubSession {
     using WebsideSession::buildFrameLabel;
     using WebsideSession::buildFrameDetailJson;
     using WebsideSession::buildFrameBindingsJson;
     using WebsideSession::buildFrameRegistersJson;
+    using WebsideSession::buildFrameArgumentsJson;
 };
+
+// Opens a StubSession for any target whose path is not "unopenable".
+struct StubWorkspace : Workspace {
+    int opens{0};
+    StubSession* last{nullptr};
+
+    StubWorkspace()
+        : Workspace([this](const TargetSpec&) -> std::unique_ptr<WebsideSession> {
+              ++opens;
+              auto created = std::make_unique<StubSession>();
+              last = created.get();
+              return created;
+          }) {}
+};
+
+TargetSpec specFor(const std::string& path) {
+    TargetSpec spec;
+    spec.path = path;
+    return spec;
 }
 
-TEST_CASE("a disconnected session reports no active target") {
-    DisconnectedSession session;
+} // namespace
 
-    CHECK_FALSE(session.isActive());
-    CHECK_FALSE(session.getPid().has_value());
-    CHECK(session.getDebugger() == nullptr);
+TEST_CASE("a fresh workspace has nothing open") {
+    StubWorkspace workspace;
+
+    CHECK_FALSE(workspace.isConnected());
+    CHECK(workspace.session() == nullptr);
 }
 
-TEST_CASE("a disconnected session ignores debug requests safely") {
-    DisconnectedSession session;
+TEST_CASE("opening a workspace gives it a session, closing takes it away") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.launch("some-target"));
-    CHECK_FALSE(session.attach(1234));
-    session.detach();  // no-op — must not crash
+    REQUIRE(workspace.open(specFor("target")));
+    CHECK(workspace.isConnected());
+    CHECK(workspace.session() != nullptr);
+    CHECK(workspace.target().path == "target");
+
+    workspace.close();
+    CHECK_FALSE(workspace.isConnected());
+    CHECK(workspace.session() == nullptr);
 }
 
-TEST_CASE("a disconnected session refuses run control and reports empty state") {
-    DisconnectedSession session;
+TEST_CASE("a target that will not open leaves the workspace disconnected") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.resume());
-    CHECK_FALSE(session.suspend());
-    CHECK_FALSE(session.step());
-    CHECK_FALSE(session.stepOver());
-    CHECK_FALSE(session.stepOver(0));
-    CHECK_FALSE(session.stepOut());
-    CHECK_FALSE(session.stepBack());
-    CHECK_FALSE(session.reverseStepOver());
-    CHECK_FALSE(session.reverseStepOut());
-
-    CHECK(session.getStopReason().empty());
-    CHECK(session.getRegisters() == "{}");
+    CHECK_FALSE(workspace.open(specFor("unopenable")));
+    CHECK_FALSE(workspace.isConnected());
 }
 
-TEST_CASE("a disconnected session has no green threads") {
-    DisconnectedSession session;
+TEST_CASE("reopening builds a new session from the same target") {
+    StubWorkspace workspace;
 
-    session.refreshGreenThreads();  // no-op — must not crash
-    CHECK(session.greenThreadCount() == 0);
-    CHECK(session.getGreenThreadName(0).empty());
-    CHECK(session.listSmalltalkFrames(0) == "[]");
-    CHECK(session.getSmalltalkFrameDetail(0, 0) == "{}");
-    CHECK(session.getSmalltalkFrameBindings(0, 0) == "[]");
+    REQUIRE(workspace.open(specFor("target")));
+
+    // Reopening frees the old session before building the new one, so the
+    // allocator hands back the same block often enough that comparing the two
+    // addresses says nothing. What the factory last produced does.
+    REQUIRE(workspace.reopen());
+    CHECK(workspace.opens == 2);
+    CHECK(workspace.session() == workspace.last);
+    CHECK(workspace.target().path == "target");
 }
 
-TEST_CASE("a disconnected session exposes no classes") {
-    DisconnectedSession session;
+TEST_CASE("breakpoints outlive the session they were set in") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.discoverClasses());
-    CHECK(session.listClasses("", false, false, -1) == "[]");
-    CHECK(session.getClass("Object") == "{}");
-    CHECK(session.getMethods("Object") == "[]");
-    CHECK(session.search("x", false, "", "") == "[]");
+    workspace.setBreakpoint(0x1000, "start");
+    REQUIRE(workspace.open(specFor("target")));
+    CHECK(workspace.last->applied.count(0x1000) == 1);
+
+    workspace.setBreakpoint(0x2000, "later");
+    CHECK(workspace.last->applied.count(0x2000) == 1);
+
+    REQUIRE(workspace.reopen());
+    CHECK(workspace.last->applied.size() == 2);
+
+    workspace.clearBreakpoint(0x1000);
+    CHECK(workspace.breakpoints().size() == 1);
+    CHECK(workspace.last->applied.count(0x1000) == 0);
 }
 
-TEST_CASE("a disconnected session has no breakpoints, memory, or events") {
-    DisconnectedSession session;
+TEST_CASE("labels are the developer's own and belong to the workspace") {
+    StubWorkspace workspace;
 
-    CHECK_FALSE(session.setBreakpoint(0x1000, ""));
-    CHECK_FALSE(session.clearBreakpoint(0x1000));
-    CHECK(session.listBreakpoints() == "[]");
-    CHECK(session.readMemory(0x1000, 16) == "{}");
-    CHECK(session.waitForEvent(0) == "{}");
-    CHECK(session.describeObject(0x1000, 1) == "{}");
+    workspace.setLabel(0x400000, "vmEntry");
+    CHECK(workspace.labelAt(0x400000) == "vmEntry");
+    CHECK(workspace.labelAt(0x400004).empty());
+
+    REQUIRE(workspace.open(specFor("target")));
+    workspace.close();
+    CHECK(workspace.labelAt(0x400000) == "vmEntry");
+
+    workspace.clearLabel(0x400000);
+    CHECK(workspace.labels().empty());
 }
 
 TEST_CASE("frame label combines module and function") {
@@ -120,6 +159,51 @@ TEST_CASE("frame detail JSON distinguishes native and VM frames") {
     CHECK(vmJson.find("vm") != std::string::npos);
 }
 
+// A source file with one function, whose second line is `line`.
+std::string writeSource(const std::string& line) {
+    auto path = (std::filesystem::temp_directory_path() / "smalldbg_excerpt.cpp").string();
+    std::ofstream(path) << "#include <cstdio>\n"
+                           "\n"
+                           "int twice(int x)\n"
+                           "{\n"
+                           "    " << line << "\n"
+                           "}\n";
+    return path;
+}
+
+TEST_CASE("a source excerpt is the function around a line") {
+    auto path = writeSource("return 2 * x;");
+    auto excerpt = webside::functionAround(path, 5);
+    REQUIRE(excerpt);
+    CHECK(excerpt->text == "int twice(int x)\n{\n    return 2 * x;\n}");
+    CHECK(excerpt->text.substr(excerpt->lineStart, excerpt->lineLength)
+          == "    return 2 * x;");
+    CHECK_FALSE(webside::functionAround(path, 1));
+    CHECK_FALSE(webside::functionAround(path, 99));
+    CHECK_FALSE(webside::functionAround("missing.cpp", 5));
+    std::remove(path.c_str());
+}
+
+TEST_CASE("a native frame with a source line shows its function") {
+    HookProbe s;
+    smalldbg::StackFrame frame;
+    frame.functionName = "twice";
+    frame.sourceFile = writeSource("return 2 * x;");
+    frame.sourceLine = 5;
+    Json detail = Json::parse(s.buildFrameDetailJson(frame, 1));
+    CHECK(detail["hasSource"].asBool());
+    CHECK(detail["method"]["source"].asString().find("return 2 * x;")
+          != std::string::npos);
+    CHECK(detail["interval"]["start"].asInt() == 19);
+    CHECK(detail["interval"]["end"].asInt() == 36);
+    std::remove(frame.sourceFile.c_str());
+
+    frame.sourceFile = "missing.cpp";
+    detail = Json::parse(s.buildFrameDetailJson(frame, 1));
+    CHECK_FALSE(detail["hasSource"].asBool());
+    CHECK(detail["interval"]["end"].asInt() == 0);
+}
+
 TEST_CASE("native frame bindings expose IP/FP/SP") {
     HookProbe s;
     smalldbg::StackFrame f;
@@ -136,6 +220,7 @@ TEST_CASE("frame registers JSON reflects the x64 register set") {
     HookProbe s;
     smalldbg::StackFrame f;  // arch defaults to x64
     f.registers.x64.rax = 0xdead;
+    f.allRegisters = true;
 
     const std::string json = s.buildFrameRegistersJson(f);
     CHECK(json.find("\"rip\"") != std::string::npos);
@@ -143,77 +228,60 @@ TEST_CASE("frame registers JSON reflects the x64 register set") {
     CHECK(json.find("dead") != std::string::npos);
 }
 
-// Minimal concrete session backed by a real Debugger, for the live frame-API
-// test. Only the members the frame API needs are meaningful; the rest are
-// interface stubs.
-namespace {
-struct LiveSession : WebsideSession {
-    std::unique_ptr<smalldbg::Debugger> dbg;
+TEST_CASE("a native frame lists the arguments its symbols name") {
+    HookProbe s;
+    smalldbg::StackFrame f;
+    smalldbg::LocalVariable path;
+    path.frame = &f;
+    path.name = "path";
+    path.typeName = "char *";
+    path.isArgument = true;
+    path.valueText = "\"C:\\temp\"";
+    smalldbg::LocalVariable local;
+    local.frame = &f;
+    local.name = "count";
+    f.localVariables = {path, local};
 
-    bool launch(const std::string& target, const std::vector<std::string>& = {}) override {
-        dbg = std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External, smalldbg::X64::instance());
-        return dbg->launch(target) == smalldbg::Status::Ok;
-    }
-    bool isActive() const override { return dbg && dbg->isAttached(); }
-    smalldbg::Debugger* getDebugger() const override { return dbg.get(); }
-    WebsideInspector* getInspector() const override { return nullptr; }
+    Json args = Json::parse(s.buildFrameArgumentsJson(f));
+    REQUIRE(args.size() == 1);
+    CHECK(args[0]["name"].asString() == "path");
+    CHECK(args[0]["type"].asString() == "char *");
+    CHECK(args[0]["printString"].asString() == "\"C:\\temp\"");
+}
 
-    bool attach(int) override { return false; }
-    void detach() override { if (dbg) dbg->detach(); }
-    std::optional<int> getPid() const override { return std::nullopt; }
-    bool resume() override { return false; }
-    bool suspend() override { return false; }
-    bool step() override { return false; }
-    bool stepOver() override { return false; }
-    bool stepOver(int) override { return false; }
-    bool stepOut() override { return false; }
-    bool stepBack() override { return false; }
-    bool reverseStepOver() override { return false; }
-    bool reverseStepOut() override { return false; }
-    std::string getStopReason() const override { return ""; }
-    std::string getRegisters() const override { return "{}"; }
-    void refreshGreenThreads() override {}
-    int greenThreadCount() const override { return 0; }
-    std::string getGreenThreadName(int) const override { return ""; }
-    std::string listSmalltalkFrames(int) const override { return "[]"; }
-    std::string getSmalltalkFrameDetail(int, int) const override { return "{}"; }
-    std::string getSmalltalkFrameBindings(int, int) const override { return "[]"; }
-    std::string getSmalltalkStackContents(int) const override { return "[]"; }
-    bool discoverClasses() override { return false; }
-    std::string listClasses(const std::string&, bool, bool, int) const override { return "[]"; }
-    std::string getClass(const std::string&) const override { return "{}"; }
-    std::string getSubclasses(const std::string&) const override { return "[]"; }
-    std::string getSuperclasses(const std::string&) const override { return "[]"; }
-    std::string getVariables(const std::string&) const override { return "[]"; }
-    std::string getInstanceVariables(const std::string&) const override { return "[]"; }
-    std::string getClassVariables(const std::string&) const override { return "[]"; }
-    std::string getCategories(const std::string&) const override { return "[]"; }
-    std::string getUsedCategories(const std::string&) const override { return "[]"; }
-    std::string getSelectors(const std::string&) const override { return "[]"; }
-    std::string getMethods(const std::string&) const override { return "[]"; }
-    std::string getMethod(const std::string&, const std::string&) const override { return "{}"; }
-    std::string search(const std::string&, bool, const std::string&, const std::string&) const override { return "[]"; }
-    bool setBreakpoint(uint64_t, const std::string&) override { return false; }
-    bool clearBreakpoint(uint64_t) override { return false; }
-    std::string listBreakpoints() const override { return "[]"; }
-    std::string readMemory(uint64_t, size_t) const override { return "{}"; }
-    std::string waitForEvent(int) override { return "{}"; }
-    std::string describeObject(uint64_t, size_t) const override { return "{}"; }
-};
+TEST_CASE("a caller's registers other than ip, sp and fp are null") {
+    HookProbe s;
+    smalldbg::StackFrame f;
+    f.registers.x64.rax = 0xdead;
+    f.registers.x64.rbp = 0x3000;
+
+    Json regs = Json::parse(s.buildFrameRegistersJson(f));
+    CHECK(regs[2]["name"].asString() == "rbp");
+    CHECK(regs[2]["value"].isString());
+    CHECK(regs[3]["name"].asString() == "rax");
+    CHECK(regs[3]["value"].isNull());
 }
 
 TEST_CASE("listFrames returns real frames for a launched target") {
     LiveSession s;
-    REQUIRE(s.launch(WEBSIDE_TEST_TARGET));
-    REQUIRE(s.getDebugger()->waitForEvent(smalldbg::StopReason::None, 5000) != smalldbg::StopReason::None);
+    vmdbg::TargetSpec spec;
+    spec.path = WEBSIDE_TEST_TARGET;
+    REQUIRE(s.open(spec));
+    REQUIRE(s.debugger().waitForEvent(smalldbg::StopReason::None, 5000)
+            != smalldbg::StopReason::None);
 
-    auto thread = s.primaryThread();
+    auto thread = s.vmThread();
     REQUIRE(thread);
 
     const std::string json = s.listFrames(*thread);
     CHECK(json != "[]");
     CHECK(json.find("\"index\"") != std::string::npos);
     CHECK(json.find("\"label\"") != std::string::npos);
+    Json frames = Json::parse(json);
+    CHECK(frames[0]["stackPointer"].isString());
+    CHECK(frames[0]["framePointer"].isString());
+    CHECK(frames[0]["module"].isString());
 
-    s.getDebugger()->detach();
+    s.debugger().detach();
 }
+

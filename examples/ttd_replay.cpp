@@ -45,7 +45,6 @@ static void printStackTrace(Debugger& dbg, Thread* thread) {
         std::cout << "Failed to get stack trace" << std::endl;
         return;
     }
-    st->unwind(10);
     const auto& frames = st->getFrames();
     std::cout << "Stack trace (" << frames.size() << " frames):" << std::endl;
     for (size_t i = 0; i < frames.size() && i < 10; i++) {
@@ -185,11 +184,11 @@ static void testReverseWatchpoint(Debugger& dbg, Thread* thread) {
 
 static Debugger createDebugger() {
 #if defined(_M_ARM64)
-    return Debugger(Mode::External, ARM64::instance());
+    return Debugger(Mode::External, ARM64::instance(), Debuggee::Trace);
 #elif defined(_M_X64)
-    return Debugger(Mode::External, X64::instance());
+    return Debugger(Mode::External, X64::instance(), Debuggee::Trace);
 #else
-    return Debugger(Mode::External, X86::instance());
+    return Debugger(Mode::External, X86::instance(), Debuggee::Trace);
 #endif
 }
 
@@ -220,8 +219,8 @@ int main(int argc, char* argv[]) {
 
     auto proc = dbg.getProcess();
     if (!proc) { std::cerr << "No process" << std::endl; return 1; }
-    auto thread = proc->primaryThread();
-    if (!thread) { std::cerr << "No primary thread" << std::endl; return 1; }
+    auto thread = dbg.getCurrentThread();
+    if (!thread) { std::cerr << "No current thread" << std::endl; return 1; }
 
     std::cout << "\n=== Initial Position ===" << std::endl;
     printRegisters(dbg, thread.get());
@@ -237,4 +236,3 @@ int main(int argc, char* argv[]) {
     std::cout << "\nDone!" << std::endl;
     return 0;
 }
-

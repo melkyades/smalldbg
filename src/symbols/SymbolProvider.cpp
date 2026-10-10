@@ -1,6 +1,9 @@
 #include "smalldbg/symbols/SymbolProvider.h"
 #include "smalldbg/StackTrace.h"
 #include "backends/Backend.h"
+#include "ModuleKey.h"
+
+#include <algorithm>
 
 namespace smalldbg {
 
@@ -24,6 +27,42 @@ void SymbolProvider::setOptions(const SymbolOptions& options) {
     }
 }
 
+void SymbolProvider::setSearchPath(const std::string& path) {
+    symbolOptions.searchPath = path;
+    for (auto& backend : backends)
+        backend->setSearchPath(path);
+}
+
+std::string SymbolProvider::searchPath() const {
+    for (const auto& backend : backends) {
+        std::string path = backend->searchPath();
+        if (!path.empty()) return path;
+    }
+    return symbolOptions.searchPath;
+}
+
+bool SymbolProvider::loadModuleSymbols(const std::string& module,
+                                       SymbolMatch match) {
+    fieldWindow = {};
+    for (auto& backend : backends)
+        if (backend->loadModuleSymbols(module, match)) return true;
+    return false;
+}
+
+ModuleInfo SymbolProvider::moduleNamed(const std::string& module) {
+    std::string wanted = moduleKey(module);
+    for (const auto& known : getModules())
+        if (moduleKey(known.shortName) == wanted || moduleKey(known.path) == wanted)
+            return known;
+    return {};
+}
+
+void SymbolProvider::preferModule(const std::string& module) {
+    if (std::find(preferredModules.begin(), preferredModules.end(), module)
+        == preferredModules.end())
+        preferredModules.push_back(module);
+}
+
 void SymbolProvider::shutdown() {
     // Shutdown all backends
     for (auto& backend : backends) {
@@ -32,6 +71,16 @@ void SymbolProvider::shutdown() {
 }
 
 std::optional<Symbol> SymbolProvider::getSymbolByName(const std::string& name) {
+    // The database is in memory; an engine may search every module.
+    for (const auto& info : symbolDatabase.find(name))
+        if (!(info.source == nativeSymbols)) return symbolFor(info);
+
+    if (name.find('!') == std::string::npos)
+        for (const auto& module : preferredModules)
+            for (auto& backend : backends)
+                if (auto result = backend->getSymbolByName(module + "!" + name))
+                    return result;
+
     // Query backends in priority order
     for (auto& backend : backends) {
         auto result = backend->getSymbolByName(name);
@@ -53,6 +102,19 @@ std::optional<Symbol> SymbolProvider::getSymbolByAddress(Address addr) {
     return std::nullopt;
 }
 
+// A backend that reads its symbols from a file has their sizes already.
+std::optional<Symbol> SymbolBackend::getSymbolWithExtent(Address addr) {
+    return getSymbolByAddress(addr);
+}
+
+std::optional<Symbol> SymbolProvider::getSymbolWithExtent(Address addr) {
+    for (auto& backend : backends) {
+        auto result = backend->getSymbolWithExtent(addr);
+        if (result) return result;
+    }
+    return std::nullopt;
+}
+
 std::vector<Symbol> SymbolProvider::findSymbols(const std::string& pattern) {
     std::vector<Symbol> results;
     for (auto& backend : backends) {
@@ -61,6 +123,9 @@ std::vector<Symbol> SymbolProvider::findSymbols(const std::string& pattern) {
             return true;
         });
     }
+    // Native symbols in the database are copies of what the backends answered.
+    for (const auto& info : symbolDatabase.findMatching(pattern))
+        if (!(info.source == nativeSymbols)) results.push_back(symbolFor(info));
     return results;
 }
 
@@ -120,8 +185,66 @@ std::optional<std::string> SymbolProvider::getVariableTypeName(const std::string
     return std::nullopt;
 }
 
-} // namespace smalldbg
+// The number of wrappers is bounded, so a type that names itself ends.
+const NativeTypeInfo* SymbolProvider::getStructType(const std::string& typeName) {
+    const NativeTypeInfo* info = getTypeByName(typeName);
+    for (int depth = 0; info && depth < 20; depth++) {
+        if (info->kind == NativeTypeKind::Struct ||
+            info->kind == NativeTypeKind::Class ||
+            info->kind == NativeTypeKind::Union)
+            return info;
+        if (info->targetTypeName.empty()) return nullptr;
+        info = getTypeByName(info->targetTypeName);
+    }
+    return nullptr;
+}
 
+std::optional<NativeFieldAt> SymbolProvider::getFieldAt(Address address) {
+    if (address < fieldWindow.start || address >= fieldWindow.end)
+        findFieldOwner(address);
+    const NativeTypeInfo* owner = fieldWindow.owner;
+    if (!owner) return std::nullopt;
+
+    uint64_t offset = address - fieldWindow.ownerStart;
+    if (offset >= owner->size) return std::nullopt;
+    for (const auto& field : owner->fields) {
+        if (offset < field.offset) continue;
+        if (field.size && offset >= field.offset + field.size) continue;
+        return NativeFieldAt{field.name, field.typeName, owner->name,
+                             fieldWindow.ownerStart + field.offset, field.size};
+    }
+    return std::nullopt;
+}
+
+// The window is kept whether or not a struct covers it, so that a stretch of
+// memory with no type costs one search rather than one per word.
+void SymbolProvider::findFieldOwner(Address address) {
+    fieldWindow = {};
+    auto symbol = getSymbolByAddress(address);
+    if (!symbol) return;
+    if (symbol->address > address) {
+        fieldWindow.start = address;
+        fieldWindow.end = symbol->address;
+        return;
+    }
+
+    fieldWindow.start = symbol->address;
+    fieldWindow.end = std::max(symbol->address + (symbol->size ? symbol->size : 1),
+                               address + 1);
+
+    std::string qualified = symbol->moduleName.empty()
+        ? symbol->name : symbol->moduleName + "!" + symbol->name;
+    auto typeName = getVariableTypeName(qualified);
+    if (!typeName) return;
+    const NativeTypeInfo* info = getStructType(*typeName);
+    if (!info || info->size == 0) return;
+
+    fieldWindow.ownerStart = symbol->address;
+    fieldWindow.owner = info;
+    fieldWindow.end = std::max(fieldWindow.end, symbol->address + info->size);
+}
+
+} // namespace smalldbg
 
 namespace smalldbg {
 
@@ -142,10 +265,25 @@ void SymbolProvider::rememberNativeSymbol(Address address) {
     // asking is the slowest way to learn that.
     if (!symbolDatabase.moduleAt(address).valid()) return;
 
-    auto symbol = getSymbolByAddress(address);
+    // With its size, so that the rest of the function is found here too.
+    auto symbol = getSymbolWithExtent(address);
     if (!symbol || symbol->name.empty()) return;
     symbolDatabase.add(symbol->address, symbol->size, symbol->name,
                        SymbolKind::Code, SymbolLayer::Symbol, nativeSymbols);
+}
+
+Symbol SymbolProvider::symbolFor(const SymbolicInfo& info) const {
+    Symbol symbol;
+    symbol.name = info.name;
+    symbol.address = info.start;
+    symbol.size = info.size;
+    symbol.type = info.kind == SymbolKind::Code ? SymbolType::Function
+                : info.kind == SymbolKind::Data ? SymbolType::Variable
+                                                : SymbolType::Unknown;
+    // An entry outside every module goes by the source that added it.
+    symbol.moduleName = info.module.valid() ? symbolDatabase.moduleName(info.module)
+                                            : symbolDatabase.sourceName(info.source);
+    return symbol;
 }
 
 std::optional<SymbolicInfo> SymbolProvider::symbolicInfoFor(Address address) {

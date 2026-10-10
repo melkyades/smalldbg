@@ -1,0 +1,173 @@
+#pragma once
+
+#include "Smalltalk/Inspector.h"
+#include "WebsideSession.h"
+
+#include <map>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace smalltalk {
+
+/** A FramePosition says where a frame is in its method: the bytecode it is at
+ *  and, when the dialect can match it, the source that bytecode came from. **/
+struct FramePosition {
+    int bytecodePC{0};
+    std::optional<std::pair<size_t, size_t>> source;  // byte offsets, both inclusive
+};
+
+/** A smalltalk::Session is the Webside session of a Smalltalk VM. It answers
+ *  the class-browsing and search parts of the Webside API from the
+ *  inspector's class table and methods, the same way for every dialect. A
+ *  dialect's subclass covers what its VM does its own way, such as where the
+ *  heap is and what a frame holds. **/
+class Session : public webside::WebsideSession {
+public:
+    bool isActive() const override;
+    std::optional<int> getPid() const override;
+    std::string getStopReason() const override;
+
+    // ---- class browsing ----------------------------------------------------
+    bool discoverClasses() override;
+    std::string listClasses(const std::string& root, bool namesOnly,
+                            bool tree, int depth) const override;
+    std::string getClass(const std::string& name) const override;
+    std::string getSubclasses(const std::string& name) const override;
+    std::string getSuperclasses(const std::string& name) const override;
+    std::string getVariables(const std::string& name) const override;
+    std::string getInstanceVariables(const std::string& name) const override;
+    std::string getClassVariables(const std::string& name) const override;
+    std::string getCategories(const std::string& name) const override;
+    std::string getUsedCategories(const std::string& name) const override;
+    std::string getSelectors(const std::string& name) const override;
+    std::string getMethods(const std::string& name) const override;
+    std::string getMethod(const std::string& className,
+                          const std::string& selector) const override;
+    std::string getMethodBytecodes(const std::string& className,
+                                   const std::string& selector) const override;
+    std::string search(const std::string& text, bool ignoreCase,
+                       const std::string& condition,
+                       const std::string& type) const override;
+
+    std::string describeObject(uint64_t oop, int firstSlot,
+                               int maxSlots) const override;
+
+    /** Returns a source that names a word pointing into object memory by
+     *  what its object prints as, and anything else by native symbol. **/
+    std::unique_ptr<smalldbg::AnnotationSource> annotationSource() const override;
+
+    // ---- green threads: none unless the dialect has them -------------------
+    /** Reads the VM's processes again when the target has moved since they
+     *  were last read, and otherwise leaves them. **/
+    void refreshGreenThreads() final;
+    /** Returns the frames of a green thread, or null when the dialect gives
+     *  none. The trace lasts until the processes are read again. **/
+    smalldbg::StackTrace* greenStack(int threadIndex) const override;
+    int greenThreadCount() const override { return 0; }
+    std::string getGreenThreadName(int) const override { return {}; }
+    std::string listSmalltalkFrames(int) const override { return "[]"; }
+    std::string getSmalltalkFrameDetail(int, int) const override {
+        return "{}";
+    }
+    std::string getSmalltalkFrameBindings(int, int) const override {
+        return "[]";
+    }
+    std::string getSmalltalkStackContents(int, int) const override {
+        return "[]";
+    }
+
+protected:
+    /** Returns the dialect's inspector, which holds the class table. **/
+    virtual Inspector& smalltalkInspector() const = 0;
+
+    /** Adds the class and the method a frame is running, with the method's
+     *  source, what self is, what the dialect adds, and where in the method
+     *  the frame is. **/
+    void addSmalltalkFrameDetail(webside::Json& json,
+                                 const smalldbg::StackFrame& frame) const final;
+
+    /** Adds what the dialect knows about a Smalltalk frame beyond its class,
+     *  method and receiver. The session calls this before it places the frame
+     *  in its method. The base adds nothing. **/
+    virtual void addDialectFrameDetail(webside::Json& /*json*/,
+                                       const smalldbg::StackFrame& /*frame*/) const {}
+
+    /** Returns where `frame` is in its method, whose source is `source`, or
+     *  nothing when the dialect cannot place it, as the base never can. **/
+    virtual std::optional<FramePosition> framePosition(const smalldbg::StackFrame& /*frame*/,
+                                                       const std::string& /*source*/) const {
+        return std::nullopt;
+    }
+
+    /** Adds what the object a general register holds prints as. **/
+    void describeRegister(webside::Json& entry, const smalldbg::StackFrame& frame,
+                          const smalldbg::RegisterValue& reg) const override;
+
+    /** Returns true when `value` may be an object, which the base takes to
+     *  be an address in a region of objects. **/
+    virtual bool mayBeObject(uint64_t value) const;
+
+    /** Returns the frames of a green thread, innermost first, each with its
+     *  ip, sp and fp and named by the dialect's unwinder. Returns none for a
+     *  dialect whose processes' frames are not native ones. **/
+    virtual std::vector<std::unique_ptr<smalldbg::StackFrame>>
+    readGreenFrames(int /*threadIndex*/) const { return {}; }
+
+    /** Returns the arguments the frame's unwinder read, named by the
+     *  selector's keywords, or for a native frame what the base returns. **/
+    std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const override;
+
+    /** Adds the roles a Smalltalk frame's layout gives its slots, such as
+     *  self, and what the objects in the slots print as. **/
+    void describeSlot(webside::Json& entry, const smalldbg::StackFrame* frame,
+                      uint64_t address, uint64_t value) const override;
+
+    /** Reads the VM's processes. The session calls this the first time they
+     *  are asked for after the target moved. Returns false when they cannot
+     *  be read, so that the next request tries again. **/
+    virtual bool readGreenThreads() { return true; }
+
+    /** Returns one class in the shape the Webside client expects. A dialect
+     *  that knows more about its classes adds it. **/
+    virtual webside::Json classJson(const ClassEntry& entry) const;
+
+    /** Returns one method, with its source, in the shape the Webside client
+     *  expects. A dialect that knows more about its methods adds it. **/
+    virtual webside::Json methodJson(const MethodEntry& method) const;
+
+    /** Adds to `json` what the dialect's header says about the heap object
+     *  at `oop`, such as its hash and flags. The base adds nothing. **/
+    virtual void describeHeader(webside::Json& /*json*/,
+                                uint64_t /*oop*/) const {}
+
+    /** Returns the class definition as source, which a browser shows above
+     *  the methods. **/
+    static std::string classDefinition(const ClassEntry& entry);
+
+    /** Returns true for a metaclass name, such as "Object class". **/
+    static bool isMetaclassName(const std::string& name);
+
+    /** Returns the class table's entry for `name`, or for a metaclass the
+     *  table does not hold, one made from its class. Returns nothing when
+     *  neither is there. **/
+    std::optional<ClassEntry> entryNamed(const std::string& name) const;
+
+private:
+    webside::Json classTreeJson(const std::string& name, bool namesOnly,
+                                int depth) const;
+    std::string rootClassName() const;
+    std::vector<std::string> categoriesOf(const std::string& name) const;
+    void addClassVariables(webside::Json& array,
+                           const std::string& name) const;
+    std::string printed(uint64_t oop) const;
+    void addPrintString(webside::Json& entry, uint64_t value) const;
+    void addFramePosition(webside::Json& json, const smalldbg::StackFrame& frame) const;
+
+    std::optional<uint64_t> greenThreadsVersion;  // stateVersion they are from
+    mutable std::map<int, std::unique_ptr<smalldbg::StackTrace>> greenStacks;
+};
+
+} // namespace smalltalk

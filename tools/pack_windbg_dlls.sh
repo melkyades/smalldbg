@@ -69,6 +69,17 @@ copy_engine() {
             echo "  + $arch/$name"
         fi
     done
+    # The command extensions (!heap, !address, ...) live in winext/, not beside
+    # the engine. Only the user-mode ones are carried; the rest are for kernel
+    # debugging.
+    for name in ext.dll uext.dll; do
+        if [ -f "$arch_dir/winext/$name" ]; then
+            mkdir -p "$dest/winext"
+            cp "$arch_dir/winext/$name" "$dest/winext/"
+            echo "  + $arch/winext/$name"
+        fi
+    done
+
     if [ -d "$arch_dir/ttd" ]; then
         cp -r "$arch_dir/ttd" "$dest/"
         echo "  + $arch/ttd/ ($(find "$arch_dir/ttd" -type f | wc -l | tr -d ' ') files)"

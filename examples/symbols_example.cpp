@@ -63,7 +63,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\nStopped at address: 0x" << std::hex << addr << std::dec << "\n";
     
     // Try to get symbol at this address
-    auto symbol = symbols->getSymbolByAddress(addr);
+    auto symbol = symbols->getSymbolWithExtent(addr);
     if (symbol) {
         std::cout << "Symbol at address:\n";
         std::cout << "  Name: " << symbol->name << "\n";

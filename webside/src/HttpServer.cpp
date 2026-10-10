@@ -81,6 +81,8 @@ void HttpServer::run() {
         {"Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS"},
         {"Access-Control-Allow-Headers", "*"},
         {"Access-Control-Max-Age", "86400"},
+        // A browser hides response headers it was not told to expose.
+        {"Access-Control-Expose-Headers", "X-Webside-Warning"},
     });
 
     // A preflight touches no debugger state, so it never reaches a handler.
@@ -92,6 +94,8 @@ void HttpServer::run() {
         HttpResponse answer = dispatch(toRequest(incoming));
         outgoing.status = answer.statusCode;
         outgoing.reason = answer.statusMessage;
+        for (const auto& [name, value] : answer.headers)
+            outgoing.set_header(name, value);
         outgoing.set_content(answer.body, answer.contentType);
     };
     server->Get(".*", serve);
@@ -100,13 +104,33 @@ void HttpServer::run() {
     server->Patch(".*", serve);
     server->Delete(".*", serve);
 
+    bindAndListen();
+}
+
+void HttpServer::bindAndListen() {
+    // httplib sets SO_REUSEADDR, which on Windows lets a second server bind a
+    // port that is in use and then take some of its connections. Exclusive
+    // use makes the second bind fail instead.
+#ifdef _WIN32
+    server->set_socket_options([](auto sock) {
+        int exclusive = 1;
+        setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                   reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+    });
+#endif
+
     // "::" with V6ONLY off answers ::1 and 127.0.0.1 alike. An IPv4-only
     // listener leaves nothing on ::1, which is what "localhost" resolves to
     // first, so every client stalls on a dead IPv6 attempt before falling back
     // and pays that on each connection.
+    if (!server->bind_to_port("::", port)) {
+        std::cerr << "Failed to bind port " << port
+                  << ": another server is already using it" << std::endl;
+        return;
+    }
     std::cout << "Webside backend server listening on port " << port << std::endl;
-    if (!server->listen("::", port))
-        std::cerr << "Failed to listen on port " << port << std::endl;
+    if (!server->listen_after_bind())
+        std::cerr << "Stopped listening on port " << port << std::endl;
 }
 
 void HttpServer::stop() {
