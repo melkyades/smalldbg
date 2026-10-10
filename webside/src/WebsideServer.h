@@ -76,10 +76,10 @@ protected:
     static void warn(HttpResponse& res, const std::string& warning);
 
     // ---- native symbol data ----
-    virtual std::string nativeSymbolsData(const std::string& filter) const;
-    virtual std::string nativeModulesData() const;
-    virtual std::string nativeSymbolDetailData(const std::string& name) const;
-    virtual std::string nativeInspectData(const std::string& expression) const;
+    std::string nativeSymbolsData(const std::string& filter) const;
+    std::string nativeModulesData() const;
+    std::string nativeSymbolDetailData(const std::string& name) const;
+    std::string nativeInspectData(const std::string& expression) const;
     HttpResponse handleMemoryTypesGet(const HttpRequest& req) const;
     HttpResponse handleMemoryTypesSet(const HttpRequest& req);
     HttpResponse handleMemoryTypesClear(const HttpRequest& req);

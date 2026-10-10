@@ -84,15 +84,6 @@ public:
                                const std::string& condition,
                                const std::string& type) const = 0;
 
-    // ---- breakpoints ----
-    virtual std::string listBreakpoints() const = 0;
-
-    // ---- memory ----
-    virtual std::string readMemory(uint64_t address, size_t size) const = 0;
-
-    // ---- events ----
-    virtual std::string waitForEvent(int timeoutMs = 5000) = 0;
-
     // ---- listings ----
     /** Returns what names the addresses a listing refers to. The base names
      *  them by native symbol. **/

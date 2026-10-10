@@ -43,9 +43,6 @@ public:
 // A session over a ToyInspector whose dialect keeps a hash in each header.
 class ToySession : public smalltalk::Session {
 public:
-    std::string listBreakpoints() const override { return "[]"; }
-    std::string readMemory(uint64_t, size_t) const override { return "{}"; }
-    std::string waitForEvent(int) override { return "{}"; }
     std::shared_ptr<smalldbg::Thread> vmThread() const override {
         return nullptr;
     }
