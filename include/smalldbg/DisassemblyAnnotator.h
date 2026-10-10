@@ -83,6 +83,9 @@ public:
     std::string codeLabel(Address address) const override;
     Address codeStart(Address address) const override;
     std::string dataLabel(Address address) const override;
+    /** Returns the symbol that starts at `address`, qualified by its module,
+     *  or an empty name when none starts there. **/
+    std::string labelAt(Address address) const override;
 
 private:
     struct Cache;
@@ -106,8 +109,9 @@ private:
     AnnotatedInstruction annotateOne(
         const DisasmInsn& instruction, Address first, Address last,
         std::map<Address, std::string>& labels) const;
-    void nameBranch(AnnotatedInstruction& annotated, Address target,
-                    std::string& resolved) const;
+    bool nameNumber(AnnotatedInstruction& annotated, Address address,
+                    const std::string& name) const;
+    std::string describeSlot(AnnotatedInstruction& annotated, Address slot) const;
     std::string describe(Address target, bool indirect) const;
     std::string nameOf(Address address) const;
     std::optional<Address> pointerAt(Address address) const;

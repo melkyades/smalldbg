@@ -102,5 +102,42 @@ TEST_CASE("an ARM64 listing names branch destinations and labels its jumps") {
     CHECK(listing[1].comment == "0x400014");
     CHECK(listing[1].label == "L0x400004");
     CHECK(listing[2].comment.empty());
-    CHECK(listing[3].comment == "table");
+    CHECK(listing[3].text == "adr x0, table");
+    CHECK(listing[3].comment == "0x40002c");
+}
+
+TEST_CASE("a number printed in decimal is not taken for an address") {
+    Debugger debugger(Mode::External, X86::instance(), Debuggee::Snapshot);
+    REQUIRE(debugger.openSnapshot({SnapshotRegion::fromBytes(
+                0x400000, std::vector<uint8_t>(16))})
+            == Status::Ok);
+    NamedAddresses names;
+    names.data[0xFFFFFFFF] = "minus one";
+    auto listing = annotate(X86::instance(), {0x6A, 0xFF},  // push -1
+                            0x401000, debugger, names);
+    REQUIRE(listing.size() == 1);
+    CHECK(listing[0].comment.empty());
+}
+
+TEST_CASE("a slot read through is named, and what it holds is said") {
+    Debugger debugger(Mode::External, X64::instance(), Debuggee::Snapshot);
+    REQUIRE(debugger.openSnapshot({SnapshotRegion::fromBytes(
+                0x403000, littleEndian(0x405000, 8))})
+            == Status::Ok);
+    NamedAddresses names;
+    names.data[0x403000] = "slot";
+    names.data[0x405000] = "target";
+
+    auto listing = annotate(X64::instance(), {
+        0x48, 0x8B, 0x04, 0x25, 0x00, 0x30, 0x40, 0x00,  // mov rax, [0x403000]
+    }, 0x401000, debugger, names);
+    REQUIRE(listing.size() == 1);
+    CHECK(listing[0].text == "mov rax, qword ptr [slot]");
+    CHECK(listing[0].comment == "[0x403000] -> target (0x405000)");
+
+    names.data.erase(0x405000);
+    listing = annotate(X64::instance(), {
+        0x48, 0x8B, 0x04, 0x25, 0x00, 0x30, 0x40, 0x00,
+    }, 0x401000, debugger, names);
+    CHECK(listing[0].comment == "[0x403000] -> 0x405000");
 }

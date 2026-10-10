@@ -14,6 +14,7 @@
 #include <doctest/doctest.h>
 
 #include "smalldbg/Debugger.h"
+#include "smalldbg/DisassemblyAnnotator.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/StackTrace.h"
@@ -251,6 +252,20 @@ TEST_CASE("a preferred module is searched for a name without one") {
     symbols->preferModule("test_target");
     CHECK(symbols->getSymbolByName("break_here").has_value());
 
+    dbg.detach();
+}
+
+TEST_CASE("a listing labels the place a symbol starts, and only there") {
+    Debugger dbg(Mode::External, X64::instance());
+    launchAtInitialStop(dbg);
+    auto breakHere =
+        dbg.getSymbolProvider()->getSymbolByName("test_target!break_here");
+    REQUIRE(breakHere.has_value());
+
+    SymbolAnnotationSource source(dbg);
+    CHECK(source.labelAt(breakHere->address).find("break_here")
+          != std::string::npos);
+    CHECK(source.labelAt(breakHere->address + 1).empty());
     dbg.detach();
 }
 

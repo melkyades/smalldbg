@@ -94,6 +94,13 @@ std::string SymbolAnnotationSource::dataLabel(Address address) const {
     return codeLabel(address);
 }
 
+std::string SymbolAnnotationSource::labelAt(Address address) const {
+    auto symbol = lookup(address);
+    if (!symbol || symbol->address != address) return {};
+    return symbol->moduleName.empty() ? symbol->name
+                                      : symbol->moduleName + "!" + symbol->name;
+}
+
 // ---------------------------------------------------------------------------
 // DisassemblyAnnotator
 // ---------------------------------------------------------------------------
@@ -137,21 +144,37 @@ std::string DisassemblyAnnotator::describe(Address target,
 }
 
 // The name replaces the number in the text, along with the '#' some
-// architectures write before one; the address moves into the comment, where
-// the reader still needs it.
-void DisassemblyAnnotator::nameBranch(AnnotatedInstruction& annotated,
-                                      Address target,
-                                      std::string& resolved) const {
-    std::string number = hexString(target);
+// architectures write before one. Returns false when the text does not hold
+// the number.
+bool DisassemblyAnnotator::nameNumber(AnnotatedInstruction& annotated,
+                                      Address address,
+                                      const std::string& name) const {
+    std::string number = hexString(address);
     auto at = annotated.text.find(number);
-    if (at == std::string::npos) return;
+    if (at == std::string::npos) return false;
     if (at > 0 && annotated.text[at - 1] == '#') {
         at--;
         number.insert(0, "#");
     }
-    annotated.text.replace(at, number.size(), resolved);
-    annotated.comment = hexString(target);
-    resolved.clear();
+    annotated.text.replace(at, number.size(), name);
+    return true;
+}
+
+// The slot is named in the text and what it holds in the comment, since what
+// it holds is what the instruction reads.
+std::string DisassemblyAnnotator::describeSlot(AnnotatedInstruction& annotated,
+                                               Address slot) const {
+    std::string described;
+    std::string slotName = source.dataLabel(slot);
+    if (!slotName.empty())
+        described = nameNumber(annotated, slot, slotName)
+            ? "[" + hexString(slot) + "]" : slotName;
+    auto value = pointerAt(slot);
+    if (!value) return described;
+    std::string valueName = source.dataLabel(*value);
+    std::string held = valueName.empty()
+        ? hexString(*value) : valueName + " (" + hexString(*value) + ")";
+    return described.empty() ? "-> " + held : described + " -> " + held;
 }
 
 AnnotatedInstruction DisassemblyAnnotator::annotateOne(
@@ -164,26 +187,31 @@ AnnotatedInstruction DisassemblyAnnotator::annotateOne(
     annotated.text = instruction.text;
     annotated.comment = source.noteFor(instruction);
 
+    // A name takes the number's place in the text, and the address moves into
+    // the comment, where the reader still needs it.
     std::string resolved;
     if (instruction.target) {
         Address target = *instruction.target;
         resolved = describe(target, instruction.targetIsSlot);
-        if (!instruction.targetIsSlot && !resolved.empty())
-            nameBranch(annotated, target, resolved);
+        if (!instruction.targetIsSlot && !resolved.empty()
+            && nameNumber(annotated, target, resolved))
+            resolved = hexString(target);
         // A jump within the listing gets a label where it lands, so the
         // reader can see the loop rather than compare addresses.
         bool landsInView = target >= first && target < last;
         if (source.wantsBranchLabels() && instruction.isJump
             && !instruction.targetIsSlot && landsInView)
             labels.emplace(target, "L" + hexString(target));
-    } else if (auto immediate = immediateAddressOf(instruction)) {
+    } else if (auto immediate = immediateAddressOf(instruction);
+               immediate && instruction.text.find(hexString(*immediate))
+                                != std::string::npos) {
+        // A number the disassembler prints in decimal, such as -1, is a
+        // constant whatever its bits would mean as an address.
         resolved = source.dataLabel(*immediate);
+        if (!resolved.empty() && nameNumber(annotated, *immediate, resolved))
+            resolved = hexString(*immediate);
     } else if (auto through = memoryOperandOf(instruction)) {
-        // What matters is what is stored at the address; the address itself
-        // is named when nothing is.
-        if (auto value = pointerAt(*through))
-            resolved = source.dataLabel(*value);
-        if (resolved.empty()) resolved = source.dataLabel(*through);
+        resolved = describeSlot(annotated, *through);
     }
 
     if (!resolved.empty())
