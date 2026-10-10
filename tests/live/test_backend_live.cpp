@@ -457,6 +457,34 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
     dbg.detach();
 }
 
+TEST_CASE("a frame's arguments come with its details, once") {
+    Debugger dbg(Mode::External, X64::instance());
+
+    REQUIRE(dbg.launch(test::testTargetPath(), {"deep"}) == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
+    auto breakHere = dbg.getSymbolProvider()->getSymbolByName("test_target!break_here");
+    REQUIRE(breakHere.has_value());
+    REQUIRE(dbg.setBreakpoint(breakHere->address, "break_here") == Status::Ok);
+    REQUIRE(dbg.resume() == Status::Ok);
+    REQUIRE(dbg.waitForEvent(StopReason::Breakpoint, 20000) == StopReason::Breakpoint);
+
+    StackTrace trace(dbg.getCurrentThread().get());
+    REQUIRE(trace.unwind(256) == Status::Ok);
+    size_t index = 0;
+    while (index < trace.getFrameCount()
+           && trace.getFrames()[index]->functionName.find("recurse") == std::string::npos)
+        ++index;
+    REQUIRE(index < trace.getFrameCount());
+
+    trace.resolveFrameDetails(index, &dbg);
+    trace.resolveFrameDetails(index, &dbg);
+    std::vector<std::string> arguments;
+    for (const auto& variable : trace.getFrames()[index]->localVariables)
+        if (variable.isArgument) arguments.push_back(variable.name);
+    CHECK(arguments == std::vector<std::string>{"depth", "atBottom"});
+    dbg.detach();
+}
+
 TEST_CASE("a thread keeps its stack trace until the target moves") {
     Debugger dbg(Mode::External, X64::instance());
     launchAtBreakHere(dbg);

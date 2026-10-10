@@ -5,6 +5,8 @@
 
 #include "DbgEngSymbolBackend.h"
 #include "ModuleKey.h"
+#include "../backends/DbgEngBackend.h"
+#include "../../include/smalldbg/StackFrame.h"
 
 // The SYMOPT_ flags IDebugSymbols shares with DbgHelp are declared there.
 #include <dbghelp.h>
@@ -480,8 +482,61 @@ std::optional<SourceLocation> DbgEngSymbolBackend::getSourceLocation(Address add
     return loc;
 }
 
-void DbgEngSymbolBackend::getLocalVariables(StackFrame* /*frame*/) {
-    // TODO: Implement via IDebugSymbolGroup2 or Execute("dv /t")
+// Returns one of a symbol group's texts for a symbol, or an empty text when
+// the engine has none.
+static std::string groupText(IDebugSymbolGroup2& group, ULONG index,
+                             HRESULT (STDMETHODCALLTYPE IDebugSymbolGroup2::*get)(ULONG, PSTR, ULONG, PULONG)) {
+    char buffer[512] = {};
+    ULONG size = 0;
+    if (FAILED((group.*get)(index, buffer, sizeof(buffer), &size))) return {};
+    return buffer;
+}
+
+static LocalVariable scopeVariable(IDebugSymbolGroup2& group, ULONG index, const StackFrame& frame) {
+    LocalVariable variable;
+    variable.frame = &frame;
+    variable.name = groupText(group, index, &IDebugSymbolGroup2::GetSymbolName);
+    variable.typeName = groupText(group, index, &IDebugSymbolGroup2::GetSymbolTypeName);
+    variable.valueText = groupText(group, index, &IDebugSymbolGroup2::GetSymbolValueText);
+    DEBUG_SYMBOL_PARAMETERS parameters = {};
+    if (SUCCEEDED(group.GetSymbolParameters(index, 1, &parameters)))
+        variable.isArgument = (parameters.Flags & DEBUG_SYMBOL_IS_ARGUMENT) != 0;
+    ULONG size = 0;
+    if (SUCCEEDED(group.GetSymbolSize(index, &size))) variable.size = size;
+    ULONG64 offset = 0;
+    if (SUCCEEDED(group.GetSymbolOffset(index, &offset))) {
+        variable.locationType = VariableLocation::Memory;
+        variable.address = offset;
+    }
+    return variable;
+}
+
+void DbgEngSymbolBackend::readScopeVariables(StackFrame& frame) {
+    IDebugSymbolGroup2* raw = nullptr;
+    if (FAILED(symbols->GetScopeSymbolGroup2(DEBUG_SCOPE_GROUP_ARGUMENTS | DEBUG_SCOPE_GROUP_LOCALS,
+                                             nullptr, &raw)))
+        return;
+    ComPtr<IDebugSymbolGroup2> group(raw);
+    ULONG count = 0;
+    if (FAILED(group->GetNumberSymbols(&count))) return;
+    for (ULONG i = 0; i < count; i++)
+        frame.localVariables.push_back(scopeVariable(*group, i, frame));
+}
+
+// The engine answers a frame's arguments and locals for the scope it is set
+// to, and the scope is the engine's own, so the one it had is put back.
+void DbgEngSymbolBackend::getLocalVariables(StackFrame* frame) {
+    ULONG64 previousOffset = 0;
+    DEBUG_STACK_FRAME previousFrame = {};
+    bool hadScope = SUCCEEDED(symbols->GetScope(&previousOffset, &previousFrame, nullptr, 0));
+
+    DEBUG_STACK_FRAME scope = {};
+    scope.InstructionOffset = frame->ip();
+    scope.FrameOffset = frame->fp();
+    scope.StackOffset = frame->sp();
+    if (FAILED(symbols->SetScope(frame->ip(), &scope, nullptr, 0))) return;
+    readScopeVariables(*frame);
+    if (hadScope) symbols->SetScope(previousOffset, &previousFrame, nullptr, 0);
 }
 
 } // namespace smalldbg

@@ -70,6 +70,9 @@ struct StackFrame {
     uint32_t sourceLine = 0;
 
     std::vector<LocalVariable> localVariables;
+    // Set once the source location and locals have been looked up, so asking
+    // again does not add the locals a second time.
+    bool detailsResolved = false;
 
     void print(std::ostream& os, size_t frameNumber) const;
 };

@@ -66,6 +66,9 @@ public:
     bool isInitialized() const override { return initialized; }
 
 private:
+    /** Adds the variables of the engine's current scope to `frame`. **/
+    void readScopeVariables(StackFrame& frame);
+
     std::optional<std::string> lookUpVariableTypeName(const std::string& name);
 
     // Each lookup searches the pdb, which takes seconds on a large one, so

@@ -61,16 +61,16 @@ void NativeUnwinder::process(StackFrame& frame, Debugger* debugger) {
 }
 
 void NativeUnwinder::resolveDetails(StackFrame& frame, Debugger* debugger) {
-    if (frame.sourceFile.empty() && !frame.functionName.empty() &&
-        frame.functionName != "<unknown>") {
-        SymbolProvider* symbols = debugger->getSymbolProvider();
-        auto location = symbols->getSourceLocation(frame.ip());
-        if (location) {
-            frame.sourceFile = location->filename;
-            frame.sourceLine = location->line;
-        }
-        symbols->getLocalVariables(&frame);
+    if (frame.detailsResolved) return;
+    frame.detailsResolved = true;
+    if (frame.functionName.empty() || frame.functionName == "<unknown>") return;
+    SymbolProvider* symbols = debugger->getSymbolProvider();
+    auto location = symbols->getSourceLocation(frame.ip());
+    if (location) {
+        frame.sourceFile = location->filename;
+        frame.sourceLine = location->line;
     }
+    symbols->getLocalVariables(&frame);
 }
 
 std::vector<InlineFrameInfo> NativeUnwinder::inlinedAt(const StackFrame& frame,

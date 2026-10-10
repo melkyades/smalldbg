@@ -152,6 +152,8 @@ struct LocalVariable {
     int64_t offset{0};      // Offset from base (rbp/rsp) or register number
     Address address{0};     // Absolute address if locationType == Memory
     const StackFrame* frame{nullptr};  // Back-reference to containing frame
+    bool isArgument{false};
+    std::string valueText;  // The value as the symbols format it, when they do
     
     // Read the value of this variable from its frame
     // Returns std::nullopt if the value cannot be read
