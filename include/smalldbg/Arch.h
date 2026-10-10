@@ -1,9 +1,11 @@
-// Architecture abstraction — virtual dispatch for register access
+// Architecture abstraction: virtual dispatch for register access
 #pragma once
 
 #include <cstdint>
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace smalldbg {
 
@@ -21,6 +23,15 @@ public:
     virtual void readX64Regs(X64Registers& out) const = 0;
     virtual void readX86Regs(X86Registers& out) const = 0;
     virtual void readARM64Regs(ARM64Registers& out) const = 0;
+};
+
+/** A RegisterValue is one register as a listing shows it. **/
+struct RegisterValue {
+    enum class Role { Other, Ip, Sp, Fp, Flags };
+
+    const char* name;
+    std::optional<uint64_t> value;   // empty when the frame could not recover it
+    Role role{Role::Other};
 };
 
 // Base class for architecture-specific register access
@@ -48,6 +59,9 @@ public:
     // (e.g. "PF ZF IF" on x86, "NZ" on ARM64).
     virtual std::string describeFlags(uint64_t flags) const = 0;
 
+    /** Returns the registers a listing shows, the ip, sp and fp first. **/
+    virtual std::vector<RegisterValue> registerValues(const Registers& r) const = 0;
+
     // Double-dispatch: read registers from a RegisterReader into a Registers struct.
     // Each subclass calls the reader method matching its architecture.
     virtual void readRegisters(const RegisterReader& reader, Registers& out) const = 0;
@@ -65,6 +79,7 @@ public:
     size_t pointerSize() const override { return 4; }
     const char* name() const override { return "x86"; }
     std::string describeFlags(uint64_t flags) const override;
+    std::vector<RegisterValue> registerValues(const Registers& r) const override;
     void readRegisters(const RegisterReader& reader, Registers& out) const override;
 
     static X86* instance() { static X86 inst; return &inst; }
@@ -82,6 +97,7 @@ public:
     size_t pointerSize() const override { return 8; }
     const char* name() const override { return "x64"; }
     std::string describeFlags(uint64_t flags) const override;
+    std::vector<RegisterValue> registerValues(const Registers& r) const override;
     void readRegisters(const RegisterReader& reader, Registers& out) const override;
 
     static X64* instance() { static X64 inst; return &inst; }
@@ -99,6 +115,7 @@ public:
     size_t pointerSize() const override { return 8; }
     const char* name() const override { return "ARM64"; }
     std::string describeFlags(uint64_t flags) const override;
+    std::vector<RegisterValue> registerValues(const Registers& r) const override;
     void readRegisters(const RegisterReader& reader, Registers& out) const override;
 
     static ARM64* instance() { static ARM64 inst; return &inst; }

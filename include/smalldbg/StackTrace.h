@@ -36,6 +36,7 @@ private:
                          const Registers& regs, StackUnwinder& unwinder,
                          size_t maxFrames);
     bool appendFrame(StackUnwinder& unwinder, Registers& regs, size_t maxFrames);
+    bool atThreadTop() const;
     bool shouldKeepUnwinding(const Registers& regs, const Registers& previous,
                              size_t maxFrames) const;
 

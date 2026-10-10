@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Arch.h"
 #include "Types.h"
 #include <cstdint>
 #include <memory>
@@ -27,10 +28,11 @@ struct FrameMetadata {
 };
 
 struct StackFrame {
-    // Not all registers may be accurate: only callee-saved registers can be
-    // reliably restored during unwinding.
     Registers registers;
     bool hasRegisters = false;
+    // Unwinding recovers a caller's ip, sp and fp only; the frames the thread
+    // stopped in have every register.
+    bool allRegisters = false;
 
     const Thread* thread{nullptr};
 
@@ -49,9 +51,13 @@ struct StackFrame {
     void setFp(Address v) { registers.setFp(v); }
     void setSp(Address v) { registers.setSp(v); }
 
+    /** Returns the frame's registers, leaving empty the ones it does not
+     *  know. **/
+    std::vector<RegisterValue> registerValues() const;
+
     std::string functionName;
     std::string moduleName;
-    uint64_t functionOffset;
+    uint64_t functionOffset{0};
     // Entry point of the function. Not always ip()-functionOffset: a frame
     // stopped in a stub has an ip outside its own code.
     Address functionStart{0};

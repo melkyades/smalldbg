@@ -105,6 +105,7 @@ bool StackTrace::appendRunFrames(std::vector<StackFrame>& run, size_t from,
         auto frame = std::make_unique<StackFrame>(std::move(run[i]));
         frame->registers = regs;
         frame->hasRegisters = true;
+        frame->allRegisters = atThreadTop();
         frame->thread = thread;
         frame->unwinder = &unwinder;
         frame->prev = frames.empty() ? nullptr : frames.back().get();
@@ -121,6 +122,7 @@ bool StackTrace::appendFrame(StackUnwinder& unwinder, Registers& regs,
     auto frame = std::make_unique<StackFrame>();
     frame->registers = regs;
     frame->hasRegisters = true;
+    frame->allRegisters = atThreadTop();
     frame->thread = thread;
     frame->unwinder = &unwinder;
     frame->prev = frames.empty() ? nullptr : frames.back().get();
@@ -140,6 +142,14 @@ bool StackTrace::appendFrame(StackUnwinder& unwinder, Registers& regs,
     return unwound == Status::Ok;
 }
 
+// Returns true while no physical frame has been appended, so that the next
+// one is the frame the thread stopped in.
+bool StackTrace::atThreadTop() const {
+    for (const auto& frame : frames)
+        if (!frame->inlined) return false;
+    return true;
+}
+
 // A null ip does not end the stack: a call through a null pointer leaves one
 // with callers above it. A caller identical to its callee does, as unwinding
 // it again would only find it again.
@@ -157,6 +167,7 @@ std::unique_ptr<StackFrame> StackTrace::inlinedFrameFor(
     auto synthetic = std::make_unique<StackFrame>();
     synthetic->registers = physical.registers;
     synthetic->hasRegisters = physical.hasRegisters;
+    synthetic->allRegisters = physical.allRegisters;
     synthetic->thread = thread;
     synthetic->unwinder = physical.unwinder;
     synthetic->prev = frames.empty() ? nullptr : frames.back().get();
