@@ -15,6 +15,9 @@ class Debugger;
 class StackTrace {
 public:
     StackTrace(const Thread* thread);
+    /** A trace of frames found some other way than by unwinding, innermost
+     *  first, such as the ones a VM saved for a thread it parked. **/
+    StackTrace(const Thread* thread, std::vector<std::unique_ptr<StackFrame>> frames);
     ~StackTrace();
 
     // Unwind the stack

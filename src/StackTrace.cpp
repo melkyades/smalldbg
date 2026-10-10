@@ -33,6 +33,12 @@ StackTrace::StackTrace(const Thread* t)
     : thread(t) {
 }
 
+StackTrace::StackTrace(const Thread* t, std::vector<std::unique_ptr<StackFrame>> found)
+    : thread(t), frames(std::move(found)) {
+    for (size_t i = 1; i < frames.size(); ++i)
+        frames[i]->prev = frames[i - 1].get();
+}
+
 StackTrace::~StackTrace() {
 }
 
