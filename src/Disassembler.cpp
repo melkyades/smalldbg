@@ -119,6 +119,7 @@ std::vector<DisasmInsn> Disassembler::disassemble(const uint8_t* code, size_t si
         csh engine = *reinterpret_cast<csh*>(&handle);
         decoded.isCall = cs_insn_group(engine, &ins, CS_GRP_CALL);
         decoded.isJump = cs_insn_group(engine, &ins, CS_GRP_JUMP);
+        decoded.isReturn = cs_insn_group(engine, &ins, CS_GRP_RET);
         if (ins.detail) {
             if (family == CS_ARCH_ARM64) readArm64(ins, decoded);
             else readX86(ins, wide, decoded);

@@ -18,6 +18,7 @@ struct DisasmInsn {
     bool isCall{false};  // transfers control to a callee that returns here
     bool isJump{false};  // transfers control without returning, maybe
                          // conditionally
+    bool isReturn{false};  // returns to the caller
 
     // Where a direct branch goes. For a branch through memory it is the
     // address the destination is read from, and targetIsSlot is set. A

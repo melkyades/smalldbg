@@ -86,6 +86,28 @@ TEST_CASE("ARM64: bl is a call and ret is not") {
     CHECK_FALSE(insns[1].isCall);
 }
 
+TEST_CASE("a return is recognised on every architecture, and nothing else is") {
+    const uint8_t x64[] = {0x90, 0xC3, 0xC2, 0x08, 0x00}; // nop; ret; ret 8
+    auto wide = Disassembler(X64::instance()).disassemble(x64, sizeof(x64), 0);
+    REQUIRE(wide.size() == 3);
+    CHECK_FALSE(wide[0].isReturn);
+    CHECK(wide[1].isReturn);
+    CHECK(wide[2].isReturn);
+
+    const uint8_t x86[] = {0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3}; // call; ret
+    auto narrow = Disassembler(X86::instance()).disassemble(x86, sizeof(x86), 0);
+    REQUIRE(narrow.size() == 2);
+    CHECK_FALSE(narrow[0].isReturn);
+    CHECK(narrow[1].isReturn);
+
+    const uint8_t arm64[] = {0x1F, 0x20, 0x03, 0xD5,  // nop
+                             0xC0, 0x03, 0x5F, 0xD6}; // ret
+    auto arm = Disassembler(ARM64::instance()).disassemble(arm64, sizeof(arm64), 0);
+    REQUIRE(arm.size() == 2);
+    CHECK_FALSE(arm[0].isReturn);
+    CHECK(arm[1].isReturn);
+}
+
 TEST_CASE("empty input yields no instructions") {
     Disassembler dis(X64::instance());
     auto insns = dis.disassemble(nullptr, 0, 0);
