@@ -3,6 +3,7 @@
 #include "Smalltalk/InspectorJson.h"
 
 #include <smalldbg/Debugger.h>
+#include <smalldbg/DisassemblyAnnotator.h>
 
 #include <algorithm>
 #include <cctype>
@@ -34,6 +35,25 @@ bool matches(const std::string& candidate, const std::string& text,
         return h.compare(h.size() - n.size(), n.size(), n) == 0;
     return h.find(n) != std::string::npos;
 }
+
+// A word in object memory names an object; one anywhere else, a native
+// symbol at most.
+class ObjectAnnotationSource : public smalldbg::SymbolAnnotationSource {
+public:
+    ObjectAnnotationSource(smalldbg::Debugger& debugger, const Inspector& objects)
+        : SymbolAnnotationSource(debugger), inspector(objects) {}
+
+    std::string dataLabel(smalldbg::Address address) const override {
+        if (inspector.isInObjectMemory(address)) {
+            auto object = inspector.objectFor(address);
+            if (object && object->isHeapObject()) return object->printString();
+        }
+        return SymbolAnnotationSource::dataLabel(address);
+    }
+
+private:
+    const Inspector& inspector;
+};
 
 Json variableJson(const std::string& name, const std::string& className,
                   const char* type) {
@@ -330,6 +350,10 @@ std::string Session::getMethod(const std::string& className,
                                const std::string& selector) const {
     auto method = smalltalkInspector().methodNamed(className, selector);
     return method ? methodJson(*method).dump() : "{}";
+}
+
+std::unique_ptr<smalldbg::AnnotationSource> Session::annotationSource() const {
+    return std::make_unique<ObjectAnnotationSource>(debugger(), smalltalkInspector());
 }
 
 std::string Session::describeObject(uint64_t oop, int firstSlot,

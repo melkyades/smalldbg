@@ -44,6 +44,10 @@ public:
     std::string describeObject(uint64_t oop, int firstSlot,
                                int maxSlots) const override;
 
+    /** Returns a source that names a word pointing into object memory by
+     *  what its object prints as, and anything else by native symbol. **/
+    std::unique_ptr<smalldbg::AnnotationSource> annotationSource() const override;
+
     // ---- green threads: none unless the dialect has them -------------------
     void refreshGreenThreads() override {}
     int greenThreadCount() const override { return 0; }

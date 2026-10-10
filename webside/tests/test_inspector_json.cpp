@@ -4,6 +4,7 @@
 #include "Smalltalk/InspectorJson.h"
 #include "Smalltalk/Session.h"
 #include "ToyDialect.h"
+#include "smalldbg/DisassemblyAnnotator.h"
 
 #include <memory>
 #include <string>
@@ -36,6 +37,9 @@ public:
     bool discoverClasses() override { return true; }
 
     smalldbg::Debugger* debugger() const { return kernel.heap.debugger(); }
+    void objectMemory(uint64_t start, uint64_t end) {
+        addRegion({"heap", start, end, vmdbg::Region::Kind::Objects, 0, ""});
+    }
 
     mutable toy::Kernel kernel;
 };
@@ -118,6 +122,18 @@ TEST_CASE("a byte object has its text instead of slots") {
     CHECK(json["isBits"].asBool());
     CHECK(json["string"].asString() == "hello");
     CHECK(json["slots"].size() == 0);
+}
+
+TEST_CASE("a listing names a word that points at an object") {
+    ToySession session;
+    toy::Heap& heap = session.objects->kernel.heap;
+    uint64_t point = heap.object(session.objects->kernel.point,
+                                 {toy::smallInteger(1), toy::smallInteger(2)});
+    session.objects->objectMemory(toy::Heap::kBase, point + 0x100);
+
+    auto source = session.annotationSource();
+    CHECK(source->dataLabel(point) == "a Point");
+    CHECK(source->dataLabel(0x10).empty());
 }
 
 TEST_CASE("an immediate is its value, with no header to describe") {
