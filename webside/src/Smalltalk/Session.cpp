@@ -2,6 +2,7 @@
 #include "Json.h"
 #include "Smalltalk/InspectorJson.h"
 
+#include <smalldbg/Arch.h>
 #include <smalldbg/Debugger.h>
 #include <smalldbg/DisassemblyAnnotator.h>
 #include "Smalltalk/FrameUnwinder.h"
@@ -379,6 +380,29 @@ void Session::addSmalltalkFrameDetail(Json& json,
         json.set("method", described);
     }
     if (running->receiver != 0) json.set("receiver", printed(running->receiver));
+}
+
+void Session::describeRegister(Json& entry, const smalldbg::StackFrame& frame,
+                               const smalldbg::RegisterValue& reg) const {
+    webside::WebsideSession::describeRegister(entry, frame, reg);
+    if (reg.role == smalldbg::RegisterValue::Role::Other)
+        addPrintString(entry, *reg.value);
+}
+
+// A register or a slot can point into an object rather than at its start, and
+// such a value does not print.
+void Session::addPrintString(Json& entry, uint64_t value) const {
+    if (value == 0 || !mayBeObject(value)) return;
+    try {
+        std::string text = printed(value);
+        if (!text.empty()) entry.set("printString", text);
+    } catch (...) {}
+}
+
+bool Session::mayBeObject(uint64_t value) const {
+    const vmdbg::Region* region = smalltalkInspector().regionAt(value);
+    return region && region->kind == vmdbg::Region::Kind::Objects
+           && !region->isFree(value);
 }
 
 std::unique_ptr<smalldbg::AnnotationSource> Session::annotationSource() const {

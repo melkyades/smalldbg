@@ -15,6 +15,7 @@ namespace smalldbg {
     class Thread;
     class StackTrace;
     struct StackFrame;
+    struct RegisterValue;
 }
 
 namespace vmdbg { class Json; }
@@ -127,8 +128,14 @@ protected:
      *  arguments from locals and returns none. **/
     virtual std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const;
 
-    /** Returns the registers of `frame` as JSON. **/
-    virtual std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
+    /** Returns the registers of `frame` as JSON, with a null value for each
+     *  one the frame does not know. **/
+    std::string buildFrameRegistersJson(const smalldbg::StackFrame& frame) const;
+
+    /** Adds to `entry` what the value of a register of `frame` is. The base
+     *  names the code the ip is in. **/
+    virtual void describeRegister(Json& entry, const smalldbg::StackFrame& frame,
+                                  const smalldbg::RegisterValue& reg) const;
 
     /** Adds to `out` a descriptor for each slot of `frame` in [from, to). **/
     void describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,

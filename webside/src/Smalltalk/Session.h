@@ -74,6 +74,14 @@ protected:
     void addSmalltalkFrameDetail(webside::Json& json,
                                  const smalldbg::StackFrame& frame) const override;
 
+    /** Adds what the object a general register holds prints as. **/
+    void describeRegister(webside::Json& entry, const smalldbg::StackFrame& frame,
+                          const smalldbg::RegisterValue& reg) const override;
+
+    /** Returns true when `value` may be an object, which the base takes to
+     *  be an address in a region of objects. **/
+    virtual bool mayBeObject(uint64_t value) const;
+
     /** Reads the VM's processes. The session calls this the first time they
      *  are asked for after the target moved. Returns false when they cannot
      *  be read, so that the next request tries again. **/
@@ -112,6 +120,7 @@ private:
     void addClassVariables(webside::Json& array,
                            const std::string& name) const;
     std::string printed(uint64_t oop) const;
+    void addPrintString(webside::Json& entry, uint64_t value) const;
 
     std::optional<uint64_t> greenThreadsVersion;  // stateVersion they are from
 };

@@ -220,11 +220,25 @@ TEST_CASE("frame registers JSON reflects the x64 register set") {
     HookProbe s;
     smalldbg::StackFrame f;  // arch defaults to x64
     f.registers.x64.rax = 0xdead;
+    f.allRegisters = true;
 
     const std::string json = s.buildFrameRegistersJson(f);
     CHECK(json.find("\"rip\"") != std::string::npos);
     CHECK(json.find("\"rax\"") != std::string::npos);
     CHECK(json.find("dead") != std::string::npos);
+}
+
+TEST_CASE("a caller's registers other than ip, sp and fp are null") {
+    HookProbe s;
+    smalldbg::StackFrame f;
+    f.registers.x64.rax = 0xdead;
+    f.registers.x64.rbp = 0x3000;
+
+    Json regs = Json::parse(s.buildFrameRegistersJson(f));
+    CHECK(regs[2]["name"].asString() == "rbp");
+    CHECK(regs[2]["value"].isString());
+    CHECK(regs[3]["name"].asString() == "rax");
+    CHECK(regs[3]["value"].isNull());
 }
 
 TEST_CASE("listFrames returns real frames for a launched target") {

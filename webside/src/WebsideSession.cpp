@@ -199,32 +199,28 @@ std::string WebsideSession::buildFrameArgumentsJson(
 }
 
 std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& frame) const {
-    const auto& regs = frame.registers;
+    using Role = smalldbg::RegisterValue::Role;
     auto arr = Json::array();
-    auto add = [&](const char* name, uint64_t v, bool isFlags = false) {
-        auto entry = Json::object().set("name", name).set("value", Json::hex(v));
-        if (isFlags) entry.set("description", regs.arch->describeFlags(v));
+    for (const auto& reg : frame.registerValues()) {
+        auto entry = Json::object().set("name", reg.name);
+        if (!reg.value) {
+            arr.add(std::move(entry.set("value", nullptr)));
+            continue;
+        }
+        entry.set("value", addressHex(*reg.value));
+        if (reg.role == Role::Flags)
+            entry.set("description", frame.registers.arch->describeFlags(*reg.value));
+        else
+            describeRegister(entry, frame, reg);
         arr.add(std::move(entry));
-    };
-    if (regs.arch == smalldbg::X86::instance()) {
-        const auto& r = regs.x86;
-        add("eip", r.eip); add("esp", r.esp); add("ebp", r.ebp);
-        add("eax", r.eax); add("ebx", r.ebx); add("ecx", r.ecx);
-        add("edx", r.edx); add("esi", r.esi); add("edi", r.edi);
-        add("eflags", r.eflags, true);
-    } else if (regs.arch == smalldbg::X64::instance()) {
-        const auto& r = regs.x64;
-        add("rip", r.rip); add("rsp", r.rsp); add("rbp", r.rbp);
-        add("rax", r.rax); add("rbx", r.rbx); add("rcx", r.rcx);
-        add("rdx", r.rdx); add("rsi", r.rsi); add("rdi", r.rdi);
-        add("r8", r.r8); add("r9", r.r9); add("r10", r.r10);
-        add("r11", r.r11); add("r12", r.r12); add("r13", r.r13);
-        add("r14", r.r14); add("r15", r.r15);
-        add("rflags", r.rflags, true);
-    } else {
-        add("ip", regs.ip()); add("fp", regs.fp()); add("sp", regs.sp());
     }
     return arr.dump();
+}
+
+void WebsideSession::describeRegister(Json& entry, const smalldbg::StackFrame& frame,
+                                      const smalldbg::RegisterValue& reg) const {
+    if (reg.role == smalldbg::RegisterValue::Role::Ip)
+        entry.set("printString", buildFrameLabel(frame));
 }
 
 // Every slot a frame owns is described, not only the ones with a role: a
