@@ -13,7 +13,7 @@
 namespace webside {
 
 struct StubInspector : vmdbg::VMInspector {
-    StackRegion evaluatorStack() const override { return {}; }
+    void add(vmdbg::Region region) { addRegion(std::move(region)); }
 };
 
 // Answers every query without a target behind it, so the parts of the session
@@ -78,7 +78,7 @@ struct StubSession : WebsideSession {
     const std::unique_ptr<smalldbg::Debugger> ownedDebugger{
         std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External,
                                              smalldbg::X64::instance())};
-    const std::unique_ptr<vmdbg::VMInspector> ownedInspector{
+    const std::unique_ptr<StubInspector> ownedInspector{
         std::make_unique<StubInspector>()};
 
     std::map<uint64_t, std::string> applied;

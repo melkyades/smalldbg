@@ -10,12 +10,22 @@ const Region* VMInspector::regionAt(uint64_t address) const {
 
 bool VMInspector::isInObjectMemory(uint64_t address) const {
     const Region* region = regionAt(address);
-    return region && region->isObjectMemory;
+    return region && region->kind == Region::Kind::Objects;
 }
 
 bool VMInspector::isCodeAddress(uint64_t address) const {
     const Region* region = regionAt(address);
-    return region && region->isCode;
+    return region && region->kind == Region::Kind::Code;
+}
+
+const char* regionKindName(Region::Kind kind) {
+    switch (kind) {
+    case Region::Kind::Objects: return "objects";
+    case Region::Kind::Code:    return "code";
+    case Region::Kind::Stack:   return "stack";
+    case Region::Kind::Data:    break;
+    }
+    return "data";
 }
 
 std::string VMInspector::classifyAddress(uint64_t address) const {

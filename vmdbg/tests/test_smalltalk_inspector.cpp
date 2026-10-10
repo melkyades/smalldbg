@@ -9,7 +9,6 @@ namespace {
 // An inspector whose class table is whatever the test adds.
 class TestInspector : public smalltalk::Inspector {
 public:
-    StackRegion evaluatorStack() const override { return {}; }
     std::unique_ptr<smalltalk::Object> objectFor(uint64_t) const override { return nullptr; }
     std::unique_ptr<smalltalk::HeapObject> heapObjectFor(uint64_t) const override {
         return nullptr;

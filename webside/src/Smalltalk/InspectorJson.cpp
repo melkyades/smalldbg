@@ -9,20 +9,6 @@
 
 namespace webside {
 
-std::string regionsJson(const smalltalk::Inspector& inspector) {
-    auto array = Json::array();
-    for (const vmdbg::Region& region : inspector.regions()) {
-        array.add(Json::object()
-            .set("name", region.name)
-            .set("start", Json::hex(region.start))
-            .set("end", Json::hex(region.end))
-            .set("size", static_cast<int64_t>(region.size()))
-            .set("objectMemory", region.isObjectMemory)
-            .set("code", region.isCode));
-    }
-    return array.dump();
-}
-
 std::string retainersJson(smalltalk::Inspector& inspector, uint64_t oop) {
     auto array = Json::array();
     for (const auto& step : inspector.retainersOf(oop)) {

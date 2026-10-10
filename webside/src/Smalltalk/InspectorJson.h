@@ -10,10 +10,6 @@ namespace webside {
 
 using vmdbg::Json;
 
-/** Returns the inspector's regions as a JSON array of objects with name,
- *  start, end, size, objectMemory and code. **/
-std::string regionsJson(const smalltalk::Inspector& inspector);
-
 /** Returns the chain that keeps `oop` alive as a JSON array of objects with
  *  oop, class, isClass and detail. **/
 std::string retainersJson(smalltalk::Inspector& inspector, uint64_t oop);

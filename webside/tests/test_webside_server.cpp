@@ -41,6 +41,8 @@ struct SnapshotSession : StubSession {
 struct TestServer : WebsideServer {
     using WebsideServer::WebsideServer;
     using WebsideServer::handleMemory;
+    using WebsideServer::handleRegions;
+    using WebsideServer::handleClassify;
     using WebsideServer::handleLoadModuleSymbols;
     using WebsideServer::handleRunTo;
     using WebsideServer::threadListJson;
@@ -138,6 +140,54 @@ std::vector<uint8_t> sample() {
 }
 
 } // namespace
+
+// Eden runs over the first 16 bytes of the snapshot, half of them in use.
+void addEden(Served& served) {
+    vmdbg::Region eden;
+    eden.name = "eden";
+    eden.start = kBase;
+    eden.end = kBase + 0x10;
+    eden.kind = vmdbg::Region::Kind::Objects;
+    eden.top = kBase + 8;
+    eden.note = "young objects";
+    static_cast<StubSession&>(*served.workspace.session())
+        .ownedInspector->add(eden);
+}
+
+Json classify(Served& served, uint64_t address) {
+    HttpRequest request;
+    request.method = "GET";
+    request.path = "/classify";
+    request.params["address"] = Json::hex(address).asString();
+    return Json::parse(served.server.handleClassify(request).body);
+}
+
+TEST_CASE("/regions lists the VM's regions with their kind and use") {
+    Served served(sample());
+    addEden(served);
+    HttpRequest request;
+    request.method = "GET";
+    request.path = "/regions";
+    Json regions = Json::parse(served.server.handleRegions(request).body)["regions"];
+    REQUIRE(regions.size() == 1);
+    CHECK(regions[0]["name"].asString() == "eden");
+    CHECK(regions[0]["kind"].asString() == "objects");
+    CHECK(regions[0]["size"].asInt() == 16);
+    CHECK(regions[0]["top"].asString() == Json::hex(kBase + 8).asString());
+    CHECK(regions[0]["note"].asString() == "young objects");
+}
+
+TEST_CASE("/classify says which region holds an address and if it is in use") {
+    Served served(sample());
+    addEden(served);
+    Json used = classify(served, kBase + 2);
+    CHECK(used["region"].asString() == "eden");
+    CHECK(used["kind"].asString() == "objects");
+    CHECK(used["regionOffset"].asInt() == 2);
+    CHECK(used["free"].isNull());
+    CHECK(classify(served, kBase + 12)["free"].asBool());
+    CHECK(classify(served, kBase + 0x20)["region"].isNull());
+}
 
 TEST_CASE("/memory reads bytes as a hex dump beside their ASCII") {
     Served served(sample());

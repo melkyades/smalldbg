@@ -15,54 +15,6 @@ Inspector* WebsideServer::smalltalkInspector() const {
     return session().inspector().smalltalkView();
 }
 
-HttpResponse WebsideServer::handleRegions(const HttpRequest& req) const {
-    Inspector* inspector = smalltalkInspector();
-    if (!isActive() || !inspector)
-        return webside::WebsideServer::handleRegions(req);
-
-    // The spaces move when the VM collects garbage, so they are read again
-    // on every request.
-    inspector->refreshRegions();
-
-    HttpResponse res;
-    res.body = Json::object()
-        .set("regions", Json::parse(webside::regionsJson(*inspector)))
-        .dump();
-    return res;
-}
-
-HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
-    Inspector* inspector = smalltalkInspector();
-    if (!isActive() || !inspector)
-        return webside::WebsideServer::handleClassify(req);
-
-    auto address = req.params.find("address");
-    if (address == req.params.end()) {
-        HttpResponse res;
-        res.statusCode = 400;
-        res.body = Json::object()
-            .set("error", "Missing address parameter").dump();
-        return res;
-    }
-
-    uint64_t value = parseHexParam(address->second);
-    auto result = Json::object()
-        .set("address", Json::hex(value))
-        .set("region", inspector->classifyAddress(value))
-        .set("objectMemory", inspector->isInObjectMemory(value))
-        .set("code", inspector->isCodeAddress(value));
-
-    auto* provider = session().debugger().getSymbolProvider();
-    if (auto symbol = provider->getSymbolByAddress(value)) {
-        result.set("symbol", symbol->name);
-        result.set("offset", static_cast<int64_t>(value - symbol->address));
-    }
-
-    HttpResponse res;
-    res.body = result.dump();
-    return res;
-}
-
 void WebsideServer::setupRoutes() {
     webside::WebsideServer::setupRoutes();
 

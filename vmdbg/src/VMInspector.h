@@ -12,17 +12,27 @@ namespace vmdbg {
  *  stack. Every VM divides its memory up somehow, and these are what answer
  *  "what is this address". **/
 struct Region {
+    /** A Kind says what a region holds. Data is whatever is neither objects,
+     *  code nor a stack, such as the tables a JIT keeps. **/
+    enum class Kind { Data, Objects, Code, Stack };
+
     std::string name;
     uint64_t start{0};
     uint64_t end{0};      // exclusive
-    bool isObjectMemory{false};
-    bool isCode{false};
+    Kind kind{Kind::Data};
+    uint64_t top{0};      // where the used part ends; 0 when all of it is used
+    std::string note;     // what it holds, when the name does not say
 
     bool contains(uint64_t address) const {
         return address >= start && address < end;
     }
     uint64_t size() const { return end > start ? end - start : 0; }
+    /** Returns true for an address past the used part. **/
+    bool isFree(uint64_t address) const { return top != 0 && address >= top; }
 };
+
+/** Returns the word a client sees for a kind of region, such as "objects". **/
+const char* regionKindName(Region::Kind kind);
 
 /** VM-level introspection behind the /regions, /classify and /inspect routes.
  *
@@ -32,15 +42,6 @@ struct Region {
 class VMInspector {
 public:
     virtual ~VMInspector() = default;
-
-    /** The VM's evaluator stack, when it has one. **/
-    struct StackRegion {
-        bool valid{false};
-        uint64_t base{0};
-        uint64_t sp{0};
-        uint64_t bp{0};
-    };
-    virtual StackRegion evaluatorStack() const = 0;
 
     /** Finds the regions again, since a space can grow, move or be swapped by
      *  a collection. Returns false when they cannot be found; by default there

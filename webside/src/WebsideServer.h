@@ -120,8 +120,11 @@ protected:
     std::vector<std::shared_ptr<smalldbg::Thread>> nativeThreads() const;
 
     // ---- VM inspector routes (delegate to the session inspector) ----
+    /** Returns the VM's regions and the target's modules. A dialect may add
+     *  what it knows about its own spaces. **/
     virtual HttpResponse handleRegions(const HttpRequest& req) const;
-    virtual HttpResponse handleClassify(const HttpRequest& req) const;
+    HttpResponse handleClassify(const HttpRequest& req) const;
+    Json regionJson(const vmdbg::Region& region) const;
     HttpResponse handleInspect(const HttpRequest& req) const;
 
     // ---- class / search route handlers ----

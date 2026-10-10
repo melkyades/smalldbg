@@ -18,7 +18,6 @@ namespace {
 // An inspector whose classes and regions are whatever the test adds.
 class TestInspector : public smalltalk::Inspector {
 public:
-    StackRegion evaluatorStack() const override { return {}; }
     std::unique_ptr<smalltalk::Object> objectFor(uint64_t) const override {
         return nullptr;
     }
@@ -282,21 +281,6 @@ TEST_CASE("a session with nothing attached says it is detached") {
     CHECK_FALSE(session.isActive());
     CHECK_FALSE(session.getPid().has_value());
     CHECK(session.getStopReason() == "detached");
-}
-
-TEST_CASE("regions read as name, bounds, size and kind") {
-    TestInspector inspector;
-    inspector.add(vmdbg::Region{"old", 0x1000, 0x3000, true, false});
-    inspector.add(vmdbg::Region{"code", 0x8000, 0x8100, false, true});
-
-    Json regions = Json::parse(webside::regionsJson(inspector));
-    REQUIRE(regions.size() == 2);
-    CHECK(regions[0]["name"].asString() == "old");
-    CHECK(regions[0]["start"].asString() ==
-          Json::hex(uint64_t(0x1000)).asString());
-    CHECK(regions[0]["size"].asInt() == 0x2000);
-    CHECK(regions[0]["objectMemory"].asBool());
-    CHECK(regions[1]["code"].asBool());
 }
 
 TEST_CASE("retainers read as oop, class, whether a class, and detail") {

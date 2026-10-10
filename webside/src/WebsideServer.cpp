@@ -463,55 +463,49 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
 // VM inspector routes: what is VM-specific comes from the session's inspector
 // =========================================================================
 
-static Json moduleToCodeZone(const smalldbg::ModuleInfo& mod) {
-    return Json::object()
-        .set("start", Json::hex(mod.loadAddress))
-        .set("end", Json::hex(mod.endAddress))
-        .set("size", static_cast<int64_t>(mod.endAddress - mod.loadAddress));
+Json WebsideServer::regionJson(const vmdbg::Region& region) const {
+    auto json = Json::object()
+        .set("name", region.name)
+        .set("kind", vmdbg::regionKindName(region.kind))
+        .set("start", session().addressHex(region.start))
+        .set("end", session().addressHex(region.end))
+        .set("size", static_cast<int64_t>(region.size()));
+    if (region.top != 0) json.set("top", session().addressHex(region.top));
+    if (!region.note.empty()) json.set("note", region.note);
+    return json;
 }
 
+// The spaces move when the VM collects garbage, so they are read again on
+// every request.
 HttpResponse WebsideServer::handleRegions(const HttpRequest&) const {
     HttpResponse res;
-    auto* inspector = &session().inspector();
-    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+    if (!isActive()) { res.body = "{}"; return res; }
 
+    vmdbg::VMInspector& inspector = session().inspector();
+    inspector.refreshRegions();
+    auto regions = Json::array();
+    for (const vmdbg::Region& region : inspector.regions())
+        regions.add(regionJson(region));
+
+    auto modules = Json::array();
     auto* provider = session().debugger().getSymbolProvider();
-    auto result = Json::object();
-
-    auto codeZones = Json::object();
-    auto modules = provider->getModules();
-    for (auto& mod : modules)
-        codeZones.set(mod.shortName, moduleToCodeZone(mod));
-    result.set("codeZones", codeZones);
-
-    auto stack = inspector->evaluatorStack();
-    if (stack.valid) {
-        result.set("stack", Json::object()
-            .set("base", Json::hex(stack.base))
-            .set("sp", Json::hex(stack.sp))
-            .set("bp", Json::hex(stack.bp)));
-    } else {
-        result.set("stack", Json::null());
+    for (const auto& module : provider->getModules()) {
+        modules.add(Json::object()
+            .set("name", module.shortName)
+            .set("path", module.path)
+            .set("start", session().addressHex(module.loadAddress))
+            .set("end", session().addressHex(module.endAddress)));
     }
-
-    auto moduleList = Json::array();
-    for (auto& mod : modules) {
-        moduleList.add(Json::object()
-            .set("name", mod.shortName)
-            .set("path", mod.path)
-            .set("start", Json::hex(mod.loadAddress))
-            .set("end", Json::hex(mod.endAddress)));
-    }
-    result.set("modules", moduleList);
-
-    res.body = result.dump();
+    res.body = Json::object().set("regions", regions)
+                             .set("modules", modules).dump();
     return res;
 }
 
+// Answers what an address is: the region and the module holding it, and the
+// symbol it is in.
 HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
     HttpResponse res;
-    auto* inspector = &session().inspector();
-    if (!isActive() || !inspector) { res.body = "{}"; return res; }
+    if (!isActive()) { res.body = "{}"; return res; }
 
     auto addrIt = req.params.find("address");
     if (addrIt == req.params.end()) {
@@ -519,43 +513,29 @@ HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
         res.body = Json::object().set("error", "Missing address parameter").dump();
         return res;
     }
+    uint64_t address = parseHexParam(addrIt->second);
+    auto result = Json::object().set("address", session().addressHex(address));
 
-    uint64_t addr = parseHexParam(addrIt->second);
+    vmdbg::VMInspector& inspector = session().inspector();
+    inspector.refreshRegions();
+    if (const vmdbg::Region* region = inspector.regionAt(address)) {
+        result.set("region", region->name)
+              .set("kind", vmdbg::regionKindName(region->kind))
+              .set("regionOffset", static_cast<int64_t>(address - region->start));
+        if (region->isFree(address)) result.set("free", true);
+    }
+
     auto* provider = session().debugger().getSymbolProvider();
-
-    auto result = Json::object();
-    result.set("address", Json::hex(addr));
-
-    std::string moduleName;
-    auto modules = provider->getModules();
-    for (auto& mod : modules) {
-        if (addr >= mod.loadAddress && addr < mod.endAddress) {
-            moduleName = mod.shortName;
+    for (const auto& module : provider->getModules()) {
+        if (address >= module.loadAddress && address < module.endAddress) {
+            result.set("module", module.shortName);
             break;
         }
     }
-    result.set("module", moduleName.empty() ? Json::null() : Json::string(moduleName));
-
-    auto stack = inspector->evaluatorStack();
-    bool inStack = false;
-    if (stack.valid && stack.base != 0 && stack.sp > 0) {
-        uint64_t stackStart = stack.base;
-        uint64_t stackEnd = stack.base + stack.sp * 8;
-        inStack = (addr >= stackStart && addr < stackEnd);
+    if (auto symbol = provider->getSymbolByAddress(address)) {
+        result.set("symbol", symbol->name);
+        result.set("offset", static_cast<int64_t>(address - symbol->address));
     }
-    result.set("stack", inStack);
-
-    auto sym = provider->getSymbolByAddress(addr);
-    if (sym) {
-        result.set("symbol", sym->name);
-        result.set("offset", static_cast<int64_t>(addr - sym->address));
-    } else {
-        result.set("symbol", nullptr);
-        result.set("offset", nullptr);
-    }
-
-    result.set("space", nullptr);
-    result.set("codeZone", moduleName.empty() ? Json::null() : Json::string(moduleName));
 
     res.body = result.dump();
     return res;

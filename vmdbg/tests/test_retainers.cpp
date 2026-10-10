@@ -44,7 +44,6 @@ public:
         addClass(entry("Holder", kHolderClass));
     }
 
-    StackRegion evaluatorStack() const override { return {}; }
     std::unique_ptr<smalltalk::Object> objectFor(uint64_t oop) const override {
         static const std::map<uint64_t, std::pair<std::string, std::string>> known{
             {kRoot, {"Array", "an Array"}},

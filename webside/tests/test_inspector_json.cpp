@@ -17,7 +17,6 @@ namespace {
 // slots.
 class ToyInspector : public smalltalk::Inspector {
 public:
-    StackRegion evaluatorStack() const override { return {}; }
     ToyInspector() {
         ClassEntry point;
         point.name = "Point";
