@@ -24,6 +24,11 @@ std::vector<ClassVariable> Inspector::classVariablesOf(
     return variables;
 }
 
+std::string Inspector::printed(uint64_t oop) const {
+    auto object = objectFor(oop);
+    return object ? object->printString() : std::string();
+}
+
 std::vector<std::string> Inspector::slotNamesOf(
     const std::string& className) const {
     std::vector<std::string> chain = superclassesOf(className);

@@ -275,8 +275,7 @@ std::string Session::getSuperclasses(const std::string& name) const {
 }
 
 std::string Session::printed(uint64_t oop) const {
-    auto object = smalltalkInspector().objectFor(oop);
-    return object ? object->printString() : std::string();
+    return smalltalkInspector().printed(oop);
 }
 
 // Webside asks for a class's variables as one list of named slots, inherited

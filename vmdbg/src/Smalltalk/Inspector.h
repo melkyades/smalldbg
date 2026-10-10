@@ -83,6 +83,10 @@ public:
     virtual std::vector<ClassVariable> classVariablesOf(
         const std::string& className) const;
 
+    /** Returns what the object at `oop` prints as. The default asks the
+     *  object. **/
+    virtual std::string printed(uint64_t oop) const;
+
     // ---- built on the above ------------------------------------------------
 
     const std::map<std::string, ClassEntry>& classes() const { return classTable; }

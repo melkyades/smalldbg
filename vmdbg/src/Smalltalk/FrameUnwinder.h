@@ -21,6 +21,7 @@ struct FrameLayout {
     int method{absent};    // the CompiledMethod being run
     int context{absent};
     int firstArgument{8};  // arguments start here, growing away from the frame
+    int closureContext{absent};  // the context a method that makes blocks keeps
 };
 
 /** A FrameMetadata says what a Smalltalk frame is running. A dialect's
@@ -52,10 +53,11 @@ public:
     smalldbg::Status unwind(smalldbg::StackFrame& frame,
                             smalldbg::Debugger* debugger) override;
 
+    /** Returns where this VM's frames keep what every frame has. **/
+    virtual const FrameLayout& layout() const = 0;
+
 protected:
     // ---- what a dialect must answer ---------------------------------------
-
-    virtual const FrameLayout& layout() const = 0;
 
     /** Returns true for an address inside the VM's own generated code. **/
     virtual bool isVMCode(uint64_t ip, smalldbg::Debugger* debugger) const = 0;
