@@ -69,6 +69,11 @@ protected:
     /** Returns the dialect's inspector, which holds the class table. **/
     virtual Inspector& smalltalkInspector() const = 0;
 
+    /** Adds the class and the method a frame is running, with the method's
+     *  source, and what self is. **/
+    void addSmalltalkFrameDetail(webside::Json& json,
+                                 const smalldbg::StackFrame& frame) const override;
+
     /** Reads the VM's processes. The session calls this the first time they
      *  are asked for after the target moved. Returns false when they cannot
      *  be read, so that the next request tries again. **/

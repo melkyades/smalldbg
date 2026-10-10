@@ -4,6 +4,7 @@
 
 #include <smalldbg/Debugger.h>
 #include <smalldbg/DisassemblyAnnotator.h>
+#include "Smalltalk/FrameUnwinder.h"
 
 #include <algorithm>
 #include <cctype>
@@ -358,6 +359,26 @@ std::string Session::getMethod(const std::string& className,
                                const std::string& selector) const {
     auto method = smalltalkInspector().methodNamed(className, selector);
     return method ? methodJson(*method).dump() : "{}";
+}
+
+// A block runs in its method's activation, and says which of its blocks.
+void Session::addSmalltalkFrameDetail(Json& json,
+                                      const smalldbg::StackFrame& frame) const {
+    webside::WebsideSession::addSmalltalkFrameDetail(json, frame);
+    const auto* running = dynamic_cast<const FrameMetadata*>(frame.metadata.get());
+    if (!running) return;
+
+    if (auto entry = entryNamed(running->className)) json.set("class", classJson(*entry));
+    if (auto method = smalltalkInspector().methodNamed(running->className,
+                                                        running->selector)) {
+        Json described = methodJson(*method);
+        if (running->isBlock && running->blockIndex >= 0)
+            described.set("selector", method->selector + " [block "
+                          + std::to_string(running->blockIndex) + "]");
+        json.set("hasSource", described["hasSource"].asBool());
+        json.set("method", described);
+    }
+    if (running->receiver != 0) json.set("receiver", printed(running->receiver));
 }
 
 std::unique_ptr<smalldbg::AnnotationSource> Session::annotationSource() const {

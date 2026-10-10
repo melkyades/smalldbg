@@ -22,6 +22,17 @@ struct FrameLayout {
     int firstArgument{8};  // arguments start here, growing away from the frame
 };
 
+/** A FrameMetadata says what a Smalltalk frame is running. A dialect's
+ *  unwinder attaches one to each frame it names. **/
+struct FrameMetadata : smalldbg::FrameMetadata {
+    std::string className;   // the method's class, "Point class" on its class side
+    std::string selector;
+    bool isBlock{false};
+    int blockIndex{-1};      // which of the method's blocks, counted from 1
+    uint64_t method{0};      // the CompiledMethod, or 0 when it is not known
+    uint64_t receiver{0};    // self, or 0 when it is not known
+};
+
 /** Walking the frames a Smalltalk VM builds.
  *
  *  Every dialect links its frames the same way -- a saved frame pointer and a

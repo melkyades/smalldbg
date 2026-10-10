@@ -2,6 +2,7 @@
 
 #include "Json.h"
 #include "Smalltalk/InspectorJson.h"
+#include "Smalltalk/FrameUnwinder.h"
 #include "Smalltalk/Session.h"
 #include "ToyHeap.h"
 #include "smalldbg/Debugger.h"
@@ -114,6 +115,7 @@ public:
     // Promoted so the tests can reach them.
     using smalltalk::Session::classDefinition;
     using smalltalk::Session::isMetaclassName;
+    using smalltalk::Session::buildFrameDetailJson;
 
 protected:
     bool onTargetOpened(const vmdbg::TargetSpec&) override { return true; }
@@ -296,4 +298,27 @@ TEST_CASE("retainers read as oop, class, whether a class, and detail") {
     CHECK(chain[0]["detail"].asString() == "Holder");
     CHECK_FALSE(chain[1]["isClass"].asBool());
     CHECK(webside::retainersJson(inspector, 0x10200) == "[]");
+}
+
+TEST_CASE("a Smalltalk frame shows its method's class and source") {
+    TestSession session;
+    smalldbg::StackFrame frame;
+    auto running = std::make_unique<smalltalk::FrameMetadata>();
+    running->className = "Point";
+    running->selector = "x";
+    frame.metadata = std::move(running);
+
+    Json detail = Json::parse(session.buildFrameDetailJson(frame, 1));
+    CHECK(detail["class"]["name"].asString() == "Point");
+    CHECK(detail["method"]["source"].asString() == "x\r\t^x");
+    CHECK(detail["hasSource"].asBool());
+
+    auto block = std::make_unique<smalltalk::FrameMetadata>();
+    block->className = "Point";
+    block->selector = "x";
+    block->isBlock = true;
+    block->blockIndex = 1;
+    frame.metadata = std::move(block);
+    detail = Json::parse(session.buildFrameDetailJson(frame, 1));
+    CHECK(detail["method"]["selector"].asString() == "x [block 1]");
 }
