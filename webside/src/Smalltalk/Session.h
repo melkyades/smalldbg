@@ -7,9 +7,17 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace smalltalk {
+
+/** A FramePosition says where a frame is in its method: the bytecode it is at
+ *  and, when the dialect can match it, the source that bytecode came from. **/
+struct FramePosition {
+    int bytecodePC{0};
+    std::optional<std::pair<size_t, size_t>> source;  // byte offsets, both inclusive
+};
 
 /** A smalltalk::Session is the Webside session of a Smalltalk VM. It answers
  *  the class-browsing and search parts of the Webside API from the
@@ -76,9 +84,23 @@ protected:
     virtual Inspector& smalltalkInspector() const = 0;
 
     /** Adds the class and the method a frame is running, with the method's
-     *  source, and what self is. **/
+     *  source, what self is, what the dialect adds, and where in the method
+     *  the frame is. **/
     void addSmalltalkFrameDetail(webside::Json& json,
-                                 const smalldbg::StackFrame& frame) const override;
+                                 const smalldbg::StackFrame& frame) const final;
+
+    /** Adds what the dialect knows about a Smalltalk frame beyond its class,
+     *  method and receiver. The session calls this before it places the frame
+     *  in its method. The base adds nothing. **/
+    virtual void addDialectFrameDetail(webside::Json& /*json*/,
+                                       const smalldbg::StackFrame& /*frame*/) const {}
+
+    /** Returns where `frame` is in its method, whose source is `source`, or
+     *  nothing when the dialect cannot place it, as the base never can. **/
+    virtual std::optional<FramePosition> framePosition(const smalldbg::StackFrame& /*frame*/,
+                                                       const std::string& /*source*/) const {
+        return std::nullopt;
+    }
 
     /** Adds what the object a general register holds prints as. **/
     void describeRegister(webside::Json& entry, const smalldbg::StackFrame& frame,
@@ -142,6 +164,7 @@ private:
                            const std::string& name) const;
     std::string printed(uint64_t oop) const;
     void addPrintString(webside::Json& entry, uint64_t value) const;
+    void addFramePosition(webside::Json& json, const smalldbg::StackFrame& frame) const;
 
     std::optional<uint64_t> greenThreadsVersion;  // stateVersion they are from
     mutable std::map<int, std::unique_ptr<smalldbg::StackTrace>> greenStacks;

@@ -112,6 +112,8 @@ public:
         classes->add(methodEntry("Point class", "x:y:", "instance creation",
                                  0x330));
         classes->add(methodEntry("Object", "isNil", "testing", 0x340));
+        classes->add(methodEntry("Array", "label", "printing", 0x350),
+                     "label\r\t\"\xC3\xA9\" ^x");
     }
 
     std::shared_ptr<smalldbg::Thread> vmThread() const override {
@@ -125,6 +127,14 @@ public:
     using smalltalk::Session::isMetaclassName;
     using smalltalk::Session::buildFrameDetailJson;
     using smalltalk::Session::buildFrameArgumentsJson;
+
+    // A frame of any method is at bytecode 7, the "^x" of its source.
+    std::optional<smalltalk::FramePosition> framePosition(
+        const smalldbg::StackFrame&, const std::string& source) const override {
+        size_t at = source.find("^x");
+        if (at == std::string::npos) return std::nullopt;
+        return smalltalk::FramePosition{7, std::make_pair(at, at + 1)};
+    }
 
     // Each green thread has one frame, running Point class>>x:y:.
     std::vector<std::unique_ptr<smalldbg::StackFrame>>
@@ -322,6 +332,20 @@ TEST_CASE("retainers read as oop, class, whether a class, and detail") {
     CHECK(chain[0]["detail"].asString() == "Holder");
     CHECK_FALSE(chain[1]["isClass"].asBool());
     CHECK(webside::retainersJson(inspector, 0x10200) == "[]");
+}
+
+TEST_CASE("a frame is placed in its method's source by character, not byte") {
+    TestSession session;
+    smalldbg::StackFrame frame;
+    auto running = std::make_unique<smalltalk::FrameMetadata>();
+    running->className = "Array";
+    running->selector = "label";
+    frame.metadata = std::move(running);
+
+    Json detail = Json::parse(session.buildFrameDetailJson(frame, 1));
+    CHECK(detail["bytecodePC"].asInt() == 7);
+    CHECK(detail["interval"]["start"].asInt() == 12);
+    CHECK(detail["interval"]["end"].asInt() == 13);
 }
 
 TEST_CASE("a method's bytecodes come decoded, with their bytes in hex") {

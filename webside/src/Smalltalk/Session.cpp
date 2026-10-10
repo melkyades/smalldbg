@@ -435,6 +435,34 @@ void Session::addSmalltalkFrameDetail(Json& json,
         json.set("method", described);
     }
     if (running->receiver != 0) json.set("receiver", printed(running->receiver));
+    addDialectFrameDetail(json, frame);
+    addFramePosition(json, frame);
+}
+
+namespace {
+
+// Returns the number, from 1, of the character holding byte `offset` of UTF-8
+// text: only the bytes that start a character are counted.
+int characterNumber(const std::string& text, size_t offset) {
+    int characters = 0;
+    for (size_t i = 0; i <= offset && i < text.size(); i++) {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) characters++;
+    }
+    return characters;
+}
+
+} // namespace
+
+// A client marks the interval in the source it shows, counting characters.
+void Session::addFramePosition(Json& json, const smalldbg::StackFrame& frame) const {
+    const std::string source = json["method"]["source"].asString();
+    auto position = framePosition(frame, source);
+    if (!position) return;
+    json.set("bytecodePC", position->bytecodePC);
+    if (!position->source) return;
+    json.set("interval", Json::object()
+        .set("start", characterNumber(source, position->source->first))
+        .set("end", characterNumber(source, position->source->second)));
 }
 
 namespace {
