@@ -93,7 +93,7 @@ protected:
     readGreenFrames(int /*threadIndex*/) const { return {}; }
 
     /** Returns the arguments the frame's unwinder read, named by the
-     *  selector's keywords. **/
+     *  selector's keywords, or for a native frame what the base returns. **/
     std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const override;
 
     /** Adds the roles a Smalltalk frame's layout gives its slots, such as

@@ -133,8 +133,8 @@ protected:
     virtual std::string addSmalltalkFrameBindings(const smalldbg::StackFrame& frame) const;
     virtual std::string addNativeFrameBindings(const smalldbg::StackFrame& frame) const;
 
-    /** Returns the frame's arguments as [{name, value}]. The base cannot tell
-     *  arguments from locals and returns none. **/
+    /** Returns the frame's arguments as [{name, type, value, printString}].
+     *  The base returns the ones the symbols list for a native frame. **/
     virtual std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const;
 
     /** Returns the registers of `frame` as JSON, with a null value for each

@@ -450,7 +450,8 @@ void Session::describeSlot(Json& entry, const smalldbg::StackFrame* frame,
 // numbered instead.
 std::string Session::buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const {
     const auto* running = dynamic_cast<const FrameMetadata*>(frame.metadata.get());
-    if (!running || running->arguments.empty()) return "[]";
+    if (!running) return webside::WebsideSession::buildFrameArgumentsJson(frame);
+    if (running->arguments.empty()) return "[]";
 
     const auto& values = running->arguments;
     std::vector<std::string> names;

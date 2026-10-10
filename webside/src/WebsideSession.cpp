@@ -30,6 +30,9 @@ std::string WebsideSession::listFrames(smalldbg::Thread& thread, size_t maxFrame
     prepareFrames();
     auto* trace = thread.getStackTrace(std::max(maxFrames, size_t(64)));
     if (!trace) return "[]";
+    // The arguments a frame's line shows come with its details.
+    for (size_t i = 0; i < trace->getFrameCount(); i++)
+        trace->resolveFrameDetails(i, &debugger());
     return listFrames(*trace);
 }
 
@@ -210,9 +213,24 @@ std::string WebsideSession::addNativeFrameBindings(const smalldbg::StackFrame& f
     return arr.dump();
 }
 
-std::string WebsideSession::buildFrameArgumentsJson(
-    const smalldbg::StackFrame& /*frame*/) const {
-    return "[]";
+// A value the symbols format, such as a string's text, is its print string.
+static Json argumentJson(const smalldbg::LocalVariable& variable) {
+    auto entry = Json::object()
+        .set("name", variable.name)
+        .set("type", variable.typeName);
+    auto value = variable.getValue();
+    if (!value) entry.set("value", variable.valueText);
+    else if (variable.size <= 4) entry.set("value", Json::hex(static_cast<uint32_t>(*value)));
+    else entry.set("value", Json::hex(*value));
+    if (!variable.valueText.empty()) entry.set("printString", variable.valueText);
+    return entry;
+}
+
+std::string WebsideSession::buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const {
+    auto arr = Json::array();
+    for (const auto& variable : frame.localVariables)
+        if (variable.isArgument) arr.add(argumentJson(variable));
+    return arr.dump();
 }
 
 std::string WebsideSession::buildFrameRegistersJson(const smalldbg::StackFrame& frame) const {

@@ -26,6 +26,7 @@ struct HookProbe : StubSession {
     using WebsideSession::buildFrameDetailJson;
     using WebsideSession::buildFrameBindingsJson;
     using WebsideSession::buildFrameRegistersJson;
+    using WebsideSession::buildFrameArgumentsJson;
 };
 
 // Opens a StubSession for any target whose path is not "unopenable".
@@ -225,6 +226,27 @@ TEST_CASE("frame registers JSON reflects the x64 register set") {
     CHECK(json.find("\"rip\"") != std::string::npos);
     CHECK(json.find("\"rax\"") != std::string::npos);
     CHECK(json.find("dead") != std::string::npos);
+}
+
+TEST_CASE("a native frame lists the arguments its symbols name") {
+    HookProbe s;
+    smalldbg::StackFrame f;
+    smalldbg::LocalVariable path;
+    path.frame = &f;
+    path.name = "path";
+    path.typeName = "char *";
+    path.isArgument = true;
+    path.valueText = "\"C:\\temp\"";
+    smalldbg::LocalVariable local;
+    local.frame = &f;
+    local.name = "count";
+    f.localVariables = {path, local};
+
+    Json args = Json::parse(s.buildFrameArgumentsJson(f));
+    REQUIRE(args.size() == 1);
+    CHECK(args[0]["name"].asString() == "path");
+    CHECK(args[0]["type"].asString() == "char *");
+    CHECK(args[0]["printString"].asString() == "\"C:\\temp\"");
 }
 
 TEST_CASE("a caller's registers other than ip, sp and fp are null") {
