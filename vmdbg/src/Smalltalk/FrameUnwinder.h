@@ -34,7 +34,6 @@ struct FrameMetadata : smalldbg::FrameMetadata {
     uint64_t method{0};      // the CompiledMethod, or 0 when it is not known
     uint64_t receiver{0};    // self, or 0 when it is not known
     std::vector<uint64_t> arguments;  // left to right, when the unwinder read them
-    int instruction{-1};     // the bytecode it stopped at, when the VM saved it
 };
 
 /** Walking the frames a Smalltalk VM builds.

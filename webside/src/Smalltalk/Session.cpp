@@ -434,7 +434,6 @@ void Session::addSmalltalkFrameDetail(Json& json,
         json.set("method", described);
     }
     if (running->receiver != 0) json.set("receiver", printed(running->receiver));
-    if (running->instruction >= 0) json.set("instruction", running->instruction);
 }
 
 namespace {
