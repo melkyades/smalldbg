@@ -29,9 +29,6 @@ using vmdbg::Json;
  *  and objects. **/
 class WebsideSession : public vmdbg::VMSession {
 public:
-    // ---- state queries ----
-    virtual std::string getRegisters() const = 0;
-
     // ---- frame API ----
     // These take real debugger objects; the WebsideServer layer resolves the
     // thread and frame from the request, then calls these. A frame is a VM

@@ -30,7 +30,6 @@ struct StubSession : WebsideSession {
     bool isActive() const override { return false; }
     std::optional<int> getPid() const override { return std::nullopt; }
     std::string getStopReason() const override { return ""; }
-    std::string getRegisters() const override { return "{}"; }
     void refreshGreenThreads() override {}
     int greenThreadCount() const override { return 0; }
     std::string getGreenThreadName(int) const override { return ""; }
