@@ -38,10 +38,12 @@ public:
         auto found = sources.find(method.oop);
         return found == sources.end() ? std::string() : found->second;
     }
-    // Point>>x pushes x and returns it; nothing else decodes.
+    // Point>>x sends #value to x and returns it; nothing else decodes.
     std::vector<smalltalk::Bytecode> bytecodesOf(const MethodEntry& method) const override {
         if (method.oop != 0x300) return {};
-        return {{1, {0x10}, "push x", std::nullopt}, {2, {0x7C}, "return", std::nullopt}};
+        return {{1, {0x10}, "push x", "", std::nullopt},
+                {2, {0xCB}, "send #value", "value", std::nullopt},
+                {3, {0x7C}, "return", "", std::nullopt}};
     }
 
     void add(ClassEntry entry) { addClass(std::move(entry)); }
@@ -326,10 +328,12 @@ TEST_CASE("a method's bytecodes come decoded, with their bytes in hex") {
     TestSession session;
     Json answer = Json::parse(session.getMethodBytecodes("Point", "x"));
     CHECK(answer["selector"].asString() == "x");
-    REQUIRE(answer["bytecodes"].size() == 2);
+    REQUIRE(answer["bytecodes"].size() == 3);
     CHECK(answer["bytecodes"][0]["pc"].asInt() == 1);
     CHECK(answer["bytecodes"][0]["bytes"].asString() == "10");
-    CHECK(answer["bytecodes"][1]["text"].asString() == "return");
+    CHECK(answer["bytecodes"][0]["selector"].isNull());
+    CHECK(answer["bytecodes"][1]["selector"].asString() == "value");
+    CHECK(answer["bytecodes"][2]["text"].asString() == "return");
 
     CHECK(session.getMethodBytecodes("Point", "y") == "{}");
     CHECK(session.getMethodBytecodes("Point", "z") == "{}");

@@ -395,6 +395,7 @@ Json bytecodeJson(const Bytecode& bytecode) {
         .set("pc", bytecode.pc)
         .set("bytes", hexBytes(bytecode.bytes))
         .set("text", bytecode.text);
+    if (!bytecode.selector.empty()) entry.set("selector", bytecode.selector);
     if (bytecode.target) entry.set("target", *bytecode.target);
     return entry;
 }

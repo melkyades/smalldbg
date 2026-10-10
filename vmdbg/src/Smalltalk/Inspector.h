@@ -40,6 +40,7 @@ struct Bytecode {
     int pc{0};                    // its first byte, counted as the VM's jumps count
     std::vector<uint8_t> bytes;   // the opcode and its operands
     std::string text;
+    std::string selector;         // what a send sends; empty for other bytecodes
     std::optional<int> target;    // the pc a jump goes to
 };
 

@@ -90,8 +90,9 @@ public:
     virtual std::string getMethods(const std::string& name) const = 0;
     virtual std::string getMethod(const std::string& className,
                                   const std::string& selector) const = 0;
-    /** Returns a method's bytecodes as {class, selector, bytecodes}, or "{}"
-     *  when there is no such method or its bytecodes cannot be read. **/
+    /** Returns a method's bytecodes as {class, selector, bytecodes}, each
+     *  with its pc, bytes, text, and the selector a send sends; or "{}" when
+     *  there is no such method or its bytecodes cannot be read. **/
     virtual std::string getMethodBytecodes(const std::string& /*className*/,
                                            const std::string& /*selector*/) const {
         return "{}";
