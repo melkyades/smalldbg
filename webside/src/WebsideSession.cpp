@@ -79,7 +79,21 @@ std::string WebsideSession::stackDescriptors(const smalldbg::StackTrace& trace,
                                              int selectedIndex,
                                              uint64_t from, int slots) const {
     uint64_t to = from + static_cast<uint64_t>(slots) * pointerSize();
-    return buildStackDescriptorsJson(&debugger(), trace, selectedIndex, from, to);
+    return buildStackDescriptorsJson(trace, selectedIndex, from, to);
+}
+
+// From the innermost frame's sp to the outermost frame's return address.
+std::string WebsideSession::stackDescriptors(const smalldbg::StackTrace& trace,
+                                             int selectedIndex) const {
+    uint64_t from = UINT64_MAX;
+    uint64_t to = 0;
+    for (const auto& frame : trace.getFrames()) {
+        if (frame->inlined) continue;
+        if (frame->sp() != 0) from = std::min(from, frame->sp());
+        if (frame->fp() != 0) to = std::max(to, frame->fp() + 2 * pointerSize());
+    }
+    if (to <= from) return "[]";
+    return buildStackDescriptorsJson(trace, selectedIndex, from, to);
 }
 
 // =========================================================================
@@ -226,50 +240,92 @@ void WebsideSession::describeRegister(Json& entry, const smalldbg::StackFrame& f
         entry.set("printString", buildFrameLabel(frame));
 }
 
-// Every slot a frame owns is described, not only the ones with a role: a
-// client groups slots into frames by frameIndex, and a gap would split one.
-void WebsideSession::describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
-                                        int frameIndex, int selectedIndex, size_t slot,
-                                        uint64_t from, uint64_t to) const {
-    int rel = frameIndex < selectedIndex ? -1 : frameIndex == selectedIndex ? 0 : 1;
-    uint64_t returnAddress = frame.fp() + slot;
-    // A frame without a frame pointer, such as a leaf, has no known extent,
-    // so only its slots with a role are described.
-    bool extentKnown = returnAddress > frame.sp();
+namespace {
 
-    // The slots are walked from `from`, so that they line up with the ones
-    // the client read from /memory.
-    for (uint64_t address = from; address < to; address += slot) {
-        const char* role = address == returnAddress ? "retAddr"
-                         : address == frame.fp()    ? "fp"
-                         : address == frame.sp()    ? "sp"
-                                                    : nullptr;
-        bool owned = extentKnown && address >= frame.sp() && address <= returnAddress;
-        if (!role && !owned) continue;
-
-        auto entry = Json::object()
-            .set("address", addressHex(address))
-            .set("frameIndex", frameIndex)
-            .set("frameRel", rel);
-        if (role) entry.set("role", role);
-        out.add(std::move(entry));
-    }
+// Returns the frame that frame `index`, counted from 1, stands for: an
+// inlined frame's slots are those of the frame it was inlined into.
+int physicalIndex(const std::vector<std::unique_ptr<smalldbg::StackFrame>>& frames,
+                  int index) {
+    size_t at = index < 1 ? 0 : static_cast<size_t>(index - 1);
+    while (at < frames.size() && frames[at]->inlined) ++at;
+    return static_cast<int>(at + 1);
 }
 
-std::string WebsideSession::buildStackDescriptorsJson(smalldbg::Debugger* /*dbg*/,
-                                                      const smalldbg::StackTrace& trace,
+// Returns the role the slot at `address` has in `frame`, or null when it has
+// none.
+const char* abiRole(const smalldbg::StackFrame& frame, uint64_t address, size_t slot) {
+    if (address == frame.fp() + slot) return "retAddr";
+    if (address == frame.fp()) return "fp";
+    if (address == frame.sp()) return "sp";
+    return nullptr;
+}
+
+} // namespace
+
+// A frame owns every slot from its sp up to its return address, so that a
+// client grouping slots by frame finds no gaps. A slot two frames claim is
+// the inner one's.
+std::string WebsideSession::buildStackDescriptorsJson(const smalldbg::StackTrace& trace,
                                                       int selectedIndex,
-                                                      uint64_t from,
-                                                      uint64_t to) const {
+                                                      uint64_t from, uint64_t to) const {
+    const size_t slot = pointerSize();
+    from -= from % slot;
+    to = std::min(to, from + 0x10000);  // at most 64 KB
+    if (to <= from) return "[]";
+    std::vector<uint8_t> words(to - from);
+    if (debugger().readMemory(from, words.data(), words.size()) != smalldbg::Status::Ok)
+        return "[]";
+
     const auto& frames = trace.getFrames();
-    size_t slot = pointerSize();
+    const int selected = physicalIndex(frames, selectedIndex);
     auto arr = Json::array();
+    for (uint64_t address = from; address + slot <= to; address += slot) {
+        const uint8_t* bytes = &words[address - from];
+        const uint64_t value = slot == 4 ? *reinterpret_cast<const uint32_t*>(bytes)
+                                         : *reinterpret_cast<const uint64_t*>(bytes);
+        auto entry = Json::object().set("address", addressHex(address));
+        const smalldbg::StackFrame* owner = nullptr;
+        for (size_t i = 0; i < frames.size() && !owner; ++i) {
+            const smalldbg::StackFrame& frame = *frames[i];
+            if (frame.inlined) continue;
+            const char* role = abiRole(frame, address, slot);
+            // A frame without a frame pointer, such as a leaf, owns only the
+            // slots with a role.
+            bool extentKnown = frame.fp() + slot > frame.sp();
+            bool owned = extentKnown && address >= frame.sp() && address <= frame.fp() + slot;
+            if (!role && !owned) continue;
 
-    for (size_t i = 0; i < frames.size(); i++)
-        describeFrameSlots(arr, *frames[i], static_cast<int>(i + 1), selectedIndex,
-                           slot, from, to);
-
+            owner = &frame;
+            const int index = static_cast<int>(i + 1);
+            entry.set("frameIndex", index)
+                 .set("frameRel", index < selected ? -1 : index == selected ? 0 : 1);
+            if (role) entry.set("role", role);
+            if (role && std::string(role) == "retAddr")
+                addReturnLabel(entry, frames, i, value);
+        }
+        describeSlot(entry, owner, address, value);
+        if (entry.size() > 1) arr.add(std::move(entry));
+    }
     return arr.dump();
 }
+
+// A return address is labelled with where it returns to in the caller: the
+// next frame neither inlined nor sharing the frame pointer, as a leaf does.
+void WebsideSession::addReturnLabel(
+    Json& entry, const std::vector<std::unique_ptr<smalldbg::StackFrame>>& frames,
+    size_t index, uint64_t value) const {
+    size_t caller = index + 1;
+    while (caller < frames.size()
+           && (frames[caller]->inlined || frames[caller]->fp() == frames[index]->fp()))
+        ++caller;
+    if (caller >= frames.size()) return;
+    const uint64_t start = functionAddressOf(*frames[caller]);
+    if (start == 0 || value < start) return;
+    entry.set("printString", buildFrameLabel(*frames[caller]) + "+"
+                             + std::to_string(value - start));
+}
+
+void WebsideSession::describeSlot(Json& /*entry*/, const smalldbg::StackFrame* /*frame*/,
+                                  uint64_t /*address*/, uint64_t /*value*/) const {}
 
 } // namespace webside

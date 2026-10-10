@@ -96,6 +96,11 @@ protected:
      *  selector's keywords. **/
     std::string buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const override;
 
+    /** Adds the roles a Smalltalk frame's layout gives its slots, such as
+     *  self, and what the objects in the slots print as. **/
+    void describeSlot(webside::Json& entry, const smalldbg::StackFrame* frame,
+                      uint64_t address, uint64_t value) const override;
+
     /** Reads the VM's processes. The session calls this the first time they
      *  are asked for after the target moved. Returns false when they cannot
      *  be read, so that the next request tries again. **/

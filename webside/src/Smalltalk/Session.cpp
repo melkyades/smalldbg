@@ -399,6 +399,20 @@ void Session::addSmalltalkFrameDetail(Json& json,
 
 namespace {
 
+// Returns what the layout of the frame's unwinder says the slot at `address`
+// holds, or null when the layout does not name it.
+const char* layoutRole(const smalldbg::StackFrame& frame, uint64_t address) {
+    const auto* unwinder = dynamic_cast<const FrameUnwinder*>(frame.unwinder);
+    if (!unwinder) return nullptr;
+    const FrameLayout& layout = unwinder->layout();
+    const int64_t offset = static_cast<int64_t>(address - frame.fp());
+    if (offset == layout.self) return "self";
+    if (offset == layout.method) return "method";
+    if (offset == layout.context) return "context";
+    if (offset == layout.closureContext) return "closureContext";
+    return nullptr;
+}
+
 // Returns the keywords of a keyword selector, or one name for a binary
 // selector's argument, which has no keyword.
 std::vector<std::string> keywordsOf(const std::string& selector) {
@@ -420,6 +434,18 @@ std::vector<std::string> keywordsOf(const std::string& selector) {
 
 } // namespace
 
+// A saved frame pointer and a return address are addresses; any other slot
+// may hold an object.
+void Session::describeSlot(Json& entry, const smalldbg::StackFrame* frame,
+                           uint64_t address, uint64_t value) const {
+    if (frame) entry.set("smalltalk", frame->metadata != nullptr);
+    if (frame && frame->metadata && entry["role"].isNull()) {
+        if (const char* role = layoutRole(*frame, address)) entry.set("role", role);
+    }
+    const std::string role = entry["role"].asString();
+    if (role != "fp" && role != "retAddr") addPrintString(entry, value);
+}
+
 // A block's arguments, and any the selector does not account for, are
 // numbered instead.
 std::string Session::buildFrameArgumentsJson(const smalldbg::StackFrame& frame) const {
@@ -440,7 +466,6 @@ std::string Session::buildFrameArgumentsJson(const smalldbg::StackFrame& frame) 
     }
     return array.dump();
 }
-
 
 void Session::describeRegister(Json& entry, const smalldbg::StackFrame& frame,
                                const smalldbg::RegisterValue& reg) const {

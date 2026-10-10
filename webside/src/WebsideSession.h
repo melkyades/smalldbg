@@ -52,6 +52,9 @@ public:
      *  what it holds. Slots inside no frame are left out. **/
     std::string stackDescriptors(const smalldbg::StackTrace& trace, int selectedIndex,
                                  uint64_t from, int slots) const;
+    /** Returns the descriptors of every slot of the frames of `trace`. **/
+    std::string stackDescriptors(const smalldbg::StackTrace& trace,
+                                 int selectedIndex) const;
 
     /** Returns the frames of a green thread as a trace, which the frame
      *  routes answer the way they do a native thread's. Returns null for a
@@ -143,19 +146,23 @@ protected:
     virtual void describeRegister(Json& entry, const smalldbg::StackFrame& frame,
                                   const smalldbg::RegisterValue& reg) const;
 
-    /** Adds to `out` a descriptor for each slot of `frame` in [from, to). **/
-    void describeFrameSlots(Json& out, const smalldbg::StackFrame& frame,
-                            int frameIndex, int selectedIndex, size_t slot,
-                            uint64_t from, uint64_t to) const;
+    /** Returns a descriptor for each slot in [from, to) that a frame of
+     *  `trace` owns or that describeSlot says something about: the frame it
+     *  belongs to, where that frame is from the one selected, and its role. **/
+    std::string buildStackDescriptorsJson(const smalldbg::StackTrace& trace,
+                                          int selectedIndex, uint64_t from,
+                                          uint64_t to) const;
 
-    /** Returns a descriptor for each meaningful address in [from, to). The
-     *  base names the slots any frame-pointer ABI has; an override can add
-     *  what its own frame layout means. **/
-    virtual std::string buildStackDescriptorsJson(smalldbg::Debugger* dbg,
-                                                  const smalldbg::StackTrace& trace,
-                                                  int selectedIndex,
-                                                  uint64_t from,
-                                                  uint64_t to) const;
+    /** Adds to `entry` what the slot at `address`, which holds `value`, is
+     *  to `frame`, which is null for a slot no frame owns. The base adds
+     *  nothing. **/
+    virtual void describeSlot(Json& entry, const smalldbg::StackFrame* frame,
+                              uint64_t address, uint64_t value) const;
+
+private:
+    void addReturnLabel(Json& entry,
+                        const std::vector<std::unique_ptr<smalldbg::StackFrame>>& frames,
+                        size_t index, uint64_t value) const;
 };
 
 } // namespace webside

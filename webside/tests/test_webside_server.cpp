@@ -386,6 +386,46 @@ TEST_CASE("frames that cannot be trusted come with a warning header") {
     CHECK(quiet.headers.empty());
 }
 
+// An inlined frame, the frame it is inlined into, and its caller, which
+// returns into "outer" 0x10 bytes in. The slot past the caller's return
+// address belongs to no frame.
+TEST_CASE("each stack slot is placed in the innermost frame that owns it") {
+    const uint64_t slot = 8;  // a snapshot reads as a 64-bit target
+    std::vector<uint8_t> memory(0x100);
+    memory[3 * slot] = 0x10;
+    memory[3 * slot + 1] = 0x50;
+    Served served(memory);
+    WebsideSession& session = *served.workspace.session();
+    REQUIRE(session.pointerSize() == slot);
+
+    std::vector<std::unique_ptr<smalldbg::StackFrame>> frames;
+    auto frame = [&](uint64_t sp, uint64_t fp, const char* name, bool inlined) {
+        auto made = std::make_unique<smalldbg::StackFrame>();
+        made->setSp(sp);
+        made->setFp(fp);
+        made->setIp(0x5020);
+        made->functionName = name;
+        made->functionStart = 0x5000;
+        made->inlined = inlined;
+        frames.push_back(std::move(made));
+    };
+    frame(kBase, kBase + 2 * slot, "inlined", true);
+    frame(kBase, kBase + 2 * slot, "inner", false);
+    frame(kBase + 4 * slot, kBase + 5 * slot, "outer", false);
+    smalldbg::StackTrace trace(nullptr, std::move(frames));
+
+    Json slots = Json::parse(session.stackDescriptors(trace, 1, kBase, 8));
+    REQUIRE(slots.size() == 7);
+    CHECK(slots[0]["role"].asString() == "sp");
+    CHECK(slots[0]["frameIndex"].asInt() == 2);
+    CHECK(slots[0]["frameRel"].asInt() == 0);
+    CHECK(slots[2]["role"].asString() == "fp");
+    CHECK(slots[3]["role"].asString() == "retAddr");
+    CHECK(slots[3]["printString"].asString() == "outer+16");
+    CHECK(slots[4]["frameIndex"].asInt() == 3);
+    CHECK(slots[4]["frameRel"].asInt() == 1);
+}
+
 TEST_CASE("a symbol search finds a name from part of it") {
     Launched launched;
     launched.stopAtBreakHere();

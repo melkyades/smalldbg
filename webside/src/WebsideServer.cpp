@@ -728,8 +728,16 @@ HttpResponse WebsideServer::handleSmalltalkDebuggerRoute(
     }
 
     if (segments[2] == "stack") {
-        res.body = session().getSmalltalkStackContents(
-            threadIndex, static_cast<int>(param64(req, "frame", 1)));
+        const int selected = static_cast<int>(param64(req, "frame", 1));
+        auto* trace = session().greenStack(threadIndex);
+        if (!trace)
+            res.body = session().getSmalltalkStackContents(threadIndex, selected);
+        else if (req.params.count("address"))
+            res.body = session().stackDescriptors(
+                *trace, selected, param64(req, "address"),
+                static_cast<int>(param64(req, "count", 64)));
+        else
+            res.body = session().stackDescriptors(*trace, selected);
         return res;
     }
 

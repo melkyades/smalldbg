@@ -26,7 +26,6 @@ struct HookProbe : StubSession {
     using WebsideSession::buildFrameDetailJson;
     using WebsideSession::buildFrameBindingsJson;
     using WebsideSession::buildFrameRegistersJson;
-    using WebsideSession::describeFrameSlots;
 };
 
 // Opens a StubSession for any target whose path is not "unopenable".
@@ -264,19 +263,3 @@ TEST_CASE("listFrames returns real frames for a launched target") {
     s.debugger().detach();
 }
 
-TEST_CASE("every slot a frame owns is described, with the roles it has") {
-    HookProbe s;
-    smalldbg::StackFrame frame;  // arch defaults to x64
-    frame.registers.setSp(0x1000);
-    frame.registers.setFp(0x1020);
-
-    Json out = Json::array();
-    s.describeFrameSlots(out, frame, 1, 1, 8, 0x0ff8, 0x1040);
-    REQUIRE(out.size() == 6);
-    CHECK(out[0]["address"].asString() == s.addressHex(0x1000).asString());
-    CHECK(out[0]["role"].asString() == "sp");
-    CHECK(out[1]["role"].isNull());
-    CHECK(out[4]["role"].asString() == "fp");
-    CHECK(out[5]["role"].asString() == "retAddr");
-    CHECK(out[5]["frameRel"].asInt() == 0);
-}
