@@ -145,6 +145,10 @@ public:
      *  then. Needs a stopped target. **/
     const ThreadIdentity& threadIdentity(Thread& thread);
     
+    /** Returns the sections `module` declares in its image headers, such as
+     *  its code and data. Returns none when the headers cannot be read. **/
+    std::vector<ModuleSection> moduleSections(const ModuleInfo& module) const;
+
     // accessors provided by the backend implementation
     Status readMemory(Address address, void *outBuf, size_t size) const;
     Status writeMemory(Address address, const void *data, size_t size);

@@ -12,6 +12,7 @@ add_executable(unit_tests
     unit/test_symbol_database.cpp
     unit/test_stop_reason.cpp
     unit/test_disassembly_annotator.cpp
+    unit/test_module_sections.cpp
 )
 target_link_libraries(unit_tests PRIVATE smalldbg doctest::doctest)
 if(WIN32)

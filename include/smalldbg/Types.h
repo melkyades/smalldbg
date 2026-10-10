@@ -73,6 +73,15 @@ struct Breakpoint {
     std::string name;
 };
 
+/** A ModuleSection is one section of a loaded module, such as its code or
+ *  its data. **/
+struct ModuleSection {
+    std::string name;
+    Address start{0};
+    Address end{0};          // exclusive
+    bool executable{false};
+};
+
 /** A ModuleInfo describes a loaded executable or shared library. **/
 struct ModuleInfo {
     std::string path;         // File path on disk

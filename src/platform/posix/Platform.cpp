@@ -18,4 +18,9 @@ namespace smalldbg_internal {
             if (function == starter) return true;
         return false;
     }
+
+    std::vector<smalldbg::ModuleSection> moduleSections(
+        const MemoryReader&, uint64_t, uint64_t) {
+        return {};
+    }
 }

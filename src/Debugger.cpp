@@ -244,6 +244,14 @@ Status Debugger::readMemory(Address address, void *outBuf, size_t size) const {
     return backend->readMemory(address, outBuf, size);
 }
 
+std::vector<ModuleSection> Debugger::moduleSections(const ModuleInfo& module) const {
+    auto read = [this](uint64_t address, void* out, size_t size) {
+        return readMemory(address, out, size) == Status::Ok;
+    };
+    return smalldbg_internal::moduleSections(read, module.loadAddress,
+                                             module.endAddress);
+}
+
 Status Debugger::writeMemory(Address address, const void *data, size_t size) {
     return backend->writeMemory(address, data, size);
 }
