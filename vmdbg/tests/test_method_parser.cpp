@@ -59,8 +59,8 @@ TEST_CASE("blocks are numbered in source order, nested ones included") {
     CHECK(node.blockAt(4) == nullptr);
 }
 
-TEST_CASE("brackets inside strings and comments are not blocks") {
-    MethodNode node = MethodParser::parse("label\n\t\"a [comment]\"\n\t^'[not a block]'");
+TEST_CASE("brackets inside strings, comments and byte arrays are not blocks") {
+    MethodNode node = MethodParser::parse("label\n\t\"a [comment]\"\n\t^'[not a block]', #[1 2]");
     CHECK(node.totalBlockCount() == 0);
 }
 
@@ -75,6 +75,9 @@ TEST_CASE("a temporary is captured when a real block reads it") {
 
     node.blocks[0].isInlined = true;
     CHECK(node.capturedTemps(source) == std::vector<bool>{false, false});
+
+    std::string assigned = "run\n\t| kept |\n\t^[kept := 1]";
+    CHECK(MethodParser::parse(assigned).capturedTemps(assigned) == std::vector<bool>{true});
 }
 
 TEST_CASE("empty source parses to an empty method") {

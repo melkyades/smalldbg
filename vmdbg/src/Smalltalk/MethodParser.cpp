@@ -1,7 +1,8 @@
 #include "MethodParser.h"
-#include <cctype>
-#include <cstdlib>
-#include <set>
+#include "SyntaxTree.h"
+
+#include <algorithm>
+#include <utility>
 
 namespace smalltalk {
 
@@ -30,39 +31,14 @@ int MethodNode::totalBlockCount() const {
     return countBlocksRecursive(blocks);
 }
 
-// Adds to `found` the names from `names` that appear as identifiers between
-// `from` and `to`, outside strings and comments.
-static void scanForIdentifiers(const std::string& src, size_t from, size_t to,
-                               const std::set<std::string>& names,
-                               std::set<std::string>& found) {
-    size_t pos = from;
-    while (pos < to && pos < src.size()) {
-        char c = src[pos];
-        if (c == '"') {
-            MethodParser::skipComment(src, pos);
-        } else if (c == '\'') {
-            MethodParser::skipString(src, pos);
-        } else if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
-            std::string id = MethodParser::readIdentifier(src, pos);
-            if (names.count(id))
-                found.insert(id);
-        } else {
-            ++pos;
-        }
-    }
-}
-
-// Adds to `found` the names read inside blocks that are not inlined.
-static void collectCapturedInBlocks(const std::vector<BlockNode>& blocks,
-                                    const std::string& source,
-                                    const std::set<std::string>& names,
-                                    std::set<std::string>& found) {
+// Adds to `ranges` where each block that is not inlined runs, between its
+// brackets. A real block nested in an inlined one still captures from the
+// method.
+static void realBlockRanges(const std::vector<BlockNode>& blocks,
+                            std::vector<std::pair<size_t, size_t>>& ranges) {
     for (const auto& b : blocks) {
-        if (!b.isInlined) {
-            scanForIdentifiers(source, b.sourceOffset + 1, b.bodyEnd, names, found);
-        }
-        // A real block nested in an inlined one still captures from the method.
-        collectCapturedInBlocks(b.blocks, source, names, found);
+        if (!b.isInlined) ranges.emplace_back(b.sourceOffset, b.bodyEnd);
+        realBlockRanges(b.blocks, ranges);
     }
 }
 
@@ -71,233 +47,68 @@ std::vector<bool> MethodNode::capturedTemps(const std::string& source) const {
     if (temporaryNames.empty() || blocks.empty())
         return result;
 
-    std::set<std::string> tempNameSet(temporaryNames.begin(), temporaryNames.end());
-    std::set<std::string> captured;
-    collectCapturedInBlocks(blocks, source, tempNameSet, captured);
-
-    for (size_t i = 0; i < temporaryNames.size(); i++) {
-        if (captured.count(temporaryNames[i]))
-            result[i] = true;
+    std::vector<std::pair<size_t, size_t>> ranges;
+    realBlockRanges(blocks, ranges);
+    SyntaxTree tree = parseMethodSyntax(source);
+    for (const auto& node : tree.nodes) {
+        if (node.kind != SyntaxNode::Kind::Leaf) continue;
+        bool inRealBlock = std::any_of(ranges.begin(), ranges.end(), [&](const auto& range) {
+            return node.start > range.first && node.end < range.second;
+        });
+        if (!inRealBlock) continue;
+        std::string name = source.substr(node.start, node.end - node.start + 1);
+        for (size_t i = 0; i < temporaryNames.size(); i++) {
+            if (temporaryNames[i] == name) result[i] = true;
+        }
     }
     return result;
 }
 
-bool MethodParser::isBinaryChar(char c) {
-    static const char binChars[] = "+-*/\\~<>=@%|&!?,";
-    for (const char* p = binChars; *p; ++p) {
-        if (c == *p) return true;
+namespace {
+
+// Adds to `out` the blocks under node `index`, each with the blocks inside it.
+// A cascade's receiver is its first message's, so it is visited through that.
+void collectBlocks(const SyntaxTree& tree, int index, std::vector<BlockNode>& out) {
+    if (index < 0) return;
+    const SyntaxNode& node = tree.at(index);
+    if (node.kind == SyntaxNode::Kind::Block) {
+        BlockNode block;
+        block.sourceOffset = node.start;
+        block.bodyEnd = node.end;
+        block.argumentNames = node.argumentNames;
+        block.temporaryNames = node.temporaryNames;
+        for (int child : node.children) collectBlocks(tree, child, block.blocks);
+        out.push_back(std::move(block));
+        return;
     }
-    return false;
+    if (node.kind != SyntaxNode::Kind::Cascade) collectBlocks(tree, node.receiver, out);
+    for (int argument : node.arguments) collectBlocks(tree, argument, out);
+    for (int child : node.children) collectBlocks(tree, child, out);
 }
 
-void MethodParser::skipWhitespace(const std::string& src, size_t& pos) {
-    while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t' ||
-           src[pos] == '\r' || src[pos] == '\n')) {
-        ++pos;
-    }
-}
-
-void MethodParser::skipComment(const std::string& src, size_t& pos) {
-    if (pos >= src.size() || src[pos] != '"') return;
-    ++pos; // skip opening "
-    while (pos < src.size() && src[pos] != '"') {
-        ++pos;
-    }
-    if (pos < src.size()) ++pos; // skip closing "
-}
-
-void MethodParser::skipWhitespaceAndComments(const std::string& src, size_t& pos) {
-    while (pos < src.size()) {
-        skipWhitespace(src, pos);
-        if (pos < src.size() && src[pos] == '"') {
-            skipComment(src, pos);
-        } else {
-            break;
-        }
+// Numbers the blocks in the order their brackets open.
+void numberBlocks(std::vector<BlockNode>& blocks, int& counter) {
+    std::sort(blocks.begin(), blocks.end(), [](const BlockNode& a, const BlockNode& b) {
+        return a.sourceOffset < b.sourceOffset;
+    });
+    for (auto& block : blocks) {
+        block.index = ++counter;
+        numberBlocks(block.blocks, counter);
     }
 }
 
-std::string MethodParser::readIdentifier(const std::string& src, size_t& pos) {
-    size_t start = pos;
-    if (pos < src.size() && (std::isalpha(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) {
-        ++pos;
-        while (pos < src.size() && (std::isalnum(static_cast<unsigned char>(src[pos])) || src[pos] == '_')) {
-            ++pos;
-        }
-    }
-    return src.substr(start, pos - start);
-}
-
-std::string MethodParser::readBinarySelector(const std::string& src, size_t& pos) {
-    size_t start = pos;
-    while (pos < src.size() && isBinaryChar(src[pos])) {
-        ++pos;
-    }
-    return src.substr(start, pos - start);
-}
-
-std::vector<std::string> MethodParser::parseTemporaries(const std::string& src, size_t& pos) {
-    std::vector<std::string> temps;
-    skipWhitespaceAndComments(src, pos);
-    if (pos >= src.size() || src[pos] != '|') return temps;
-
-    ++pos; // skip opening |
-    while (pos < src.size()) {
-        skipWhitespaceAndComments(src, pos);
-        if (pos >= src.size()) break;
-        if (src[pos] == '|') {
-            ++pos; // skip closing |
-            break;
-        }
-        std::string name = readIdentifier(src, pos);
-        if (name.empty()) break; // malformed
-        temps.push_back(name);
-    }
-    return temps;
-}
-
-void MethodParser::skipString(const std::string& src, size_t& pos) {
-    if (pos >= src.size() || src[pos] != '\'') return;
-    ++pos; // skip opening '
-    while (pos < src.size()) {
-        if (src[pos] == '\'') {
-            ++pos;
-            if (pos < src.size() && src[pos] == '\'') {
-                ++pos; // escaped quote
-                continue;
-            }
-            return; // end of string
-        }
-        ++pos;
-    }
-}
-
-static void parseBlocksRecursive(const std::string& src, size_t pos,
-                                  int& counter,
-                                  std::vector<BlockNode>& out) {
-    while (pos < src.size()) {
-        char c = src[pos];
-        if (c == '"') {
-            MethodParser::skipComment(src, pos);
-        } else if (c == '\'') {
-            MethodParser::skipString(src, pos);
-        } else if (c == '[') {
-            BlockNode node;
-            node.sourceOffset = pos; // position of '['
-            ++pos; // skip [
-            node.index = ++counter;
-
-            // Parse block arguments: [:arg1 :arg2 | ...]
-            MethodParser::skipWhitespaceAndComments(src, pos);
-            if (pos < src.size() && src[pos] == ':') {
-                while (pos < src.size() && src[pos] == ':') {
-                    ++pos; // skip :
-                    auto name = MethodParser::readIdentifier(src, pos);
-                    if (!name.empty()) node.argumentNames.push_back(name);
-                    MethodParser::skipWhitespaceAndComments(src, pos);
-                }
-                if (pos < src.size() && src[pos] == '|') ++pos; // skip |
-            }
-
-            // Parse block temporaries: | t1 t2 |
-            node.temporaryNames = MethodParser::parseTemporaries(src, pos);
-
-            // Recurse for nested blocks within this block body
-            // Scan until matching ']', collecting nested blocks
-            size_t bodyStart = pos;
-            int depth = 1;
-            size_t bodyEnd = pos;
-            while (bodyEnd < src.size() && depth > 0) {
-                char bc = src[bodyEnd];
-                if (bc == '"') {
-                    MethodParser::skipComment(src, bodyEnd);
-                } else if (bc == '\'') {
-                    MethodParser::skipString(src, bodyEnd);
-                } else if (bc == '[') {
-                    ++depth;
-                    ++bodyEnd;
-                } else if (bc == ']') {
-                    --depth;
-                    if (depth > 0) ++bodyEnd;
-                } else {
-                    ++bodyEnd;
-                }
-            }
-            // Parse nested blocks inside this block's body
-            parseBlocksRecursive(src, bodyStart, counter, node.blocks);
-
-            node.bodyEnd = bodyEnd;
-            out.push_back(std::move(node));
-            pos = (bodyEnd < src.size()) ? bodyEnd + 1 : bodyEnd; // skip ]
-        } else if (c == ']') {
-            break; // end of enclosing block
-        } else {
-            ++pos;
-        }
-    }
-}
-
-void MethodParser::parseBlocks(const std::string& src, size_t pos,
-                                   std::vector<BlockNode>& blocks) {
-    int counter = 0;
-    parseBlocksRecursive(src, pos, counter, blocks);
-}
-
-// From the colon after `firstKeyword` on: each keyword and its argument. A word
-// with no colon after it is where the body begins, so `pos` is left on it.
-void MethodParser::readKeywordSelector(const std::string& src, size_t& pos,
-                                       const std::string& firstKeyword,
-                                       MethodNode& node) {
-    std::string keyword = firstKeyword;
-    for (;;) {
-        node.selector += keyword + ":";
-        ++pos; // skip :
-        skipWhitespaceAndComments(src, pos);
-        std::string argName = readIdentifier(src, pos);
-        if (!argName.empty()) node.argumentNames.push_back(argName);
-
-        skipWhitespaceAndComments(src, pos);
-        if (pos >= src.size()) return;
-        if (!std::isalpha(static_cast<unsigned char>(src[pos])) && src[pos] != '_') return;
-        size_t start = pos;
-        keyword = readIdentifier(src, pos);
-        skipWhitespace(src, pos);
-        if (pos >= src.size() || src[pos] != ':') {
-            pos = start;
-            return;
-        }
-    }
-}
+} // namespace
 
 MethodNode MethodParser::parse(const std::string& source) {
-    MethodNode info;
-    if (source.empty()) return info;
-
-    size_t pos = 0;
-    skipWhitespaceAndComments(source, pos);
-    if (pos >= source.size()) return info;
-
-    char first = source[pos];
-
-    if (isBinaryChar(first)) {
-        // Binary message: e.g. "+ anObject"
-        info.selector = readBinarySelector(source, pos);
-        skipWhitespaceAndComments(source, pos);
-        std::string argName = readIdentifier(source, pos);
-        if (!argName.empty()) info.argumentNames.push_back(argName);
-    } else if (std::isalpha(static_cast<unsigned char>(first)) || first == '_') {
-        std::string firstWord = readIdentifier(source, pos);
-        skipWhitespace(source, pos);
-        if (pos < source.size() && source[pos] == ':')
-            readKeywordSelector(source, pos, firstWord, info);
-        else
-            info.selector = firstWord;
-    }
-
-    info.temporaryNames = parseTemporaries(source, pos);
-    parseBlocks(source, pos, info.blocks);
-
-    return info;
+    SyntaxTree tree = parseMethodSyntax(source);
+    MethodNode method;
+    method.selector = tree.selector;
+    method.argumentNames = tree.argumentNames;
+    method.temporaryNames = tree.temporaryNames;
+    for (int statement : tree.statements) collectBlocks(tree, statement, method.blocks);
+    int counter = 0;
+    numberBlocks(method.blocks, counter);
+    return method;
 }
 
 } // namespace smalltalk

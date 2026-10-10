@@ -38,31 +38,14 @@ struct MethodNode {
     std::vector<bool> capturedTemps(const std::string& source) const;
 };
 
-/** Reads the declarations out of a Smalltalk method's source text.
- *
- *  The syntax it reads is the language's, so every dialect can name a
- *  method's arguments, temporaries and blocks with it. **/
+/** Reads the declarations out of a Smalltalk method's source text, from the
+ *  method's SyntaxTree. The syntax it reads is the language's, so every
+ *  dialect can name a method's arguments, temporaries and blocks with it. **/
 class MethodParser {
 public:
     /** Returns an empty method when the source is empty or cannot be parsed.
      **/
     static MethodNode parse(const std::string& source);
-
-    // Token helpers, shared with the block scan.
-    static void skipWhitespace(const std::string& src, size_t& pos);
-    static void skipComment(const std::string& src, size_t& pos);
-    static void skipWhitespaceAndComments(const std::string& src, size_t& pos);
-    static void skipString(const std::string& src, size_t& pos);
-    static std::string readIdentifier(const std::string& src, size_t& pos);
-    static std::vector<std::string> parseTemporaries(const std::string& src, size_t& pos);
-
-private:
-    static bool isBinaryChar(char c);
-    static std::string readBinarySelector(const std::string& src, size_t& pos);
-    static void readKeywordSelector(const std::string& src, size_t& pos,
-                                    const std::string& firstKeyword, MethodNode& node);
-    static void parseBlocks(const std::string& src, size_t pos,
-                            std::vector<BlockNode>& blocks);
 };
 
 } // namespace smalltalk

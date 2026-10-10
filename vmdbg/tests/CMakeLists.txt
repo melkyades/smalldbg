@@ -8,6 +8,7 @@ add_executable(vmdbg_tests
     test_smalltalk_inspector.cpp
     test_address_table.cpp
     test_method_parser.cpp
+    test_syntax_tree.cpp
     test_frame_unwinder.cpp
     test_target_spec.cpp
     test_tracer.cpp
