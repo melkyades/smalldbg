@@ -38,6 +38,11 @@ public:
         auto found = sources.find(method.oop);
         return found == sources.end() ? std::string() : found->second;
     }
+    // Point>>x pushes x and returns it; nothing else decodes.
+    std::vector<smalltalk::Bytecode> bytecodesOf(const MethodEntry& method) const override {
+        if (method.oop != 0x300) return {};
+        return {{1, {0x10}, "push x", std::nullopt}, {2, {0x7C}, "return", std::nullopt}};
+    }
 
     void add(ClassEntry entry) { addClass(std::move(entry)); }
     void add(const MethodEntry& method, const std::string& source = {}) {
@@ -315,6 +320,19 @@ TEST_CASE("retainers read as oop, class, whether a class, and detail") {
     CHECK(chain[0]["detail"].asString() == "Holder");
     CHECK_FALSE(chain[1]["isClass"].asBool());
     CHECK(webside::retainersJson(inspector, 0x10200) == "[]");
+}
+
+TEST_CASE("a method's bytecodes come decoded, with their bytes in hex") {
+    TestSession session;
+    Json answer = Json::parse(session.getMethodBytecodes("Point", "x"));
+    CHECK(answer["selector"].asString() == "x");
+    REQUIRE(answer["bytecodes"].size() == 2);
+    CHECK(answer["bytecodes"][0]["pc"].asInt() == 1);
+    CHECK(answer["bytecodes"][0]["bytes"].asString() == "10");
+    CHECK(answer["bytecodes"][1]["text"].asString() == "return");
+
+    CHECK(session.getMethodBytecodes("Point", "y") == "{}");
+    CHECK(session.getMethodBytecodes("Point", "z") == "{}");
 }
 
 TEST_CASE("a Smalltalk frame shows its method's class and source") {

@@ -35,6 +35,14 @@ struct MethodEntry {
     uint64_t oop{0};
 };
 
+/** A Bytecode is one decoded instruction of a method. **/
+struct Bytecode {
+    int pc{0};                    // its first byte, counted as the VM's jumps count
+    std::vector<uint8_t> bytes;   // the opcode and its operands
+    std::string text;
+    std::optional<int> target;    // the pc a jump goes to
+};
+
 /** A ClassVariable is a class variable's name and the oop it holds, which is
  *  empty when the VM's value was not read. **/
 struct ClassVariable {
@@ -77,6 +85,10 @@ public:
     /** Returns the source of `method`, or an empty text when it cannot be
      *  found. **/
     virtual std::string sourceOf(const MethodEntry&) const { return {}; }
+
+    /** Returns the bytecodes of `method`, decoded, or none when the dialect
+     *  cannot decode them. **/
+    virtual std::vector<Bytecode> bytecodesOf(const MethodEntry&) const { return {}; }
 
     /** Returns the class variables of `className`. The default has the names
      *  in the class table and no values. **/

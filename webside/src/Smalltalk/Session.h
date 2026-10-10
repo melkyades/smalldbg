@@ -38,6 +38,8 @@ public:
     std::string getMethods(const std::string& name) const override;
     std::string getMethod(const std::string& className,
                           const std::string& selector) const override;
+    std::string getMethodBytecodes(const std::string& className,
+                                   const std::string& selector) const override;
     std::string search(const std::string& text, bool ignoreCase,
                        const std::string& condition,
                        const std::string& type) const override;

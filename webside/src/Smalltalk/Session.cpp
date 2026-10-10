@@ -376,6 +376,46 @@ std::string Session::getMethod(const std::string& className,
     return method ? methodJson(*method).dump() : "{}";
 }
 
+namespace {
+
+// Returns the bytes as two-digit hex, separated by spaces.
+std::string hexBytes(const std::vector<uint8_t>& bytes) {
+    static const char digits[] = "0123456789abcdef";
+    std::string text;
+    for (uint8_t byte : bytes) {
+        if (!text.empty()) text += ' ';
+        text += digits[byte >> 4];
+        text += digits[byte & 0xF];
+    }
+    return text;
+}
+
+Json bytecodeJson(const Bytecode& bytecode) {
+    auto entry = Json::object()
+        .set("pc", bytecode.pc)
+        .set("bytes", hexBytes(bytecode.bytes))
+        .set("text", bytecode.text);
+    if (bytecode.target) entry.set("target", *bytecode.target);
+    return entry;
+}
+
+} // namespace
+
+std::string Session::getMethodBytecodes(const std::string& className,
+                                        const std::string& selector) const {
+    auto method = smalltalkInspector().methodNamed(className, selector);
+    if (!method) return "{}";
+    auto bytecodes = smalltalkInspector().bytecodesOf(*method);
+    if (bytecodes.empty()) return "{}";
+    auto list = Json::array();
+    for (const auto& bytecode : bytecodes) list.add(bytecodeJson(bytecode));
+    return Json::object()
+        .set("class", className)
+        .set("selector", selector)
+        .set("bytecodes", list)
+        .dump();
+}
+
 // A block runs in its method's activation, and says which of its blocks.
 void Session::addSmalltalkFrameDetail(Json& json,
                                       const smalldbg::StackFrame& frame) const {

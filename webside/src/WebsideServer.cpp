@@ -1744,15 +1744,19 @@ HttpResponse WebsideServer::handleClassSubRoute(
     else if (subRoute == "used-categories")      res.body = s.getUsedCategories(className);
     else if (subRoute == "selectors")            res.body = s.getSelectors(className);
     else if (subRoute == "methods") {
+        // A binary selector may hold a slash, so the selector is every
+        // segment after "methods", up to "bytecodes" when that ends the path.
+        const bool bytecodes = segments.size() > 4 && segments.back() == "bytecodes";
         if (segments.size() == 3) {
             res.body = s.getMethods(className);
         } else {
             std::string selector;
-            for (size_t i = 3; i < segments.size(); i++) {
+            for (size_t i = 3; i < segments.size() - (bytecodes ? 1 : 0); i++) {
                 if (i > 3) selector += "/";
                 selector += segments[i];
             }
-            res.body = s.getMethod(className, selector);
+            res.body = bytecodes ? s.getMethodBytecodes(className, selector)
+                                 : s.getMethod(className, selector);
             if (res.body == "{}")
                 res.statusCode = 404;
         }
