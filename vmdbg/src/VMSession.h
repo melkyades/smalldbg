@@ -1,5 +1,6 @@
 #pragma once
 
+#include "MemoryTypeMap.h"
 #include "Target.h"
 #include "VMInspector.h"
 #include "VMModule.h"
@@ -109,6 +110,11 @@ public:
      *  loaded. **/
     virtual bool loadModuleSymbols(const std::string& module);
 
+    /** Runs a command in the debugger's engine and returns what it printed.
+     *  The command may have moved the target, so what was read from it is
+     *  read again. **/
+    std::string runEngineCommand(const std::string& command);
+
     // ---- thread helpers ----------------------------------------------------
     std::shared_ptr<smalldbg::Thread> resolveThread(uint64_t threadId) const;
     /** Returns the OS thread the VM runs on, or null when it cannot be
@@ -117,6 +123,18 @@ public:
 
     /** Returns the target's pointer width. **/
     size_t pointerSize() const;
+
+    // ---- memory types ------------------------------------------------------
+
+    /** Returns how each stretch of target memory is shown in a listing. The
+     *  defaults come from the modules' sections and the VM's regions, and are
+     *  laid out again once the target has moved. **/
+    MemoryTypeMap& memoryTypes() const;
+
+    /** Makes the next memoryTypes() lay the defaults out again, for a target
+     *  that moved without the debugger seeing it, such as a trace a raw
+     *  engine command repositioned. **/
+    void forgetMemoryTypeDefaults() { memoryTypesVersion.reset(); }
 
 protected:
     // ---- what a subclass does when the target runs or stops ---------------
@@ -128,6 +146,11 @@ protected:
     /** The session calls this once the target has stopped and can be read
      *  again. **/
     virtual void afterTargetStops() {}
+
+    /** The session calls this when the target may have moved without running,
+     *  such as after an engine command, so that the subclass can drop what it
+     *  read from it. **/
+    virtual void targetMayHaveMoved() {}
 
     // ---- opening hooks -----------------------------------------------------
 
@@ -167,6 +190,11 @@ protected:
      *  progress. **/
     virtual void prepareFrames() const {}
 
+    /** The session calls this after laying out the memory-type defaults from
+     *  the modules and the regions, for the subclass to add what only it
+     *  knows, such as where each object's header is. **/
+    virtual void addMemoryTypeDefaults(MemoryTypeMap& /*types*/) const {}
+
     /** Returns the first thread whose stack pointer `onStack` accepts, or null
      *  when none does or the target is running. **/
     std::shared_ptr<smalldbg::Thread> threadWithStackPointer(
@@ -186,6 +214,11 @@ private:
     int startupPause{-1};
     mutable std::shared_ptr<smalldbg::Thread> runningThread;
     mutable uint64_t runningThreadVersion{0};  // debugger stateVersion it is from
+
+    void layOutMemoryTypes() const;
+    mutable MemoryTypeMap memTypes;
+    mutable std::optional<uint64_t> memoryTypesVersion;  // stateVersion of the defaults
+    mutable std::vector<MemTypeRange> sectionTypes;     // the modules' sections
 };
 
 } // namespace vmdbg

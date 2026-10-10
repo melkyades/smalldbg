@@ -63,6 +63,43 @@ size_t VMSession::pointerSize() const {
     return debugger().arch()->pointerSize();
 }
 
+MemoryTypeMap& VMSession::memoryTypes() const {
+    if (memoryTypesVersion != debugger().stateVersion()) {
+        layOutMemoryTypes();
+        memoryTypesVersion = debugger().stateVersion();
+    }
+    return memTypes;
+}
+
+// A module's sections do not move, and reading them costs a round trip per
+// section header, so they are read once. An unknown word is read as a pointer.
+void VMSession::layOutMemoryTypes() const {
+    const MemType word = pointerSize() <= 4 ? MemType::Data4 : MemType::Data8;
+    memTypes.clearDefaults();
+    memTypes.setFallback(word);
+
+    if (sectionTypes.empty()) {
+        for (const auto& module : debugger().getSymbolProvider()->getModules()) {
+            auto sections = debugger().moduleSections(module);
+            if (sections.empty() && module.endAddress > module.loadAddress)
+                sectionTypes.push_back(
+                    {module.loadAddress, module.endAddress, MemType::Code});
+            for (const auto& section : sections)
+                sectionTypes.push_back({section.start, section.end,
+                                        section.executable ? MemType::Code : word});
+        }
+    }
+    for (const MemTypeRange& range : sectionTypes)
+        memTypes.setDefault(range.start, range.end, range.type);
+
+    inspector().refreshRegions();
+    for (const Region& region : inspector().regions())
+        memTypes.setDefault(region.start, region.end,
+                            region.kind == Region::Kind::Code ? MemType::Code
+                                                              : word);
+    addMemoryTypeDefaults(memTypes);
+}
+
 void VMSession::setOpeningLog(smalldbg::SymbolLoader::LogSink sink) {
     openingLog = std::move(sink);
 }
@@ -81,6 +118,13 @@ smalldbg::SymbolLoader& VMSession::symbols() const {
 
 bool VMSession::loadModuleSymbols(const std::string& module) {
     return symbols().loadAndReport(module);
+}
+
+std::string VMSession::runEngineCommand(const std::string& command) {
+    std::string output = debugger().executeCommand(command);
+    forgetMemoryTypeDefaults();
+    targetMayHaveMoved();
+    return output;
 }
 
 void VMSession::setSymbolSearchPath(const std::string& path) {
