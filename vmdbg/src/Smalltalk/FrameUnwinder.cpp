@@ -77,4 +77,20 @@ smalldbg::Status FrameUnwinder::unwind(smalldbg::StackFrame& frame,
     return smalldbg::Status::Ok;
 }
 
+// Arguments are pushed left to right, so the last one is nearest the frame.
+void FrameUnwinder::readArguments(FrameMetadata& running, uint64_t framePointer,
+                                  int count, smalldbg::Debugger* debugger) const {
+    running.arguments.assign(count, 0);
+    for (int i = 0; i < count; ++i) {
+        bool ok = false;
+        uint64_t at = framePointer + static_cast<uint64_t>(layout().firstArgument)
+                      + static_cast<uint64_t>(i) * slotSize();
+        running.arguments[count - 1 - i] = readSlot(at, slotSize(), debugger, ok);
+        if (!ok) {
+            running.arguments.clear();
+            return;
+        }
+    }
+}
+
 } // namespace smalltalk

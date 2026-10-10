@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace smalltalk {
 
@@ -31,6 +32,8 @@ struct FrameMetadata : smalldbg::FrameMetadata {
     int blockIndex{-1};      // which of the method's blocks, counted from 1
     uint64_t method{0};      // the CompiledMethod, or 0 when it is not known
     uint64_t receiver{0};    // self, or 0 when it is not known
+    std::vector<uint64_t> arguments;  // left to right, when the unwinder read them
+    int instruction{-1};     // the bytecode it stopped at, when the VM saved it
 };
 
 /** Walking the frames a Smalltalk VM builds.
@@ -78,6 +81,11 @@ protected:
      *  of the walk. Returns false when no such slot is found. **/
     bool resyncFrame(uint64_t framePointer, uint64_t& callerFrame,
                      uint64_t& returnAddress, smalldbg::Debugger* debugger) const;
+
+    /** Reads the `count` arguments of the frame at `framePointer` into
+     *  `running`, and none when one of them cannot be read. **/
+    void readArguments(FrameMetadata& running, uint64_t framePointer, int count,
+                       smalldbg::Debugger* debugger) const;
 
     /** How far to scan before giving up. A frame larger than this is a sign the
      *  link is not recoverable, not that the scan was too short. **/
