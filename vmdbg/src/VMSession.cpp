@@ -251,6 +251,29 @@ bool VMSession::reverseRunToAddress(uint64_t address) {
     return reached;
 }
 
+bool VMSession::reverseResume() {
+    beforeTargetRuns();
+    bool ran = debugger().reverseResume() == smalldbg::Status::Ok
+        && debugger().waitForEvent(smalldbg::StopReason::None, kRunToTimeoutMs)
+           != smalldbg::StopReason::None;
+    afterTargetStops();
+    return ran;
+}
+
+// A replay that moves runs nothing, so what was read from it is dropped
+// rather than prepared for a run.
+bool VMSession::seekTrace(const smalldbg::TracePosition& position) {
+    bool moved = debugger().seekTrace(position) == smalldbg::Status::Ok;
+    targetMayHaveMoved();
+    return moved;
+}
+
+bool VMSession::seekTrace(double percent) {
+    bool moved = debugger().seekTrace(percent) == smalldbg::Status::Ok;
+    targetMayHaveMoved();
+    return moved;
+}
+
 bool VMSession::setBreakpoint(uint64_t address, const std::string& name) {
     return debugger().setBreakpoint(address, name) == smalldbg::Status::Ok;
 }

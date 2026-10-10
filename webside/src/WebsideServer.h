@@ -80,14 +80,14 @@ protected:
     std::string nativeModulesData() const;
     std::string nativeSymbolDetailData(const std::string& name) const;
     std::string nativeInspectData(const std::string& expression) const;
-    HttpResponse handleMemoryTypesGet(const HttpRequest& req) const;
-    HttpResponse handleMemoryTypesSet(const HttpRequest& req);
-    HttpResponse handleMemoryTypesClear(const HttpRequest& req);
     HttpResponse handleLoadModuleSymbols(const HttpRequest& req);
     HttpResponse handleSymbol(const HttpRequest& req) const;
 
     // ---- memory / disassembly routes ----
     HttpResponse handleMemory(const HttpRequest& req) const;
+    HttpResponse handleMemoryTypesGet(const HttpRequest& req) const;
+    HttpResponse handleMemoryTypesSet(const HttpRequest& req);
+    HttpResponse handleMemoryTypesClear(const HttpRequest& req);
     /** Sets the hex dump of `count` bytes at `address`, and their ASCII
      *  rendering, in `result`. Returns false when they cannot be read. **/
     bool readByteDump(uint64_t address, int count, Json& result) const;
@@ -166,11 +166,6 @@ protected:
     void sessionFreeRoute(const std::string& method, const std::string& path,
                           HttpHandler handler);
 
-    // ---- URL utilities ----
-    static std::string urlDecode(const std::string& encoded);
-    static std::vector<std::string> splitPath(const std::string& path);
-    static uint64_t parseHexParam(const std::string& s);
-
     /** Returns `address` in hex, at the target's width when one is open. **/
     Json workspaceAddress(uint64_t address) const;
     /** Returns the address a request body gives as a number or in hex, or 0
@@ -178,6 +173,12 @@ protected:
     static uint64_t addressIn(const Json& value);
     static HttpResponse badRequest(const std::string& error);
 
+    // ---- URL utilities ----
+    static std::string urlDecode(const std::string& encoded);
+    static std::vector<std::string> splitPath(const std::string& path);
+    static uint64_t parseHexParam(const std::string& s);
+    /** Returns `position` the way the engine writes it, SEQ:STEP in hex. **/
+    static std::string positionText(const smalldbg::TracePosition& position);
     /** Returns the request's number `key`, in decimal or in hex after "0x",
      *  or `dflt` when it is missing or not a number. **/
     static uint64_t param64(const HttpRequest& req, const char* key,
@@ -189,10 +190,6 @@ private:
     void setupLegacyFrameRoutes();
     void setupRunControlRoutes();
     void setupWorkspaceRoutes();
-    void setupSymbolRoutes();
-    void setupInspectorRoutes();
-    void setupDebuggerRoutes();
-    void setupDebuggerActionRoutes();
     void setupMemoryTypeRoutes();
     HttpResponse handleLabelsGet(const HttpRequest& req) const;
     HttpResponse handleLabelsSet(const HttpRequest& req);
@@ -201,6 +198,13 @@ private:
     size_t readUpTo(uint64_t start, std::vector<uint8_t>& buffer) const;
     uint64_t stringExtent(uint64_t start, size_t unit) const;
     uint64_t codeExtent(uint64_t start) const;
+    void setupSymbolRoutes();
+    void setupInspectorRoutes();
+    void setupDebuggerRoutes();
+    void setupDebuggerActionRoutes();
+    void setupTraceRoutes();
+    Json tracePositionJson() const;
+    bool seekTraceTo(std::string target);
     HttpResponse answerOrRefuse(const HttpRequest& request,
                                 const HttpHandler& handler) const;
 

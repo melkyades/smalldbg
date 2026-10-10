@@ -75,6 +75,13 @@ public:
      *  when it stopped elsewhere, did not get there in time, or the target is
      *  not a replay. **/
     bool reverseRunToAddress(uint64_t address);
+    /** Runs a replay backwards to a breakpoint or to its start. Returns
+     *  false when the target is not a replay. **/
+    bool reverseResume();
+    /** Moves a replay to `position`, or `percent` of the way through its
+     *  trace. Returns false when the target is not a replay. **/
+    bool seekTrace(const smalldbg::TracePosition& position);
+    bool seekTrace(double percent);
 
     // ---- breakpoints -------------------------------------------------------
     virtual bool setBreakpoint(uint64_t address, const std::string& name = "");

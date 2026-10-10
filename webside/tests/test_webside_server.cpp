@@ -42,11 +42,11 @@ struct TestServer : WebsideServer {
     using WebsideServer::WebsideServer;
     using WebsideServer::handleMemory;
     using WebsideServer::handleRegions;
-    using WebsideServer::handleClassify;
     using WebsideServer::handleMemoryTypesGet;
+    using WebsideServer::handleDisassemble;
     using WebsideServer::handleMemoryTypesSet;
     using WebsideServer::handleMemoryTypesClear;
-    using WebsideServer::handleDisassemble;
+    using WebsideServer::handleClassify;
     using WebsideServer::handleLoadModuleSymbols;
     using WebsideServer::handleRunTo;
     using WebsideServer::threadListJson;
@@ -552,6 +552,36 @@ TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") 
     CHECK(labels[0]["address"].asString() == Json::hex(uint64_t(0x403000)).asString());
     REQUIRE(client.Delete("/labels?address=0x403000"));
     CHECK(Json::parse(client.Get("/labels")->body).size() == 0);
+
+    server.stop();
+    serving.join();
+}
+
+TEST_CASE("a target that is no trace has no position and refuses to move") {
+    constexpr int port = 47234;
+    Workspace workspace([](const TargetSpec&) {
+        return std::make_unique<SnapshotSession>(sample());
+    });
+    TargetSpec target;
+    target.path = "snapshot";
+    REQUIRE(workspace.open(target));
+    TestServer server{workspace, port};
+    std::thread serving([&] { server.run(); });
+
+    httplib::Client client("127.0.0.1", port);
+    httplib::Result position;
+    for (int attempt = 0; attempt < 50 && !position; attempt++) {
+        position = client.Get("/trace/position");
+        if (!position) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    REQUIRE(position);
+    CHECK(position->body == "{}");
+    for (const char* asked : {"{\"position\":\"1A:2\"}", "{\"position\":\"50\"}",
+                              "{\"position\":\"1A:zz\"}", "{\"position\":\"150%\"}"}) {
+        auto moved = client.Post("/trace/position", asked, "application/json");
+        REQUIRE(moved);
+        CHECK(moved->status == 400);
+    }
 
     server.stop();
     serving.join();

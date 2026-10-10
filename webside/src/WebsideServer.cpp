@@ -1381,6 +1381,7 @@ void WebsideServer::setupDebuggerRoutes() {
     });
 
     setupDebuggerActionRoutes();
+    setupTraceRoutes();
 }
 
 bool WebsideServer::stepAction(const std::vector<std::string>& segments) {
@@ -1531,6 +1532,78 @@ HttpResponse WebsideServer::handleLabelsSet(const HttpRequest& req) {
     return res;
 }
 
+// Answers where a replay is, as "SEQ:STEP" in hex and as how far through its
+// trace, and moves it to a position or a percentage.
+void WebsideServer::setupTraceRoutes() {
+    server.route("GET", "/trace/position", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = tracePositionJson().dump();
+        return res;
+    });
+    server.route("POST", "/trace/position", [this](const HttpRequest& req) {
+        auto body = Json::parse(req.body);
+        std::string position = body["position"].asString();
+        if (position.empty() && req.params.count("position"))
+            position = req.params.at("position");
+        if (!seekTraceTo(position))
+            return badRequest("Expected {position} as SEQ:STEP in hex, or a "
+                              "percentage of the trace such as 50 or 12.5%");
+        HttpResponse res;
+        res.body = tracePositionJson().dump();
+        return res;
+    });
+    server.route("POST", "/trace/end", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = Json::object().set("success", session().seekTrace(100.0)).dump();
+        return res;
+    });
+}
+
+std::string WebsideServer::positionText(const smalldbg::TracePosition& position) {
+    std::ostringstream text;
+    text << std::hex << std::uppercase << position.sequence << ":" << position.step;
+    return text.str();
+}
+
+Json WebsideServer::tracePositionJson() const {
+    auto& debugger = session().debugger();
+    auto position = debugger.tracePosition();
+    if (!position) return Json::object();
+    auto json = Json::object().set("position", positionText(*position));
+    if (auto extent = debugger.traceExtent()) {
+        double span = static_cast<double>(extent->second.sequence - extent->first.sequence);
+        double done = static_cast<double>(position->sequence - extent->first.sequence);
+        json.set("start", positionText(extent->first))
+            .set("end", positionText(extent->second))
+            .set("percent", Json::number(span > 0 ? std::clamp(100.0 * done / span, 0.0, 100.0)
+                                                  : 0.0));
+    }
+    return json;
+}
+
+// A position is SEQ:STEP in hex; a number on its own is how far through the
+// trace to go, with or without a '%'.
+bool WebsideServer::seekTraceTo(std::string target) {
+    if (!target.empty() && target.back() == '%') target.pop_back();
+    if (target.empty()) return false;
+    auto colon = target.find(':');
+    try {
+        size_t used = 0;
+        if (colon == std::string::npos) {
+            double percent = std::stod(target, &used);
+            return used == target.size() && percent >= 0 && percent <= 100
+                && session().seekTrace(percent);
+        }
+        smalldbg::TracePosition position;
+        position.sequence = std::stoull(target.substr(0, colon), &used, 16);
+        if (used != colon) return false;
+        position.step = std::stoull(target.substr(colon + 1), &used, 16);
+        return used == target.size() - colon - 1 && session().seekTrace(position);
+    } catch (...) {
+        return false;
+    }
+}
+
 // Run control aimed at one debugger id: resume, suspend, terminate, run to an
 // address, and the steps.
 void WebsideServer::setupDebuggerActionRoutes() {
@@ -1559,6 +1632,11 @@ void WebsideServer::setupDebuggerActionRoutes() {
 
         if (segments.size() >= 3 && segments[2] == "reverserunto")
             return handleRunTo(req, true);
+
+        if (segments.size() >= 3 && segments[2] == "reverseresume") {
+            res.body = runControlResult(session().reverseResume());
+            return res;
+        }
 
         if (segments.size() >= 5 && segments[2] == "frames") {
             res.body = runControlResult(stepAction(segments));
