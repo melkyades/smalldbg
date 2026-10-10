@@ -30,7 +30,7 @@ public:
 
     // Options can be set before initialization
     virtual void setOptions(const SymbolOptions& options) = 0;
-    
+
     // Initialization - called when process is attached
     virtual Status initialize(void* processHandle, const SymbolOptions& options) = 0;
     virtual void shutdown() = 0;
