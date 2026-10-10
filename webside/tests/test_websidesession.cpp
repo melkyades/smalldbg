@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include "Json.h"
+#include "SourceExcerpt.h"
 #include "StubSession.h"
 #include "WebsideSession.h"
 #include "Workspace.h"
@@ -9,6 +10,9 @@
 #include "smalldbg/Debugger.h"
 #include "smalldbg/Thread.h"
 
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 
@@ -153,6 +157,51 @@ TEST_CASE("frame detail JSON distinguishes native and VM frames") {
     vmFrame.metadata = std::make_unique<smalldbg::FrameMetadata>();
     const std::string vmJson = s.buildFrameDetailJson(vmFrame, 2);
     CHECK(vmJson.find("vm") != std::string::npos);
+}
+
+// A source file with one function, whose second line is `line`.
+std::string writeSource(const std::string& line) {
+    auto path = (std::filesystem::temp_directory_path() / "smalldbg_excerpt.cpp").string();
+    std::ofstream(path) << "#include <cstdio>\n"
+                           "\n"
+                           "int twice(int x)\n"
+                           "{\n"
+                           "    " << line << "\n"
+                           "}\n";
+    return path;
+}
+
+TEST_CASE("a source excerpt is the function around a line") {
+    auto path = writeSource("return 2 * x;");
+    auto excerpt = webside::functionAround(path, 5);
+    REQUIRE(excerpt);
+    CHECK(excerpt->text == "int twice(int x)\n{\n    return 2 * x;\n}");
+    CHECK(excerpt->text.substr(excerpt->lineStart, excerpt->lineLength)
+          == "    return 2 * x;");
+    CHECK_FALSE(webside::functionAround(path, 1));
+    CHECK_FALSE(webside::functionAround(path, 99));
+    CHECK_FALSE(webside::functionAround("missing.cpp", 5));
+    std::remove(path.c_str());
+}
+
+TEST_CASE("a native frame with a source line shows its function") {
+    HookProbe s;
+    smalldbg::StackFrame frame;
+    frame.functionName = "twice";
+    frame.sourceFile = writeSource("return 2 * x;");
+    frame.sourceLine = 5;
+    Json detail = Json::parse(s.buildFrameDetailJson(frame, 1));
+    CHECK(detail["hasSource"].asBool());
+    CHECK(detail["method"]["source"].asString().find("return 2 * x;")
+          != std::string::npos);
+    CHECK(detail["interval"]["start"].asInt() == 19);
+    CHECK(detail["interval"]["end"].asInt() == 36);
+    std::remove(frame.sourceFile.c_str());
+
+    frame.sourceFile = "missing.cpp";
+    detail = Json::parse(s.buildFrameDetailJson(frame, 1));
+    CHECK_FALSE(detail["hasSource"].asBool());
+    CHECK(detail["interval"]["end"].asInt() == 0);
 }
 
 TEST_CASE("native frame bindings expose IP/FP/SP") {

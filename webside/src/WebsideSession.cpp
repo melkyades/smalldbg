@@ -1,5 +1,6 @@
 #include "WebsideSession.h"
 #include "Json.h"
+#include "SourceExcerpt.h"
 #include "smalldbg/StackTrace.h"
 #include "smalldbg/Arch.h"
 #include "smalldbg/Debugger.h"
@@ -107,14 +108,13 @@ std::string WebsideSession::buildFrameDetailJson(const smalldbg::StackFrame& fra
         .set("functionAddress", addressHex(functionAddressOf(frame)))
         .set("functionOffset", static_cast<int64_t>(frame.functionOffset))
         .set("inlined", frame.inlined)
-        .set("hasSource", false);
+        .set("hasSource", false)
+        .set("interval", Json::object().set("start", 0).set("end", 0));
 
     if (frame.metadata)
         addSmalltalkFrameDetail(j, frame);
     else
         addNativeFrameDetail(j, frame);
-
-    j.set("interval", Json::object().set("start", 0).set("end", 0));
     return j.dump();
 }
 
@@ -130,19 +130,34 @@ void WebsideSession::addSmalltalkFrameDetail(Json& j, const smalldbg::StackFrame
         .set("source", frame.functionName));
 }
 
+// The symbols say where a native function's source is, and the function that
+// holds the frame's line is shown with that line marked.
 void WebsideSession::addNativeFrameDetail(Json& j, const smalldbg::StackFrame& frame) const {
     std::string modName = frame.moduleName.empty() ? "<native>" : frame.moduleName;
     j.set("class", Json::object()
         .set("name", modName)
         .set("definition", "")
         .set("category", "native"));
+
+    std::string source = frame.functionName.empty()
+        ? std::string("<native code>") : frame.functionName + " (native code)";
+    if (!frame.sourceFile.empty() && frame.sourceLine > 0) {
+        if (auto excerpt = functionAround(frame.sourceFile, frame.sourceLine)) {
+            source = excerpt->text;
+            j.set("hasSource", true);
+            j.set("interval", Json::object()
+                .set("start", excerpt->lineStart)
+                .set("end", excerpt->lineStart + excerpt->lineLength));
+        } else {
+            source = frame.functionName + " (source file not accessible: "
+                   + frame.sourceFile + ":" + std::to_string(frame.sourceLine) + ")";
+        }
+    }
     j.set("method", Json::object()
         .set("selector", frame.functionName)
         .set("methodClass", frame.moduleName)
         .set("category", "native")
-        .set("source", frame.functionName.empty()
-            ? std::string("<native code>")
-            : frame.functionName + " (native code)"));
+        .set("source", source));
 }
 
 std::string WebsideSession::buildFrameBindingsJson(const smalldbg::StackFrame& frame,

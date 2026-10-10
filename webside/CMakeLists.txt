@@ -11,6 +11,7 @@ add_library(webside_common STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideServer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/WebsideSession.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/MemoryListing.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SourceExcerpt.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Smalltalk/Session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Smalltalk/InspectorJson.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Workspace.cpp
