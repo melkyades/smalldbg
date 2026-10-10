@@ -35,26 +35,6 @@
 
 typedef HRESULT (STDAPICALLTYPE *PFN_DebugCreate)(REFIID InterfaceId, PVOID* Interface);
 
-namespace {
-
-struct ComReleaser {
-    void operator()(IUnknown* p) const { p->Release(); }
-};
-
-// A COM interface held for the length of a scope.
-template <typename T>
-using ComPtr = std::unique_ptr<T, ComReleaser>;
-
-// The requested interface, or nothing when this engine does not implement it.
-template <typename T, typename From>
-ComPtr<T> queryInterface(From* from) {
-    T* raw = nullptr;
-    if (FAILED(from->QueryInterface(__uuidof(T), (void**)&raw))) return {};
-    return ComPtr<T>(raw);
-}
-
-} // namespace
-
 // The loaded dbgeng module and DebugCreate function pointer
 static HMODULE g_dbgengModule = nullptr;
 static PFN_DebugCreate g_pfnDebugCreate = nullptr;

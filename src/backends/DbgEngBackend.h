@@ -16,6 +16,24 @@
 
 namespace smalldbg {
 
+struct ComReleaser {
+    void operator()(IUnknown* p) const { p->Release(); }
+};
+
+/** A ComPtr holds a COM interface for the length of a scope and releases it
+ *  at the end. **/
+template <typename T>
+using ComPtr = std::unique_ptr<T, ComReleaser>;
+
+/** Returns the requested interface, or nothing when the object does not
+ *  implement it. **/
+template <typename T, typename From>
+ComPtr<T> queryInterface(From* from) {
+    T* raw = nullptr;
+    if (FAILED(from->QueryInterface(__uuidof(T), (void**)&raw))) return {};
+    return ComPtr<T>(raw);
+}
+
 class DbgEngBackend;  // forward declaration for event callbacks
 
 // Strategy for syncing the DbgEng engine's effective processor type before
