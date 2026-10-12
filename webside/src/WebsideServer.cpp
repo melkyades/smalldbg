@@ -1367,6 +1367,7 @@ Json WebsideServer::nativeThreadJson(smalldbg::Thread& thread, int id,
 
 void WebsideServer::addGreenThreads(Json& array, int id) const {
     const int count = session().greenThreadCount();
+    const int active = session().activeGreenThread();
     for (int i = 0; i < count; i++, id++) {
         array.add(Json::object()
             .set("debuggerId", id)
@@ -1374,7 +1375,7 @@ void WebsideServer::addGreenThreads(Json& array, int id) const {
             .set("type", "smalltalk")
             .set("name", session().getGreenThreadName(i))
             .set("isMain", false)
-            .set("isCurrent", false)
+            .set("isCurrent", i == active)
             .set("terminated", !session().isGreenThreadLive(i))
             .set("status", stopReason()));
     }
