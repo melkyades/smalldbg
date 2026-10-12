@@ -426,8 +426,11 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
     auto rootSym = provider->getSymbolByName(parsed.rootSymbol);
     if (!rootSym) return "{}";
 
+    // A symbol from an export table has no type, but still has an address and
+    // the word stored there; only following a field needs its type.
     auto rootTypeName = provider->getVariableTypeName(parsed.rootSymbol);
-    if (!rootTypeName) return "{}";
+    if (!rootTypeName && !parsed.steps.empty()) return "{}";
+    if (!rootTypeName) rootTypeName = std::string();
 
     uint64_t currentAddr = rootSym->address;
     std::string currentTypeName = *rootTypeName;
