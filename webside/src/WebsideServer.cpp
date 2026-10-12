@@ -426,8 +426,11 @@ std::string WebsideServer::nativeInspectData(const std::string& expression) cons
     auto rootSym = provider->getSymbolByName(parsed.rootSymbol);
     if (!rootSym) return "{}";
 
+    // A symbol from an export table has no type, but still has an address and
+    // the word stored there; only following a field needs its type.
     auto rootTypeName = provider->getVariableTypeName(parsed.rootSymbol);
-    if (!rootTypeName) return "{}";
+    if (!rootTypeName && !parsed.steps.empty()) return "{}";
+    if (!rootTypeName) rootTypeName = std::string();
 
     uint64_t currentAddr = rootSym->address;
     std::string currentTypeName = *rootTypeName;
@@ -1367,6 +1370,7 @@ Json WebsideServer::nativeThreadJson(smalldbg::Thread& thread, int id,
 
 void WebsideServer::addGreenThreads(Json& array, int id) const {
     const int count = session().greenThreadCount();
+    const int active = session().activeGreenThread();
     for (int i = 0; i < count; i++, id++) {
         array.add(Json::object()
             .set("debuggerId", id)
@@ -1374,7 +1378,7 @@ void WebsideServer::addGreenThreads(Json& array, int id) const {
             .set("type", "smalltalk")
             .set("name", session().getGreenThreadName(i))
             .set("isMain", false)
-            .set("isCurrent", false)
+            .set("isCurrent", i == active)
             .set("terminated", !session().isGreenThreadLive(i))
             .set("status", stopReason()));
     }

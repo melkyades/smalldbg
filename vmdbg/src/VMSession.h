@@ -98,6 +98,9 @@ public:
     /** Returns whether that green thread still has a stack to show; true when
      *  the VM cannot tell. **/
     virtual bool isGreenThreadLive(int /*threadIndex*/) const { return true; }
+    /** Returns the index of the green thread the VM is running, or -1 when it
+     *  cannot tell. **/
+    virtual int activeGreenThread() const { return -1; }
     /** Returns the green thread this OS thread is running, or an empty name.
      **/
     virtual std::string greenThreadOn(uint64_t /*nativeThreadId*/) const { return {}; }
