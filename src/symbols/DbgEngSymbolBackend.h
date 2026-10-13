@@ -89,6 +89,11 @@ private:
     /** Loads the symbols of the module holding `addr`, once per module.
      *  Returns false when that was already tried or nothing holds `addr`. **/
     bool loadSymbolsAt(Address addr);
+    /** Renames `sym`, the engine's name for `addr`, when the module has only its
+     *  export table: the engine then names every address after the export before
+     *  it. The unwind table says where the function holding `addr` starts, and the
+     *  function is named sub_ and that offset instead. **/
+    void nameUnexportedFunction(Symbol& sym, Address addr);
     std::set<ULONG64> symbolsLoadedAt;
 
     /** The names of the modules whose symbols are loaded. **/

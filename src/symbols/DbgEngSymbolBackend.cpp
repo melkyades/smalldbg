@@ -11,6 +11,7 @@
 // The SYMOPT_ flags IDebugSymbols shares with DbgHelp are declared there.
 #include <dbghelp.h>
 
+#include <cstdio>
 #include <sstream>
 #include <algorithm>
 
@@ -226,7 +227,32 @@ std::optional<Symbol> DbgEngSymbolBackend::getSymbolByAddress(Address addr) {
         sym.name = fullName;
     }
 
+    nameUnexportedFunction(sym, addr);
     return sym;
+}
+
+void DbgEngSymbolBackend::nameUnexportedFunction(Symbol& sym, Address addr) {
+    ULONG index = 0;
+    ULONG64 base = 0;
+    if (FAILED(symbols->GetModuleByOffset(static_cast<ULONG64>(addr), 0, &index, &base))) return;
+    DEBUG_MODULE_PARAMETERS params = {};
+    if (FAILED(symbols->GetModuleParameters(1, &base, 0, &params))) return;
+    if (params.SymbolType != DEBUG_SYMTYPE_EXPORT) return;
+
+    uint8_t entry[64] = {};
+    ULONG size = 0;
+    if (FAILED(symbols->GetFunctionEntryByOffset(static_cast<ULONG64>(addr), 0, entry,
+                                                 sizeof(entry), &size)) ||
+        size < sizeof(uint32_t))
+        return;
+    const Address start = base + *reinterpret_cast<const uint32_t*>(entry);
+    if (start == sym.address || start > addr) return;
+
+    char name[32];
+    std::snprintf(name, sizeof(name), "sub_%llx",
+                  static_cast<unsigned long long>(start - base));
+    sym.address = start;
+    sym.name = name;
 }
 
 // A pattern without a module would have the engine load every module's
