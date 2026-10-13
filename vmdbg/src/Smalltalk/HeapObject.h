@@ -60,7 +60,10 @@ public:
 
     /** The bytes of a byte object. Returns none when they cannot be read. **/
     std::vector<uint8_t> bytes(int from = 0, int count = -1) const;
-    std::string bytesAsString() const;
+
+    /** Returns the text a byte object holds. A dialect whose strings keep
+     *  more than their characters overrides it to leave the rest out. **/
+    virtual std::string bytesAsString() const;
 
     /** Whether the receiver's class is `className`, or inherits from it. **/
     bool isKindOf(const std::string& className, int maxDepth = 64) const;
