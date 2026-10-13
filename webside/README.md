@@ -48,8 +48,12 @@ webside_osvm <image.image | vm_executable | dump.dmp | trace.run> [options] [-- 
 ```
 
 The options are the same for every server: `--port`, `--pid`, `--workspace`,
-`--symbols`, `--source`, `--pause-ms` and `--verbose`; run a server with no
-arguments for what each does.
+`--symbols`, `--source`, `--cwd`, `--pause-ms` and `--verbose`; run a server
+with no arguments for what each does.
+
+Egg finds its modules from the directory it starts in, so `webside_egg` is
+given `--cwd` with the root of an Egg checkout, and the module to run after
+`--`.
 
 `webside_osvm` reads a Spur image straight off disk, with no VM running and
 nothing attached, which makes the object model usable on an image alone.

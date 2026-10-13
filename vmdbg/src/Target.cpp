@@ -22,7 +22,7 @@ TargetKind targetKindFor(const std::string& path) {
 smalldbg::Status openInEngine(smalldbg::Debugger& debugger,
                               const TargetSpec& target) {
     switch (target.kind) {
-    case TargetKind::Launch: return debugger.launch(target.path, target.args);
+    case TargetKind::Launch: return debugger.launch(target.path, target.args, target.workingDir);
     case TargetKind::Attach: return debugger.attach(target.pid);
     case TargetKind::Dump:   return debugger.openDump(target.path);
     case TargetKind::Trace:  return debugger.openTrace(target.path);

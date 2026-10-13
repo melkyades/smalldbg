@@ -186,6 +186,7 @@ executable to launch, a crash dump or a TTD trace:
 | `--workspace FILE` | breakpoints, labels and symbol paths; defaults to `<target>.workspace.json` for a dump or a trace |
 | `--symbols PATH` | extra directories to look for pdbs in |
 | `--source DIR` | where the target's sources are |
+| `--cwd DIR` | the directory a launched target starts in; by default its executable's folder on Windows, the server's own elsewhere |
 | `--pause-ms N` | let a launched target run this long before suspending it |
 | `-v`, `--verbose` | log what the session is doing |
 

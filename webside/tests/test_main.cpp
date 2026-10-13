@@ -36,12 +36,13 @@ TEST_CASE("a bare number before the target is the port") {
 
 TEST_CASE("options set the port, the paths, the pause and verbose logging") {
     auto invocation = parse({"--port", "7100", "--symbols", "C:/pdbs",
-                             "--source", "C:/src", "--pause-ms", "500", "-v",
-                             "vm.exe"});
+                             "--source", "C:/src", "--cwd", "C:/run",
+                             "--pause-ms", "500", "-v", "vm.exe"});
     REQUIRE(invocation.ok);
     CHECK(invocation.port == 7100);
     CHECK(invocation.symbolPath == "C:/pdbs");
     CHECK(invocation.spec.sourcePath == "C:/src");
+    CHECK(invocation.spec.workingDir == "C:/run");
     CHECK(invocation.pauseMs == 500);
     CHECK(invocation.verbose);
     CHECK(invocation.configPath.empty());

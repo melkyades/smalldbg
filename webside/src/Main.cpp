@@ -48,6 +48,7 @@ void printUsage(const char* argv0, const DialectInfo& dialect) {
            " or a trace\n"
         << "  --symbols PATH    extra directories to look for pdbs in\n"
         << "  --source DIR      where the target's sources are\n"
+        << "  --cwd DIR         the directory a launched target starts in\n"
         << "  --pause-ms N      let a launched target run this long before"
            " suspending it\n"
         << "  -v, --verbose     log what the session is doing\n";
@@ -58,6 +59,7 @@ void printUsage(const char* argv0, const DialectInfo& dialect) {
 struct Words {
     std::string target;
     std::string sourcePath;
+    std::string workingDir;
     int pid{0};
     bool portGiven{false};
     std::vector<std::string> targetArgs;
@@ -74,7 +76,7 @@ bool readOption(int argc, char** argv, int& i, Invocation& invocation,
     }
     static const std::set<std::string> valued{
         "--port", "--pid", "--workspace", "--symbols", "--source",
-        "--pause-ms"};
+        "--pause-ms", "--cwd"};
     if (valued.count(option) == 0) {
         std::cerr << "Unknown option: " << option << "\n\n";
         return false;
@@ -95,6 +97,8 @@ bool readOption(int argc, char** argv, int& i, Invocation& invocation,
         invocation.symbolPath = value;
     } else if (option == "--source") {
         words.sourcePath = value;
+    } else if (option == "--cwd") {
+        words.workingDir = value;
     } else {
         invocation.pauseMs = std::atoi(value.c_str());
     }
@@ -161,6 +165,7 @@ Invocation parseCommandLine(int argc, char** argv, const DialectInfo& dialect) {
     invocation.spec.pid = words.pid;
     invocation.spec.args = words.targetArgs;
     invocation.spec.sourcePath = words.sourcePath;
+    invocation.spec.workingDir = words.workingDir;
     invocation.ok = true;
     return invocation;
 }
@@ -192,6 +197,8 @@ bool openTarget(Workspace& workspace, const Invocation& invocation,
     if (!invocation.spec.args.empty()) spec.args = invocation.spec.args;
     if (!invocation.spec.sourcePath.empty())
         spec.sourcePath = invocation.spec.sourcePath;
+    if (!invocation.spec.workingDir.empty())
+        spec.workingDir = invocation.spec.workingDir;
 
     if (workspace.open(spec)) return true;
 
