@@ -19,7 +19,8 @@ public:
     ~WindowsBackend() override;
 
     Status attach(uintptr_t pid) override;
-    Status launch(const std::string &path, const std::vector<std::string> &args) override;
+    Status launch(const std::string &path, const std::vector<std::string> &args,
+                  const std::string &workingDir) override;
     Status detach() override;
 
     Status resume() override;
@@ -53,6 +54,7 @@ private:
     std::thread debugThread;
     bool attached{false};
     std::string launchPath; // Used to pass launch command to debug thread
+    std::string launchWorkingDir;
     std::string exePath;    // Full path to the main executable
     bool running{false}; // Protected by stopMutex
     std::vector<uint8_t> memory;

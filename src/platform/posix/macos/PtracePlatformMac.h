@@ -22,7 +22,8 @@ public:
     void ptraceKill(int pid) override;
 
     int spawnStopped(const std::string& path,
-                     const std::vector<std::string>& args) override;
+                     const std::vector<std::string>& args,
+                     const std::string& workingDir) override;
 
     Status acquireProcess(int pid) override;
     void releaseProcess() override;

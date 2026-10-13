@@ -23,7 +23,8 @@ public:
     virtual ~Backend() = default;
 
     virtual Status attach(uintptr_t pid) = 0;
-    virtual Status launch(const std::string &path, const std::vector<std::string> &args) = 0;
+    virtual Status launch(const std::string &path, const std::vector<std::string> &args,
+                          const std::string &workingDir) = 0;
     virtual Status detach() = 0;
 
     virtual Status resume() = 0;

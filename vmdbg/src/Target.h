@@ -18,6 +18,7 @@ struct TargetSpec {
     TargetKind kind{TargetKind::Launch};
     std::string path;                 // executable, .run trace or .dmp dump
     std::vector<std::string> args;    // launch only
+    std::string workingDir;           // launch only; empty for the backend's default
     int pid{0};                       // attach only
     std::string sourcePath;           // where the dialect's sources live
 };

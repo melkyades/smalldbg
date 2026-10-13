@@ -16,7 +16,8 @@ public:
     ~PtraceBackend() override;
 
     Status attach(uintptr_t pid) override;
-    Status launch(const std::string &path, const std::vector<std::string> &args) override;
+    Status launch(const std::string &path, const std::vector<std::string> &args,
+                  const std::string &workingDir) override;
     Status detach() override;
 
     Status resume() override;

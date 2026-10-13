@@ -66,6 +66,7 @@ TargetSpec targetIn(const Json& target) {
     spec.path = target["path"].asString();
     spec.pid = static_cast<int>(target["pid"].asInt());
     spec.sourcePath = target["sourcePath"].asString();
+    spec.workingDir = target["workingDir"].asString();
     spec.args = stringsIn(target["args"]);
     return spec;
 }
@@ -151,7 +152,8 @@ std::string Setup::toJson() const {
             .set("path", spec.path)
             .set("args", arrayOf(spec.args))
             .set("pid", static_cast<int64_t>(spec.pid))
-            .set("sourcePath", spec.sourcePath))
+            .set("sourcePath", spec.sourcePath)
+            .set("workingDir", spec.workingDir))
         .set("symbolPaths", arrayOf(symbolDirs))
         .set("symbolModules", arrayOf(symModules))
         .set("breakpoints", namedAddresses(breaks))

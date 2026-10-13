@@ -333,6 +333,18 @@ const NativeTypeInfo* DbgEngSymbolBackend::getTypeByName(const std::string& name
         return known->second ? &*known->second : nullptr;
     if (!symbols || name.empty()) return nullptr;
 
+    // The engine does not look pointer types up by name, but the name says
+    // what one points to.
+    size_t end = name.find_last_not_of(' ');
+    if (end != std::string::npos && end > 0 && name[end] == '*') {
+        NativeTypeInfo pointer;
+        pointer.name = name;
+        pointer.kind = NativeTypeKind::Pointer;
+        pointer.targetTypeName = name.substr(0, name.find_last_not_of(' ', end - 1) + 1);
+        auto added = typeCache.emplace(name, std::move(pointer));
+        return &*added.first->second;
+    }
+
     ULONG typeId = 0;
     ULONG64 module = 0;
     if (FAILED(symbols->GetSymbolTypeId(name.c_str(), &typeId, &module))) {

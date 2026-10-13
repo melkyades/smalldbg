@@ -98,6 +98,14 @@ void HeapObject::toStream(std::ostream& os, int nested) const {
 
     if (renderSpecial(os, name, nested)) return;
 
+    // A class prints as its name, which its metaclass's name starts with.
+    const std::string suffix = " class";
+    if (name.size() > suffix.size()
+        && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        std::string own = classNameIfClass();
+        if (!own.empty()) { os << own; return; }
+    }
+
     if (name == "UndefinedObject") { os << "nil"; return; }
     if (name == "True")            { os << "true"; return; }
     if (name == "False")           { os << "false"; return; }

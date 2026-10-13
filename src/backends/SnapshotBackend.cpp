@@ -55,7 +55,8 @@ Status SnapshotBackend::load(const SnapshotRegion& given, Region& into) const {
 
 Status SnapshotBackend::attach(uintptr_t) { return Status::NotSupported; }
 
-Status SnapshotBackend::launch(const std::string&, const std::vector<std::string>&) {
+Status SnapshotBackend::launch(const std::string&, const std::vector<std::string>&,
+                               const std::string&) {
     return Status::NotSupported;
 }
 

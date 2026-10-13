@@ -30,11 +30,13 @@ public:
     virtual void ptraceKill(int pid) = 0;
 
     // -- Process spawning --
-    // Spawn `path`/`args` and return with the child STOPPED (ready for register
+    // Spawn `path`/`args` in `workingDir`, or in this process's directory when
+    // it is empty, and return with the child STOPPED (ready for register
     // reads), or -1 on failure. Default: fork + PT_TRACE_ME + execvp; platforms
     // that can't stop the child that way override it.
     virtual int spawnStopped(const std::string& path,
-                             const std::vector<std::string>& args);
+                             const std::vector<std::string>& args,
+                             const std::string& workingDir);
 
     // Acquire platform-specific process handle (e.g. Mach task port on macOS).
     // Must be called after the target is stopped.

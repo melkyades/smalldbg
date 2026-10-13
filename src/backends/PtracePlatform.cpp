@@ -13,7 +13,8 @@
 namespace smalldbg {
 
 int PtracePlatform::spawnStopped(const std::string& path,
-                                 const std::vector<std::string>& args) {
+                                 const std::vector<std::string>& args,
+                                 const std::string& workingDir) {
     pid_t child = fork();
     if (child < 0) {
         doLog(std::string("(ptrace) fork failed: ") + strerror(errno));
@@ -26,6 +27,13 @@ int PtracePlatform::spawnStopped(const std::string& path,
             // We're already past fork; can't use doLog (parent-side closure).
             fprintf(stderr, "(ptrace) PT_TRACE_ME failed in child: %s\n",
                     strerror(errno));
+            fflush(stderr);
+            _exit(126);
+        }
+
+        if (!workingDir.empty() && chdir(workingDir.c_str()) < 0) {
+            fprintf(stderr, "(ptrace) chdir(%s) failed in child: %s\n",
+                    workingDir.c_str(), strerror(errno));
             fflush(stderr);
             _exit(126);
         }
