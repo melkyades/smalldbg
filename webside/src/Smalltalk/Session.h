@@ -155,6 +155,11 @@ protected:
      *  neither is there. **/
     std::optional<ClassEntry> entryNamed(const std::string& name) const;
 
+    /** Records where a frame is in its method, `source` being the text the position's
+     *  offsets count in. **/
+    void setFramePosition(webside::Json& json, const FramePosition& position,
+                          const std::string& source) const;
+
 private:
     webside::Json classTreeJson(const std::string& name, bool namesOnly,
                                 int depth) const;

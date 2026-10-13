@@ -453,16 +453,19 @@ int characterNumber(const std::string& text, size_t offset) {
 
 } // namespace
 
-// A client marks the interval in the source it shows, counting characters.
 void Session::addFramePosition(Json& json, const smalldbg::StackFrame& frame) const {
     const std::string source = json["method"]["source"].asString();
-    auto position = framePosition(frame, source);
-    if (!position) return;
-    json.set("bytecodePC", position->bytecodePC);
-    if (!position->source) return;
+    if (auto position = framePosition(frame, source)) setFramePosition(json, *position, source);
+}
+
+// A client marks the interval in the source it shows, counting characters.
+void Session::setFramePosition(Json& json, const FramePosition& position,
+                               const std::string& source) const {
+    json.set("bytecodePC", position.bytecodePC);
+    if (!position.source) return;
     json.set("interval", Json::object()
-        .set("start", characterNumber(source, position->source->first))
-        .set("end", characterNumber(source, position->source->second)));
+        .set("start", characterNumber(source, position.source->first))
+        .set("end", characterNumber(source, position.source->second)));
 }
 
 namespace {
