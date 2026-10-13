@@ -92,7 +92,8 @@ Status WindowsBackend::attach(uintptr_t p) {
     return Status::Ok;
 }
 
-Status WindowsBackend::launch(const std::string &path, const std::vector<std::string> &args) {
+Status WindowsBackend::launch(const std::string &path, const std::vector<std::string> &args,
+                              const std::string &workingDir) {
     if (attached) return Status::Error;
 
     // Build command line
@@ -109,6 +110,7 @@ Status WindowsBackend::launch(const std::string &path, const std::vector<std::st
     // Start the debug thread first, then create the process from within it
     // This is required because debug events are delivered to the thread that creates the debugged process
     launchPath = cmd;
+    launchWorkingDir = workingDir;
     withStopLock([this]() { running = true; });
     debugThread = std::thread(&WindowsBackend::debugLoop, this);
     
@@ -616,10 +618,10 @@ bool WindowsBackend::createProcessForDebug() {
     STARTUPINFOA si = {};
     si.cb = sizeof(si);
 
-    // Extract working directory from the exe path
-    std::string workDir;
+    // Without a working directory given, start in the exe's folder.
+    std::string workDir = launchWorkingDir;
     size_t lastSlash = launchPath.find_last_of("\\/");
-    if (lastSlash != std::string::npos) {
+    if (workDir.empty() && lastSlash != std::string::npos) {
         workDir = launchPath.substr(0, lastSlash);
     }
     const char* workDirPtr = workDir.empty() ? nullptr : workDir.c_str();

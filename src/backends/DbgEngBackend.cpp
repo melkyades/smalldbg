@@ -440,11 +440,13 @@ Status DbgEngBackend::attach(uintptr_t pid) {
     return Status::Ok;
 }
 
-Status DbgEngBackend::launch(const std::string& path, const std::vector<std::string>& args) {
+Status DbgEngBackend::launch(const std::string& path, const std::vector<std::string>& args,
+                             const std::string& workingDir) {
     if (attached) return Status::Error;
 
     launchPath = path;
     launchArgs = args;
+    launchWorkingDir = workingDir;
     initMode = InitMode::Launch;
     initDone = false;
     initOk   = false;
@@ -1241,9 +1243,9 @@ bool DbgEngBackend::initLaunch() {
     std::string cmdLine = launchPath;
     for (auto& a : launchArgs) { cmdLine += ' '; cmdLine += a; }
 
-    // Set working directory to the exe's folder.
-    std::string workDir;
-    {
+    // Without a working directory given, start in the exe's folder.
+    std::string workDir = launchWorkingDir;
+    if (workDir.empty()) {
         size_t lastSlash = launchPath.find_last_of("\\/");
         if (lastSlash != std::string::npos)
             workDir = launchPath.substr(0, lastSlash);

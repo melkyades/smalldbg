@@ -69,8 +69,9 @@ Status Debugger::attach(uintptr_t pid) {
     return backend->attach(pid);
 }
 
-Status Debugger::launch(const std::string &path, const std::vector<std::string> &args) {
-    return backend->launch(path, args);
+Status Debugger::launch(const std::string &path, const std::vector<std::string> &args,
+                        const std::string &workingDir) {
+    return backend->launch(path, args, workingDir);
 }
 
 Status Debugger::detach() {

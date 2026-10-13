@@ -74,10 +74,11 @@ void PtraceBackend::enumerateAndRegisterThreads() {
 // launch
 // ---------------------------------------------------------------------------
 
-Status PtraceBackend::launch(const std::string &path, const std::vector<std::string> &args) {
+Status PtraceBackend::launch(const std::string &path, const std::vector<std::string> &args,
+                             const std::string &workingDir) {
     if (attached) return Status::AlreadyAttached;
 
-    int child = platform->spawnStopped(path, args);
+    int child = platform->spawnStopped(path, args, workingDir);
     if (child < 0) return Status::Error;
 
     targetPid = child;

@@ -75,7 +75,8 @@ int PtracePlatformMac::ptraceTraceMe() {
 // At return the child is still SIGSTOP'd and ready for inspection; the caller
 // resumes it later via ptraceContinue().
 int PtracePlatformMac::spawnStopped(const std::string& path,
-                                    const std::vector<std::string>& args) {
+                                    const std::vector<std::string>& args,
+                                    const std::string& workingDir) {
     posix_spawnattr_t attr;
     if (posix_spawnattr_init(&attr) != 0) {
         doLog(std::string("(ptrace) posix_spawnattr_init failed: ") + strerror(errno));
@@ -92,9 +93,15 @@ int PtracePlatformMac::spawnStopped(const std::string& path,
     for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
 
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    if (!workingDir.empty())
+        posix_spawn_file_actions_addchdir_np(&actions, workingDir.c_str());
+
     pid_t child = -1;
-    int spawn_rc = posix_spawn(&child, path.c_str(), nullptr, &attr,
+    int spawn_rc = posix_spawn(&child, path.c_str(), &actions, &attr,
                                argv.data(), *_NSGetEnviron());
+    posix_spawn_file_actions_destroy(&actions);
     posix_spawnattr_destroy(&attr);
     if (spawn_rc != 0) {
         char buf[256];

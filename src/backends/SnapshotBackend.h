@@ -18,7 +18,8 @@ public:
     Status openSnapshot(const std::vector<SnapshotRegion>& regions) override;
 
     Status attach(uintptr_t pid) override;
-    Status launch(const std::string& path, const std::vector<std::string>& args) override;
+    Status launch(const std::string& path, const std::vector<std::string>& args,
+                  const std::string& workingDir) override;
     Status detach() override;
 
     Status resume() override { return Status::NotSupported; }

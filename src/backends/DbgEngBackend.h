@@ -83,7 +83,8 @@ public:
 
     // --- Backend interface ---
     Status attach(uintptr_t pid) override;
-    Status launch(const std::string& path, const std::vector<std::string>& args) override;
+    Status launch(const std::string& path, const std::vector<std::string>& args,
+                  const std::string& workingDir) override;
     Status detach() override;
 
     Status resume() override;
@@ -281,6 +282,7 @@ protected:
     // --- Deferred launch/attach (event loop performs actual init) ---
     std::string launchPath;
     std::vector<std::string> launchArgs;
+    std::string launchWorkingDir;
     uintptr_t attachPid = 0;
     InitMode initMode = InitMode::None;
     std::string tracePath;  // for InitMode::OpenTrace / InitMode::OpenDump

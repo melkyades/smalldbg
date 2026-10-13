@@ -49,7 +49,10 @@ public:
 
     // attach/launch lifecycle
     Status attach(uintptr_t pid);
-    Status launch(const std::string &path, const std::vector<std::string> &args = {});
+    // With an empty workingDir the target starts in the backend's default
+    // directory.
+    Status launch(const std::string &path, const std::vector<std::string> &args = {},
+                  const std::string &workingDir = {});
     Status detach();
 
     // run control. The steps without a thread act on the current one, and
