@@ -945,36 +945,15 @@ void PtracePlatformMac::exceptionServerLoop() {
             }
             // Phase B: step completion. The store has now executed.
             steppingThreads_.erase(thr);
-            // Read post-write value.
             uint64_t curValue = 0;
-            if (watchAddrLive_) {
-                vm_size_t got = 0;
-                vm_offset_t data = 0;
-                kern_return_t rk = mach_vm_read(taskPort, watchAddrLive_,
-                                                sizeof(uint64_t), &data,
-                                                (mach_msg_type_number_t*)&got);
-                if (rk == KERN_SUCCESS) {
-                    curValue = *(uint64_t*)data;
-                    vm_deallocate(mach_task_self(), data, got);
-                }
-            }
+            readMemory(watchAddrLive_, &curValue, sizeof curValue);
             char buf[160];
             snprintf(buf, sizeof(buf),
                 "(watch)   post-store value=0x%llx",
                 (unsigned long long)curValue);
             doLog(buf);
             setSingleStep(thr, false);
-            // Re-arm the watchpoint.
-            arm_debug_state64_t dbg{};
-            mach_msg_type_number_t dcnt = ARM_DEBUG_STATE64_COUNT;
-            thread_get_state(thr, ARM_DEBUG_STATE64,
-                             (thread_state_t)&dbg, &dcnt);
-            if (watchAddrLive_) {
-                dbg.__wvr[0] = watchAddrLive_;
-                dbg.__wcr[0] = 0x1 | (0x2 << 1) | (0x2 << 3) | (0xFF << 5);
-            }
-            thread_set_state(thr, ARM_DEBUG_STATE64,
-                             (thread_state_t)&dbg, dcnt);
+            if (watchAddrLive_ != 0) installWatchpointOnThread(thr, watchAddrLive_);
             // Match check.
             bool stop = (watchMatchLive_ != 0) &&
                         ((curValue & watchMaskLive_) == watchMatchLive_);
