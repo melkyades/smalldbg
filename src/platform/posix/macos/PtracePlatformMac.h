@@ -5,10 +5,18 @@
 #include <mach/mach_types.h>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 
 namespace smalldbg {
+
+// One entry of the target's VM map: where it is and what it was allocated as.
+struct MapEntry {
+    mach_vm_address_t start{0};
+    mach_vm_address_t end{0};
+    unsigned int tag{0};  // VM_MEMORY_*, what the allocation was made for
+};
 
 class PtracePlatformMac : public PtracePlatform {
 public:
@@ -30,6 +38,7 @@ public:
 
     Status readMemory(Address addr, void* buf, size_t size) const override;
     Status writeMemory(Address addr, const void* data, size_t size) override;
+    std::pair<Address, Address> allocationContaining(Address addr) const override;
 
     Status getThreadRegisters(ThreadId tid, const Arch* arch, Registers& out) const override;
     Status setThreadPc(ThreadId tid, Address pc) const override;
@@ -65,6 +74,8 @@ private:
 
     // Read one dyld_image_info entry and append to modules
     void readModuleEntry(std::vector<ModuleInfo>& modules, Address entryAddr) const;
+    std::optional<MapEntry> growBackward(MapEntry allocation) const;
+    MapEntry growForward(MapEntry allocation) const;
     std::vector<ModuleInfo> modulesMappedByKernel() const;
     void addKernelMappedModule(std::vector<ModuleInfo>& modules, Address address) const;
 

@@ -286,6 +286,62 @@ std::optional<vm_prot_t> protectionAt(mach_port_t task, Address addr) {
 
 } // namespace
 
+namespace {
+
+// The entry at or after `address`, or nothing past the last one.
+std::optional<MapEntry> mapEntryFrom(mach_port_t task, mach_vm_address_t address) {
+    MapEntry entry;
+    entry.start = address;
+    mach_vm_size_t size = 0;
+    vm_region_extended_info_data_t info{};
+    mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+    mach_port_t object = MACH_PORT_NULL;
+    if (mach_vm_region(task, &entry.start, &size, VM_REGION_EXTENDED_INFO,
+                       reinterpret_cast<vm_region_info_t>(&info), &count,
+                       &object) != KERN_SUCCESS)
+        return std::nullopt;
+    entry.end = entry.start + size;
+    entry.tag = info.user_tag;
+    return entry;
+}
+
+} // namespace
+
+// The VM map keeps no record of which entries one allocation made, so an
+// allocation is taken to be the run of entries around the address that touch
+// one another and were allocated for the same purpose.
+std::pair<Address, Address> PtracePlatformMac::allocationContaining(Address addr) const {
+    if (taskPort == MACH_PORT_NULL || addr == 0) return {0, 0};
+    auto entry = mapEntryFrom(taskPort, addr);
+    if (!entry || entry->start > addr) return {0, 0};
+
+    MapEntry allocation = growForward(*entry);
+    while (auto grown = growBackward(allocation)) allocation = *grown;
+    return {allocation.start, allocation.end};
+}
+
+// The allocation with the entries after it that touch it and were allocated
+// for the same thing.
+MapEntry PtracePlatformMac::growForward(MapEntry allocation) const {
+    while (auto after = mapEntryFrom(taskPort, allocation.end)) {
+        if (after->start != allocation.end || after->tag != allocation.tag) break;
+        allocation.end = after->end;
+    }
+    return allocation;
+}
+
+// The allocation with the entry in front of it, or nothing when that entry
+// does not touch it or was allocated for something else.
+std::optional<MapEntry> PtracePlatformMac::growBackward(MapEntry allocation) const {
+    if (allocation.start == 0) return std::nullopt;
+    auto before = mapEntryFrom(taskPort, allocation.start - 1);
+    if (!before || before->start >= allocation.start || before->end != allocation.start
+        || before->tag != allocation.tag)
+        return std::nullopt;
+    allocation.start = before->start;
+    return allocation;
+}
+
 // Code pages are mapped read-only and executable, so writing a breakpoint
 // makes a private, writable copy of the pages it touches, writes, and gives
 // them back the protection they had. Taking execute away and not giving it
