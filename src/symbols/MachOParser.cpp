@@ -2,6 +2,7 @@
 // Extracts symbol tables from Mach-O and fat binaries.
 
 #include "ObjectFileParser.h"
+#include "platform/posix/macos/LoadedMachO.h"
 #include <mach-o/loader.h>
 #include <mach-o/nlist.h>
 #include <mach-o/fat.h>
@@ -20,6 +21,8 @@ public:
                    ModuleSymbols& out) override;
     int64_t computeSlide(const std::string& path,
                          Address loadAddress) override;
+    bool readLoadedExtent(const smalldbg_internal::MemoryReader& read,
+                          Address loadAddress, ModuleSymbols& out) override;
 
 private:
     // Parse a single 64-bit Mach-O image at the given base pointer.
@@ -185,6 +188,18 @@ bool MachOParser::parseFile(const std::string& path, int64_t slide,
     munmap(mapped, fileSize);
     finishSymbols(out);
     return !out.symbols.empty();
+}
+
+// ---------------------------------------------------------------------------
+// Images loaded in the target, read through its memory
+// ---------------------------------------------------------------------------
+
+bool MachOParser::readLoadedExtent(const smalldbg_internal::MemoryReader& read,
+                                   Address loadAddress, ModuleSymbols& out) {
+    smalldbg_internal::LoadedMachO image;
+    if (!smalldbg_internal::readLoadedMachO(read, loadAddress, image)) return false;
+    out.textEnd = image.textEnd;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
