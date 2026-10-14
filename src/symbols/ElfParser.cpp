@@ -64,7 +64,7 @@ void ElfParser::processSymEntry(const Elf64_Sym& sym,
     ResolvedSymbol rsym;
     rsym.address = sym.st_value + slide;
     rsym.rawName = name;
-    rsym.name = demangle(name);
+    rsym.name = symbolName(name);
     rsym.size = sym.st_size;
     symbols.push_back(std::move(rsym));
 }

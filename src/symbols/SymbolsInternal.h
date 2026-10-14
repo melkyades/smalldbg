@@ -169,6 +169,38 @@ inline std::string demangle(const char* name) {
     return name;
 }
 
+// A demangled function name without the parameter list that ends it and
+// what qualifies it ("A::f(int) const" -> "A::f"). Any other name is
+// answered as it is, such as a variable's whose last parenthesis is in a
+// scope: "(anonymous namespace)::x" or "f()::counter".
+inline std::string withoutParameters(const std::string& name) {
+    auto close = name.rfind(')');
+    if (close == std::string::npos) return name;
+
+    std::string after = name.substr(close + 1);
+    auto clone = after.find(" [clone ");
+    if (clone != std::string::npos) after.erase(clone);
+    for (const char* qualifier : {" const", " volatile", " &&", " &", " noexcept"}) {
+        auto at = after.find(qualifier);
+        if (at != std::string::npos) after.erase(at, strlen(qualifier));
+    }
+    if (!after.empty()) return name;
+
+    int depth = 0;
+    for (size_t i = close + 1; i-- > 0;) {
+        if (name[i] == ')') depth++;
+        if (name[i] == '(' && --depth == 0) return name.substr(0, i);
+    }
+    return name;
+}
+
+// The name a symbol table entry goes by: demangled, and for a function
+// without its parameters, the way a PDB names it and DWARF names its
+// subprogram ("break_here" for _ZL10break_herev).
+inline std::string symbolName(const char* name) {
+    return withoutParameters(demangle(name));
+}
+
 // Extract the filename component from a path
 inline std::string filenameOf(const std::string& path) {
     auto pos = path.rfind('/');

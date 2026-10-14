@@ -618,7 +618,7 @@ static void processSubprogramDIE(
     }
 
     if (!linkName.empty())
-        sub.name = demangle(linkName.c_str());
+        sub.name = symbolName(linkName.c_str());
     else if (!shortName.empty())
         sub.name = buildQualifiedName(nameOffset, dies);
 
