@@ -748,6 +748,25 @@ void PtracePlatformMac::stopExceptionServer() {
     exceptionPort = MACH_PORT_NULL;
 }
 
+// Answers an exception the server dealt with itself, so the thread goes on.
+void PtracePlatformMac::resumeAfter(const MachExceptionMessage& msg) {
+    MachExceptionRaiseReply reply{};
+    reply.header.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits), 0);
+    reply.header.msgh_size = sizeof(reply);
+    reply.header.msgh_remote_port = msg.header.msgh_remote_port;
+    reply.header.msgh_local_port = MACH_PORT_NULL;
+    reply.header.msgh_id = msg.header.msgh_id + 100;
+    reply.NDR = msg.NDR;
+    reply.RetCode = KERN_SUCCESS;
+    mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
+             MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    {
+        std::lock_guard<std::mutex> lk(exceptionMutex);
+        pending_ = PendingException{};
+    }
+    task_resume(taskPort);
+}
+
 void PtracePlatformMac::exceptionServerLoop() {
     while (!exceptionThreadStop.load()) {
         MachExceptionMessage msg{};
@@ -948,22 +967,7 @@ void PtracePlatformMac::exceptionServerLoop() {
                 thread_set_state(thr, ARM_THREAD_STATE64,
                                  (thread_state_t)&ts, tcnt);
                 steppingThreads_.insert(thr);
-                MachExceptionRaiseReply reply{};
-                reply.header.msgh_bits = MACH_MSGH_BITS(
-                    MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits), 0);
-                reply.header.msgh_size = sizeof(reply);
-                reply.header.msgh_remote_port = msg.header.msgh_remote_port;
-                reply.header.msgh_local_port = MACH_PORT_NULL;
-                reply.header.msgh_id = msg.header.msgh_id + 100;
-                reply.NDR = msg.NDR;
-                reply.RetCode = KERN_SUCCESS;
-                mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
-                         MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-                {
-                    std::lock_guard<std::mutex> lk(exceptionMutex);
-                    pending_ = PendingException{};
-                }
-                task_resume(taskPort);
+                resumeAfter(msg);
                 continue;
             }
             // Phase B: step completion. The store has now executed.
@@ -1011,22 +1015,7 @@ void PtracePlatformMac::exceptionServerLoop() {
             bool stop = (watchMatchLive_ != 0) &&
                         ((curValue & watchMaskLive_) == watchMatchLive_);
             if (!stop) {
-                MachExceptionRaiseReply reply{};
-                reply.header.msgh_bits = MACH_MSGH_BITS(
-                    MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits), 0);
-                reply.header.msgh_size = sizeof(reply);
-                reply.header.msgh_remote_port = msg.header.msgh_remote_port;
-                reply.header.msgh_local_port = MACH_PORT_NULL;
-                reply.header.msgh_id = msg.header.msgh_id + 100;
-                reply.NDR = msg.NDR;
-                reply.RetCode = KERN_SUCCESS;
-                mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
-                         MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-                {
-                    std::lock_guard<std::mutex> lk(exceptionMutex);
-                    pending_ = PendingException{};
-                }
-                task_resume(taskPort);
+                resumeAfter(msg);
                 continue;
             }
             // Match — fall through to "stay stopped" so debugger inspects.
