@@ -660,9 +660,8 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 
 // Wire-format of a mach_exception_raise message we expect to receive.
 // Packed so offsets match the kernel's layout exactly.
-namespace {
 #pragma pack(push, 4)
-struct MachExceptionRaiseMessage {
+struct MachExceptionMessage {
     mach_msg_header_t header;
     mach_msg_body_t body;
     mach_msg_port_descriptor_t thread;
@@ -675,6 +674,8 @@ struct MachExceptionRaiseMessage {
     char trailer[64];
 };
 #pragma pack(pop)
+
+namespace {
 struct MachExceptionRaiseReply {
     mach_msg_header_t header;
     NDR_record_t NDR;
@@ -749,7 +750,7 @@ void PtracePlatformMac::stopExceptionServer() {
 
 void PtracePlatformMac::exceptionServerLoop() {
     while (!exceptionThreadStop.load()) {
-        MachExceptionRaiseMessage msg{};
+        MachExceptionMessage msg{};
         kern_return_t kr = mach_msg(&msg.header,
                                     MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                                     0,

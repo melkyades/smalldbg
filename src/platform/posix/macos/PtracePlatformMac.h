@@ -11,6 +11,8 @@
 
 namespace smalldbg {
 
+struct MachExceptionMessage;
+
 // One entry of the target's VM map: where it is and what it was allocated as.
 struct MapEntry {
     mach_vm_address_t start{0};
