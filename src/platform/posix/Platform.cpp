@@ -19,8 +19,11 @@ namespace smalldbg_internal {
         return false;
     }
 
+#ifndef __APPLE__
+    // An image loaded on macOS is read in platform/posix/macos/LoadedMachO.cpp.
     std::vector<smalldbg::ModuleSection> moduleSections(
         const MemoryReader&, uint64_t, uint64_t) {
         return {};
     }
+#endif
 }

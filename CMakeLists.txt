@@ -65,6 +65,7 @@ else()
     )
     if(APPLE)
         target_sources(smalldbg PRIVATE
+            src/platform/posix/macos/LoadedMachO.cpp
             src/platform/posix/macos/PtracePlatformMac.cpp
         )
     else()
