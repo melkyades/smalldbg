@@ -31,6 +31,11 @@ private:
                                   const char* strtab, uint32_t strsize,
                                   int64_t slide,
                                   std::vector<ResolvedSymbol>& symbols);
+    static bool definesSymbol(const struct nlist_64& nl);
+    static void addSymbol(const char* name, Address address,
+                          std::vector<ResolvedSymbol>& symbols);
+    // Sorts the symbols, gives each the size up to the next and indexes them.
+    static void finishSymbols(ModuleSymbols& out);
 };
 
 // ---------------------------------------------------------------------------
@@ -45,29 +50,52 @@ std::unique_ptr<ObjectFileParser> ObjectFileParser::create() {
 // parseMachO64
 // ---------------------------------------------------------------------------
 
-void MachOParser::processNlistEntry(const struct nlist_64& nl,
-                                     const char* strtab, uint32_t strsize,
-                                     int64_t slide,
-                                     std::vector<ResolvedSymbol>& symbols) {
-    // Skip debug symbols, undefined, and non-section symbols
-    if (nl.n_type & N_STAB) return;
-    if ((nl.n_type & N_TYPE) == N_UNDF) return;
-    if ((nl.n_type & N_TYPE) != N_SECT) return;
+// Skip debug symbols, undefined, and non-section symbols
+bool MachOParser::definesSymbol(const struct nlist_64& nl) {
+    if (nl.n_type & N_STAB) return false;
+    return (nl.n_type & N_TYPE) == N_SECT;
+}
 
-    uint32_t strIdx = nl.n_un.n_strx;
-    if (strIdx >= strsize) return;
-    const char* name = strtab + strIdx;
+void MachOParser::addSymbol(const char* name, Address address,
+                            std::vector<ResolvedSymbol>& symbols) {
     if (name[0] == '\0') return;
 
     // Skip leading underscore (C/C++ symbols on macOS)
     const char* stripped = (name[0] == '_') ? name + 1 : name;
 
     ResolvedSymbol sym;
-    sym.address = nl.n_value + slide;
+    sym.address = address;
     sym.rawName = stripped;
     sym.name = symbolName(stripped);
     sym.size = 0;
     symbols.push_back(std::move(sym));
+}
+
+void MachOParser::processNlistEntry(const struct nlist_64& nl,
+                                     const char* strtab, uint32_t strsize,
+                                     int64_t slide,
+                                     std::vector<ResolvedSymbol>& symbols) {
+    if (!definesSymbol(nl)) return;
+    uint32_t strIdx = nl.n_un.n_strx;
+    if (strIdx >= strsize) return;
+    addSymbol(strtab + strIdx, nl.n_value + slide, symbols);
+}
+
+void MachOParser::finishSymbols(ModuleSymbols& out) {
+    std::sort(out.symbols.begin(), out.symbols.end(),
+        [](const ResolvedSymbol& a, const ResolvedSymbol& b) {
+            return a.address < b.address;
+        });
+
+    // Estimate sizes from gaps between consecutive symbols. The last one in
+    // the code runs to the end of __TEXT.
+    for (size_t i = 0; i + 1 < out.symbols.size(); i++)
+        out.symbols[i].size = out.symbols[i + 1].address - out.symbols[i].address;
+    if (!out.symbols.empty()) {
+        ResolvedSymbol& last = out.symbols.back();
+        last.size = out.textEnd > last.address ? out.textEnd - last.address : 1;
+    }
+    out.buildNameIndexes();
 }
 
 void MachOParser::parseMachO64(const uint8_t* base, size_t fileSize,
@@ -109,21 +137,6 @@ void MachOParser::parseMachO64(const uint8_t* base, size_t fileSize,
 
     for (uint32_t i = 0; i < symtab->nsyms; i++)
         processNlistEntry(nlists[i], strtab, symtab->strsize, slide, out.symbols);
-
-    // Sort by address
-    std::sort(out.symbols.begin(), out.symbols.end(),
-        [](const ResolvedSymbol& a, const ResolvedSymbol& b) {
-            return a.address < b.address;
-        });
-
-    // Estimate sizes from gaps between consecutive symbols. The last one in
-    // the code runs to the end of __TEXT.
-    for (size_t i = 0; i + 1 < out.symbols.size(); i++)
-        out.symbols[i].size = out.symbols[i + 1].address - out.symbols[i].address;
-    if (!out.symbols.empty()) {
-        ResolvedSymbol& last = out.symbols.back();
-        last.size = out.textEnd > last.address ? out.textEnd - last.address : 1;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +183,7 @@ bool MachOParser::parseFile(const std::string& path, int64_t slide,
     }
 
     munmap(mapped, fileSize);
-    out.buildNameIndexes();
+    finishSymbols(out);
     return !out.symbols.empty();
 }
 
