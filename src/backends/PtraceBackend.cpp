@@ -405,37 +405,6 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
         return stopReason;
 
     while (true) {
-        // Platforms may catch exceptions out-of-band (not via waitpid); check
-        // that queue first and synthesize an Exception stop for the offending
-        // thread.
-        auto async = platform->pollAsyncException();
-        if (async.present) {
-            stopped = true;
-            stopReason = StopReason::Exception;
-            stopAddress = 0;
-            if (log) {
-                char buf[128];
-                std::snprintf(buf, sizeof(buf),
-                    "(ptrace) async exception=%d code=0x%lx subcode=0x%lx thread=0x%lx",
-                    async.exception, async.code, async.subcode,
-                    (unsigned long)async.thread);
-                log(buf);
-            }
-            enumerateAndRegisterThreads();
-            // Pick the faulting thread as current; fall back to the one the
-            // platform says stopped if we can't find it.
-            auto threadOpt = process->getThread(async.thread);
-            if (threadOpt) {
-                debugger->setCurrentThread(*threadOpt);
-                Registers regs{};
-                if (getRegisters(threadOpt->get(), regs) == Status::Ok)
-                    stopAddress = regs.ip();
-            } else {
-                selectStoppedThread();
-            }
-            if (eventCallback) eventCallback(stopReason, stopAddress);
-            return stopReason;
-        }
         int sig = platform->waitForStop(targetPid, timeout_ms, lastChildStatus);
         if (sig == -1) return StopReason::None;
 

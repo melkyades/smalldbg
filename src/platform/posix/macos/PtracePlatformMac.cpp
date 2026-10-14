@@ -25,6 +25,8 @@
 #include <mach-o/dyld_images.h>
 #include <mach-o/loader.h>
 #include <libproc.h>
+#include <algorithm>
+#include <chrono>
 #include <optional>
 
 namespace smalldbg {
@@ -677,10 +679,9 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 //   - Suspend the target task so it stays paused while the debugger inspects.
 //   - Hold the exception, in a queue, and DON'T reply to the Mach message: the
 //     target stays suspended and the faulting thread frozen in exception state.
-//     PtraceBackend::waitForEvent polls pollAsyncException() to pick this up and
-//     turn it into a normal Exception stop. Once we've claimed the exception
-//     there's no posix signal-stop left for waitpid to wake on, so this
-//     cross-thread queue of held exceptions is the only channel back.
+//     waitForStop() reports it as a stop, on its thread. Once we've claimed
+//     the exception there's no posix signal-stop left for waitpid to wake on,
+//     so this cross-thread queue of held exceptions is the only channel back.
 //
 // EXC_BREAKPOINT / HW watchpoints
 // -------------------------------
@@ -709,6 +710,10 @@ struct MachExceptionMessage {
 
 namespace {
 
+bool isSignal(int exception, int64_t code) {
+    return exception == EXC_SOFTWARE && code == EXC_SOFT_SIGNAL;
+}
+
 // Exceptions the kernel turns into a signal for the program when they are
 // not handled.
 bool isFault(int exception) {
@@ -731,6 +736,19 @@ const char* exceptionName(int exception) {
         case EXC_CRASH:           return "EXC_CRASH";
         case EXC_GUARD:           return "EXC_GUARD";
         default:                  return "EXC_?";
+    }
+}
+
+// The signal a stop is reported as.
+int signalOf(int exception, int64_t code, int64_t subcode) {
+    if (isSignal(exception, code)) return static_cast<int>(subcode);
+    switch (exception) {
+        case EXC_BAD_ACCESS:      return code == KERN_INVALID_ADDRESS ? SIGSEGV : SIGBUS;
+        case EXC_BAD_INSTRUCTION: return SIGILL;
+        case EXC_ARITHMETIC:      return SIGFPE;
+        case EXC_CRASH:           return SIGABRT;
+        case EXC_GUARD:           return SIGKILL;
+        default:                  return SIGTRAP;
     }
 }
 
@@ -839,8 +857,49 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
 // The task stays suspended and the thread waits for the answer, so the
 // target stays where it stopped while the debugger looks at it.
 void PtracePlatformMac::hold(const HeldException& exception) {
+    {
+        std::lock_guard<std::mutex> lock(exceptionMutex);
+        held.push_back(exception);
+    }
+    exceptionCv.notify_all();
+}
+
+// Reports the first stop not reported yet, as the signal it stands for, or
+// answers 0 when there is none.
+int PtracePlatformMac::takeStop() {
     std::lock_guard<std::mutex> lock(exceptionMutex);
-    held.push_back(exception);
+    for (auto& exception : held) {
+        if (exception.reported) continue;
+        exception.reported = true;
+        lastStopThread = exception.thread;
+        return signalOf(exception.exception, exception.code, exception.subcode);
+    }
+    return 0;
+}
+
+int PtracePlatformMac::waitForStop(int pid, int timeoutMs, int& status) {
+    auto deadline = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds(std::max(timeoutMs, 0));
+    while (true) {
+        if (int signal = takeStop()) return signal;
+        if (waitpid(pid, &status, WNOHANG) > 0) {
+            if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
+            if (WIFSTOPPED(status)) {
+                lastStopThread = 0;
+                return WSTOPSIG(status);
+            }
+        }
+        if (timeoutMs >= 0 && std::chrono::steady_clock::now() >= deadline)
+            return -1;
+
+        // A process that exits sends no message, so waitpid is asked again
+        // at least every 50 ms.
+        std::unique_lock<std::mutex> lock(exceptionMutex);
+        exceptionCv.wait_for(lock, std::chrono::milliseconds(50), [this] {
+            return std::any_of(held.begin(), held.end(),
+                               [](const HeldException& e) { return !e.reported; });
+        });
+    }
 }
 
 // Answers every held exception, so the target runs again. A fault is
@@ -1084,22 +1143,6 @@ void PtracePlatformMac::setWatchpoint(uint64_t addr, uint64_t match, uint64_t ma
              (unsigned long long)addr, (unsigned long long)match,
              (unsigned long long)watchMaskLive_);
     doLog(buf);
-}
-
-PtracePlatform::AsyncException PtracePlatformMac::pollAsyncException() {
-    std::lock_guard<std::mutex> lock(exceptionMutex);
-    AsyncException out;
-    for (auto& exception : held) {
-        if (exception.reported) continue;
-        exception.reported = true;
-        out.present   = true;
-        out.thread    = exception.thread;
-        out.exception = exception.exception;
-        out.code      = exception.code;
-        out.subcode   = exception.subcode;
-        return out;
-    }
-    return out;
 }
 
 } // namespace smalldbg

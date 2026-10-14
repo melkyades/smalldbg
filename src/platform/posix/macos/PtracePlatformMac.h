@@ -4,6 +4,7 @@
 #include "../../../backends/PtracePlatform.h"
 #include <mach/mach_types.h>
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -36,6 +37,9 @@ public:
                      const std::vector<std::string>& args,
                      const std::string& workingDir) override;
 
+    int waitForStop(int pid, int timeoutMs, int& status) override;
+    ThreadId stoppedThread() const override { return lastStopThread; }
+
     Status acquireProcess(int pid) override;
     void releaseProcess() override;
 
@@ -49,9 +53,6 @@ public:
     std::vector<ThreadId> enumerateThreads() override;
     std::vector<ModuleInfo> enumerateModules() const override;
 
-    // Surface Mach-caught exceptions to the backend's wait loop so they
-    // become normal Exception stops the rest of the debugger understands.
-    AsyncException pollAsyncException() override;
     void setWatchpoint(uint64_t addr, uint64_t match, uint64_t mask) override;
 
 private:
@@ -80,15 +81,18 @@ private:
         int exception{0};   // EXC_*
         int64_t code{0};
         int64_t subcode{0};
-        bool reported{false};  // pollAsyncException has taken it
+        bool reported{false};  // waitForStop has answered it
     };
     std::deque<HeldException> held;
+    std::condition_variable exceptionCv;
+    ThreadId lastStopThread{0};
 
     Status startExceptionServer();
     void stopExceptionServer();
     void exceptionServerLoop();
     void receiveException(const MachExceptionMessage& msg);
     void hold(const HeldException& exception);
+    int takeStop();
     void resumeHeld();
     void answer(const HeldException& exception, kern_return_t result);
     void resumeAfter(const MachExceptionMessage& msg);
