@@ -73,10 +73,14 @@ private:
     std::mutex exceptionMutex;
     // Exceptions caught and not yet answered, oldest first.
     struct HeldException {
+        mach_port_t replyPort{MACH_PORT_NULL};
+        mach_msg_bits_t replyBits{0};
+        mach_msg_id_t replyId{0};
         ThreadId thread{0};
         int exception{0};   // EXC_*
         int64_t code{0};
         int64_t subcode{0};
+        bool reported{false};  // pollAsyncException has taken it
     };
     std::deque<HeldException> held;
 
@@ -85,6 +89,8 @@ private:
     void exceptionServerLoop();
     void receiveException(const MachExceptionMessage& msg);
     void hold(const HeldException& exception);
+    void resumeHeld();
+    void answer(const HeldException& exception, kern_return_t result);
     void resumeAfter(const MachExceptionMessage& msg);
     void logFault(const MachExceptionMessage& msg) const;
     bool handleWatchpointException(const MachExceptionMessage& msg);

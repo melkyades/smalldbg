@@ -177,7 +177,18 @@ int PtracePlatformMac::ptraceDetach(int pid) {
     return ptrace(PT_DETACH, pid, nullptr, 0);
 }
 
+// A target stopped on an exception the server holds runs again when the
+// exception is answered; one that waitpid saw stop is continued by ptrace.
 int PtracePlatformMac::ptraceContinue(int pid) {
+    bool holding = false;
+    {
+        std::lock_guard<std::mutex> lock(exceptionMutex);
+        holding = !held.empty();
+    }
+    if (holding) {
+        resumeHeld();
+        return 0;
+    }
     int result = ptrace(PT_CONTINUE, pid, reinterpret_cast<caddr_t>(1), 0);
     if (result < 0)
         doLog("(ptrace) PT_CONTINUE failed: " + std::string(strerror(errno)));
@@ -255,6 +266,7 @@ Status PtracePlatformMac::acquireProcess(int pid) {
 }
 
 void PtracePlatformMac::releaseProcess() {
+    resumeHeld();
     stopExceptionServer();
 
     for (auto port : cachedThreadPorts)
@@ -697,6 +709,18 @@ struct MachExceptionMessage {
 
 namespace {
 
+// Exceptions the kernel turns into a signal for the program when they are
+// not handled.
+bool isFault(int exception) {
+    switch (exception) {
+        case EXC_BAD_ACCESS: case EXC_BAD_INSTRUCTION: case EXC_ARITHMETIC:
+        case EXC_GUARD: case EXC_CRASH:
+            return true;
+        default:
+            return false;
+    }
+}
+
 const char* exceptionName(int exception) {
     switch (exception) {
         case EXC_BAD_ACCESS:      return "EXC_BAD_ACCESS";
@@ -778,6 +802,8 @@ void PtracePlatformMac::stopExceptionServer() {
              MACH_PORT_NULL, 100, MACH_PORT_NULL);
     if (exceptionThread.joinable())
         exceptionThread.join();
+    // Anything that arrived meanwhile is answered rather than left waiting.
+    resumeHeld();
     mach_port_deallocate(mach_task_self(), exceptionPort);
     exceptionPort = MACH_PORT_NULL;
 }
@@ -800,6 +826,9 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
     if (handleWatchpointException(msg)) return;
 
     HeldException exception;
+    exception.replyPort = msg.header.msgh_remote_port;
+    exception.replyBits = MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits);
+    exception.replyId = msg.header.msgh_id + 100;
     exception.thread = msg.thread.name;
     exception.exception = msg.exception;
     exception.code = msg.codeCnt > 0 ? msg.code[0] : 0;
@@ -812,6 +841,35 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
 void PtracePlatformMac::hold(const HeldException& exception) {
     std::lock_guard<std::mutex> lock(exceptionMutex);
     held.push_back(exception);
+}
+
+// Answers every held exception, so the target runs again. A fault is
+// answered with KERN_FAILURE, so the kernel raises the signal the program
+// would have got without a debugger.
+void PtracePlatformMac::resumeHeld() {
+    std::deque<HeldException> answering;
+    {
+        std::lock_guard<std::mutex> lock(exceptionMutex);
+        answering.swap(held);
+    }
+    for (const auto& exception : answering) {
+        answer(exception, isFault(exception.exception) ? KERN_FAILURE : KERN_SUCCESS);
+        if (taskPort != MACH_PORT_NULL) task_resume(taskPort);
+    }
+}
+
+void PtracePlatformMac::answer(const HeldException& exception, kern_return_t result) {
+    MachExceptionRaiseReply reply{};
+    reply.header.msgh_bits = MACH_MSGH_BITS(exception.replyBits, 0);
+    reply.header.msgh_size = sizeof(reply);
+    reply.header.msgh_remote_port = exception.replyPort;
+    reply.header.msgh_local_port = MACH_PORT_NULL;
+    reply.header.msgh_id = exception.replyId;
+    reply.NDR = NDR_record;
+    reply.RetCode = result;
+    mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
+             MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    mach_port_deallocate(mach_task_self(), static_cast<mach_port_t>(exception.thread));
 }
 
 // Answers an exception the server dealt with itself, so the thread goes on.
@@ -1031,14 +1089,16 @@ void PtracePlatformMac::setWatchpoint(uint64_t addr, uint64_t match, uint64_t ma
 PtracePlatform::AsyncException PtracePlatformMac::pollAsyncException() {
     std::lock_guard<std::mutex> lock(exceptionMutex);
     AsyncException out;
-    if (held.empty()) return out;
-    const HeldException& exception = held.front();
-    out.present   = true;
-    out.thread    = exception.thread;
-    out.exception = exception.exception;
-    out.code      = exception.code;
-    out.subcode   = exception.subcode;
-    held.pop_front();
+    for (auto& exception : held) {
+        if (exception.reported) continue;
+        exception.reported = true;
+        out.present   = true;
+        out.thread    = exception.thread;
+        out.exception = exception.exception;
+        out.code      = exception.code;
+        out.subcode   = exception.subcode;
+        return out;
+    }
     return out;
 }
 
