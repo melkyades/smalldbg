@@ -27,6 +27,7 @@ struct ModuleSymbols {
     Address loadAddress;
     Address textEnd;       // upper bound of __TEXT / .text segment (slid)
     std::vector<ResolvedSymbol> symbols; // sorted by address
+    bool symbolsRead{false};  // false until the symbols are read, when first needed
 
     // Maps for O(1) name lookup: demangled name -> index, raw name -> index
     std::unordered_map<std::string, size_t> nameIndex;

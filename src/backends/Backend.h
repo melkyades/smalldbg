@@ -146,6 +146,11 @@ public:
     // The target's architecture, updated once the backend has identified it.
     const Arch* getArch() const { return arch; }
 
+    // The debugger's state version: it changes whenever the target may have
+    // moved, so anything read off the target, such as its modules, can be
+    // cached against it.
+    uint64_t targetVersion() const;
+
 protected:
     /** Run until the frame `depth` below the current one is returned to. **/
     Status runToFrameReturn(Thread* thread, size_t depth);
