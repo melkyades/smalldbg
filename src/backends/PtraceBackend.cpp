@@ -31,6 +31,9 @@ static const uint8_t kBpInstr[] = {0xCC}; // INT 3
 #endif
 static constexpr size_t kBpSize = sizeof(kBpInstr);
 
+// How long a suspend waits for the target to halt.
+static constexpr int kSuspendTimeoutMs = 5000;
+
 size_t PtraceBackend::breakpointSize() const {
     return kBpSize;
 }
@@ -100,7 +103,7 @@ Status PtraceBackend::launch(const std::string &path, const std::vector<std::str
     stopped = true;
     stopReason = StopReason::ProcessCreated;
     stopAddress = 0;
-    selectProcessThread();
+    selectStoppedThread();
 
     // Register the DWARF symbol backend
     auto dwarf = std::make_unique<DwarfBackend>(this);
@@ -119,16 +122,7 @@ Status PtraceBackend::attach(uintptr_t pid) {
 
     targetPid = static_cast<int>(pid);
 
-    if (platform->ptraceAttach(targetPid) < 0) {
-        targetPid = -1;
-        return Status::Error;
-    }
-
-    // Wait for the SIGSTOP that attach delivers
-    int status = 0;
-    if (waitpid(targetPid, &status, 0) < 0 || !WIFSTOPPED(status)) {
-        if (log) log("(ptrace) child did not stop after attach");
-        platform->ptraceDetach(targetPid);
+    if (platform->attachStopped(targetPid) < 0) {
         targetPid = -1;
         return Status::Error;
     }
@@ -146,7 +140,7 @@ Status PtraceBackend::attach(uintptr_t pid) {
     stopped = true;
     stopReason = StopReason::InitialBreakpoint;
     stopAddress = 0;
-    selectProcessThread();
+    selectStoppedThread();
 
     auto dwarf = std::make_unique<DwarfBackend>(this);
     debugger->getSymbolProvider()->addBackend(std::move(dwarf));
@@ -192,15 +186,7 @@ Status PtraceBackend::detach() {
 
 Status PtraceBackend::resume() {
     if (!attached) return Status::NotAttached;
-
-    // If there's a pending breakpoint re-insert, single-step first then continue
-    if (!pendingReinsert.empty()) {
-        if (platform->ptraceStep(targetPid) < 0) return Status::Error;
-
-        int status = 0;
-        waitpid(targetPid, &status, 0);
-        handlePendingReinsert();
-    }
+    if (stepPastBreakpoint() != Status::Ok) return Status::Error;
 
     if (platform->ptraceContinue(targetPid) < 0) return Status::Error;
 
@@ -210,19 +196,17 @@ Status PtraceBackend::resume() {
     return Status::Ok;
 }
 
-Status PtraceBackend::step(Thread* /*thread*/) {
+Status PtraceBackend::step(Thread* thread) {
     if (!attached) return Status::NotAttached;
+    if (!thread) thread = debugger->getCurrentThread().get();
+    if (!thread) return Status::NotFound;
 
-    // Handle pending breakpoint re-insertion before stepping
-    if (!pendingReinsert.empty()) {
-        if (platform->ptraceStep(targetPid) < 0) return Status::Error;
+    // A thread stopped on a breakpoint has already stepped off it.
+    bool onBreakpoint = pendingReinsert.count(thread->getThreadId()) > 0;
+    if (stepPastBreakpoint() != Status::Ok) return Status::Error;
+    if (onBreakpoint) return completeStep();
 
-        int status = 0;
-        waitpid(targetPid, &status, 0);
-        handlePendingReinsert();
-    }
-
-    if (platform->ptraceStep(targetPid) < 0) return Status::Error;
+    if (platform->ptraceStep(targetPid, thread->getThreadId()) < 0) return Status::Error;
 
     stopped = false;
     stopReason = StopReason::None;
@@ -230,15 +214,43 @@ Status PtraceBackend::step(Thread* /*thread*/) {
     return Status::Ok;
 }
 
+// Steps the thread that stopped on a breakpoint over the instruction the
+// breakpoint replaced, and puts the breakpoint back.
+Status PtraceBackend::stepPastBreakpoint() {
+    if (pendingReinsert.empty()) return Status::Ok;
+    ThreadId thread = pendingReinsert.begin()->first;
+    if (platform->ptraceStep(targetPid, thread) < 0) return Status::Error;
+
+    int status = 0;
+    platform->waitForStop(targetPid, -1, status);
+    handlePendingReinsert();
+    return Status::Ok;
+}
+
+// Reports a step that is already done, as the stop that ends it.
+Status PtraceBackend::completeStep() {
+    stopped = true;
+    stopReason = StopReason::SingleStep;
+    selectStoppedThread();
+    if (log) log("(ptrace) step");
+    return Status::Ok;
+}
+
+// Returns once the target has halted, so the caller never reads threads and
+// frames off a running process.
 Status PtraceBackend::suspend() {
     if (!attached) return Status::NotAttached;
+    if (stopped) return Status::Ok;
 
-    if (kill(targetPid, SIGSTOP) < 0) {
-        if (log) log("(ptrace) kill(SIGSTOP) failed: " + std::string(strerror(errno)));
+    if (platform->interrupt(targetPid) < 0) {
+        if (log) log("(ptrace) interrupt failed: " + std::string(strerror(errno)));
         return Status::Error;
     }
-
     if (log) log("(ptrace) suspend requested");
+    if (waitForEvent(StopReason::None, kSuspendTimeoutMs) == StopReason::None) {
+        if (log) log("(ptrace) suspend: target did not halt");
+        return Status::Error;
+    }
     return Status::Ok;
 }
 
@@ -356,57 +368,20 @@ std::vector<ModuleInfo> PtraceBackend::enumerateModules() const {
 // ---------------------------------------------------------------------------
 
 ThreadId PtraceBackend::findBreakpointThread() {
-    auto threads = platform->enumerateThreads();
-    for (auto tid : threads) {
-        Registers regs{};
-        if (platform->getThreadRegisters(tid, arch, regs) == Status::Ok) {
-            Address pc = adjustPcAfterBreakpoint(regs.ip());
-            if (bpOriginalBytes.find(pc) != bpOriginalBytes.end())
-                return tid;
-        }
-    }
+    ThreadId stoppedThread = platform->stoppedThread();
+    if (stoppedThread != 0)
+        return isAtBreakpoint(stoppedThread) ? stoppedThread : 0;
+
+    for (auto tid : platform->enumerateThreads())
+        if (isAtBreakpoint(tid)) return tid;
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// waitForChildStop — poll waitpid with optional timeout
-// ---------------------------------------------------------------------------
-
-int PtraceBackend::waitForChildStop(int timeout_ms) {
-    if (timeout_ms == 0) {
-        int status = 0;
-        pid_t r = waitpid(targetPid, &status, WNOHANG);
-        if (r <= 0) return -1;
-        lastChildStatus = status;
-        if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
-        if (WIFSTOPPED(status)) return WSTOPSIG(status);
-        return -1;
-    }
-
-    if (timeout_ms < 0) {
-        int status = 0;
-        pid_t r = waitpid(targetPid, &status, 0);
-        if (r < 0) return -1;
-        lastChildStatus = status;
-        if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
-        if (WIFSTOPPED(status)) return WSTOPSIG(status);
-        return -1;
-    }
-
-    // Timed wait: poll with WNOHANG in 50ms intervals
-    int elapsed = 0;
-    while (elapsed < timeout_ms) {
-        int status = 0;
-        pid_t r = waitpid(targetPid, &status, WNOHANG);
-        if (r > 0) {
-            lastChildStatus = status;
-            if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
-            if (WIFSTOPPED(status)) return WSTOPSIG(status);
-        }
-        usleep(50000); // 50ms
-        elapsed += 50;
-    }
-    return -1;
+bool PtraceBackend::isAtBreakpoint(ThreadId thread) const {
+    Registers regs{};
+    if (platform->getThreadRegisters(thread, arch, regs) != Status::Ok) return false;
+    Address pc = adjustPcAfterBreakpoint(regs.ip());
+    return bpOriginalBytes.find(pc) != bpOriginalBytes.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -438,8 +413,8 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
                 log(buf);
             }
             enumerateAndRegisterThreads();
-            // Pick the faulting thread as current; fall back to primary if
-            // we can't find it.
+            // Pick the faulting thread as current; fall back to the one the
+            // platform says stopped if we can't find it.
             auto threadOpt = process->getThread(async.thread);
             if (threadOpt) {
                 debugger->setCurrentThread(*threadOpt);
@@ -447,12 +422,12 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
                 if (getRegisters(threadOpt->get(), regs) == Status::Ok)
                     stopAddress = regs.ip();
             } else {
-                selectProcessThread();
+                selectStoppedThread();
             }
             if (eventCallback) eventCallback(stopReason, stopAddress);
             return stopReason;
         }
-        int sig = waitForChildStop(timeout_ms);
+        int sig = platform->waitForStop(targetPid, timeout_ms, lastChildStatus);
         if (sig == -1) return StopReason::None;
 
         if (sig == -2) {
@@ -490,26 +465,20 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
                 stopReason = StopReason::SingleStep;
                 stopAddress = 0;
                 handlePendingReinsert();
-
-                auto thread = debugger->getCurrentThread();
-                if (thread) {
-                    Registers regs{};
-                    if (getRegisters(thread.get(), regs) == Status::Ok)
-                        stopAddress = regs.ip();
-                }
+                selectStoppedThread();
             }
         } else if (sig == SIGSTOP) {
             stopped = true;
             stopReason = StopReason::Exception;
             stopAddress = 0;
             if (log) log("(ptrace) SIGSTOP received");
-            selectProcessThread();
+            selectStoppedThread();
         } else {
             stopped = true;
             stopReason = StopReason::Exception;
             stopAddress = 0;
             if (log) log("(ptrace) signal " + std::to_string(sig) + " received");
-            selectProcessThread();
+            selectStoppedThread();
         }
 
         if (eventCallback) {
@@ -536,13 +505,18 @@ StopReason PtraceBackend::waitForEvent(StopReason reason, int timeout_ms) {
 // Breakpoint hit handling
 // ---------------------------------------------------------------------------
 
-// Under ptrace the thread a process starts on has the process's own id.
-void PtraceBackend::selectProcessThread() {
-    auto thread = process->getThread(static_cast<ThreadId>(process->getPid()));
-    if (!thread) return;
-    debugger->setCurrentThread(*thread);
+// Makes the thread the platform says stopped the current one or, when it
+// cannot tell, the thread the process started on, which under ptrace has the
+// process's own id; when neither is known the current thread stays.
+void PtraceBackend::selectStoppedThread() {
+    ThreadId stoppedThread = platform->stoppedThread();
+    if (stoppedThread == 0) stoppedThread = static_cast<ThreadId>(process->getPid());
+    auto thread = process->getThread(stoppedThread);
+    if (thread) debugger->setCurrentThread(*thread);
+
+    auto current = debugger->getCurrentThread();
     Registers regs{};
-    if (getRegisters(thread->get(), regs) == Status::Ok)
+    if (current && getRegisters(current.get(), regs) == Status::Ok)
         stopAddress = regs.ip();
 }
 

@@ -80,4 +80,47 @@ int PtracePlatform::spawnStopped(const std::string& path,
     return static_cast<int>(child);
 }
 
+int PtracePlatform::interrupt(int pid) {
+    return kill(pid, SIGSTOP);
+}
+
+int PtracePlatform::attachStopped(int pid) {
+    if (ptraceAttach(pid) < 0) return -1;
+
+    // Wait for the SIGSTOP that attach delivers
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0 || !WIFSTOPPED(status)) {
+        doLog("(ptrace) child did not stop after attach");
+        ptraceDetach(pid);
+        return -1;
+    }
+    return 0;
+}
+
+namespace {
+
+// The stop signal `status` reports, -2 when the process is gone, or -1 when
+// it reports neither.
+int stopOf(int status) {
+    if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
+    if (WIFSTOPPED(status)) return WSTOPSIG(status);
+    return -1;
+}
+
+} // namespace
+
+int PtracePlatform::waitForStop(int pid, int timeoutMs, int& status) {
+    if (timeoutMs < 0) {
+        if (waitpid(pid, &status, 0) < 0) return -1;
+        return stopOf(status);
+    }
+
+    // Timed wait: poll with WNOHANG in 50ms intervals
+    for (int elapsed = 0; ; elapsed += 50) {
+        if (waitpid(pid, &status, WNOHANG) > 0) return stopOf(status);
+        if (elapsed >= timeoutMs) return -1;
+        usleep(50000);
+    }
+}
+
 } // namespace smalldbg

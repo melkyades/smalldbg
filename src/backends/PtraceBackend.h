@@ -74,13 +74,14 @@ private:
     // Adjust PC after hitting a software breakpoint
     Address adjustPcAfterBreakpoint(Address pc) const;
 
-    // Wait for the child process to stop via waitpid.
-    // Returns the signal number that caused the stop, or -1 on exit/error.
-    int waitForChildStop(int timeout_ms);
-
     // Find the thread whose PC matches a breakpoint address.
     // Returns the ThreadId, or 0 if none found.
     ThreadId findBreakpointThread();
+    bool isAtBreakpoint(ThreadId thread) const;
+
+    // Step the thread stopped on a breakpoint past it, and re-insert it
+    Status stepPastBreakpoint();
+    Status completeStep();
 
     // Handle a breakpoint hit on the given thread
     void handleBreakpointHit(ThreadId bpThread);
@@ -88,8 +89,8 @@ private:
     // Re-insert breakpoint instructions after a single-step over breakpoint
     void handlePendingReinsert();
 
-    // Select the primary thread as the current thread and read its stop address
-    void selectProcessThread();
+    // Select the thread that stopped as the current one and read its stop address
+    void selectStoppedThread();
 };
 
 } // namespace smalldbg

@@ -180,7 +180,8 @@ int PtracePlatformMac::ptraceContinue(int pid) {
     return result;
 }
 
-int PtracePlatformMac::ptraceStep(int pid) {
+int PtracePlatformMac::ptraceStep(int pid, ThreadId thread) {
+    (void)thread;  // steps the process, as it always has
     int result = ptrace(PT_STEP, pid, reinterpret_cast<caddr_t>(1), 0);
     if (result < 0)
         doLog("(ptrace) PT_STEP failed: " + std::string(strerror(errno)));

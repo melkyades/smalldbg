@@ -18,7 +18,7 @@ public:
     int ptraceAttach(int pid) override;
     int ptraceDetach(int pid) override;
     int ptraceContinue(int pid) override;
-    int ptraceStep(int pid) override;
+    int ptraceStep(int pid, ThreadId thread) override;
     void ptraceKill(int pid) override;
 
     int spawnStopped(const std::string& path,

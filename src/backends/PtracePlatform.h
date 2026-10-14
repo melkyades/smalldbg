@@ -26,8 +26,13 @@ public:
     virtual int ptraceAttach(int pid) = 0;
     virtual int ptraceDetach(int pid) = 0;
     virtual int ptraceContinue(int pid) = 0;
-    virtual int ptraceStep(int pid) = 0;
+    // Runs one instruction of `thread`, or of the process where threads are
+    // not stepped one at a time.
+    virtual int ptraceStep(int pid, ThreadId thread) = 0;
     virtual void ptraceKill(int pid) = 0;
+    // Makes the running target stop, for waitForStop to report. Default:
+    // SIGSTOP.
+    virtual int interrupt(int pid);
 
     // -- Process spawning --
     // Spawn `path`/`args` in `workingDir`, or in this process's directory when
@@ -37,6 +42,20 @@ public:
     virtual int spawnStopped(const std::string& path,
                              const std::vector<std::string>& args,
                              const std::string& workingDir);
+
+    // Attach to the running process `pid` and return with it stopped: 0 on
+    // success, -1 on failure. Default: PT_ATTACH and wait for its SIGSTOP.
+    virtual int attachStopped(int pid);
+
+    // Waits for the target to stop, at most `timeoutMs` (-1 waits for good, 0
+    // only looks). Returns the signal that stopped it, -1 when it did not
+    // stop in time, or -2 when it is gone, with `status` its wait status.
+    // Default: waitpid.
+    virtual int waitForStop(int pid, int timeoutMs, int& status);
+
+    // The thread the last stop happened on, or 0 when the platform cannot
+    // tell, such as one where waitpid only names the process.
+    virtual ThreadId stoppedThread() const { return 0; }
 
     // Acquire platform-specific process handle (e.g. Mach task port on macOS).
     // Must be called after the target is stopped.

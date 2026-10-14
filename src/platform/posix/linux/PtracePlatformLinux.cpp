@@ -63,7 +63,8 @@ int PtracePlatformLinux::ptraceContinue(int pid) {
     return static_cast<int>(result);
 }
 
-int PtracePlatformLinux::ptraceStep(int pid) {
+int PtracePlatformLinux::ptraceStep(int pid, ThreadId thread) {
+    (void)thread;  // steps the process's own thread, as it always has
     long result = ptrace(PTRACE_SINGLESTEP, pid, nullptr, 0);
     if (result < 0)
         doLog("(ptrace) PTRACE_SINGLESTEP failed: " + std::string(strerror(errno)));
