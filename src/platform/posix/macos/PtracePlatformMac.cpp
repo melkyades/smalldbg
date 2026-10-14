@@ -181,12 +181,11 @@ int PtracePlatformMac::ptraceContinue(int pid) {
     return 0;
 }
 
-// Hardware single-step is only used by the ARM64 watchpoints for now.
-#if defined(__arm64__) || defined(__aarch64__)
 namespace {
 
 // Makes `thread` trap after its next instruction, or stop doing so.
 kern_return_t setSingleStep(mach_port_t thread, bool on) {
+#if defined(__arm64__) || defined(__aarch64__)
     arm_debug_state64_t state{};
     mach_msg_type_number_t count = ARM_DEBUG_STATE64_COUNT;
     kern_return_t kr = thread_get_state(thread, ARM_DEBUG_STATE64,
@@ -196,17 +195,62 @@ kern_return_t setSingleStep(mach_port_t thread, bool on) {
     else state.__mdscr_el1 &= ~uint64_t(1);
     return thread_set_state(thread, ARM_DEBUG_STATE64,
                             reinterpret_cast<thread_state_t>(&state), count);
+#else
+    x86_thread_state64_t state{};
+    mach_msg_type_number_t count = x86_THREAD_STATE64_COUNT;
+    kern_return_t kr = thread_get_state(thread, x86_THREAD_STATE64,
+                                        reinterpret_cast<thread_state_t>(&state), &count);
+    if (kr != KERN_SUCCESS) return kr;
+    if (on) state.__rflags |= 0x100;  // TF
+    else state.__rflags &= ~uint64_t(0x100);
+    return thread_set_state(thread, x86_THREAD_STATE64,
+                            reinterpret_cast<thread_state_t>(&state), count);
+#endif
 }
 
 } // namespace
-#endif
 
+// Steps `thread` alone: the others stay suspended until it has run its
+// instruction, so the step ends where the thread was.
 int PtracePlatformMac::ptraceStep(int pid, ThreadId thread) {
-    (void)thread;  // steps the process, as it always has
-    int result = ptrace(PT_STEP, pid, reinterpret_cast<caddr_t>(1), 0);
-    if (result < 0)
-        doLog("(ptrace) PT_STEP failed: " + std::string(strerror(errno)));
-    return result;
+    mach_port_t stepped = static_cast<mach_port_t>(thread);
+    kern_return_t kr = setSingleStep(stepped, true);
+    if (kr != KERN_SUCCESS) {
+        doLog("(ptrace) cannot single-step thread: " + std::string(mach_error_string(kr)));
+        return -1;
+    }
+    steppingThread = thread;
+
+    thread_act_array_t threads = nullptr;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(taskPort, &threads, &count) == KERN_SUCCESS) {
+        for (mach_msg_type_number_t i = 0; i < count; i++)
+            keepSuspendedUnless(threads[i], stepped);
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads),
+                      count * sizeof(thread_act_t));
+    }
+    return ptraceContinue(pid);
+}
+
+void PtracePlatformMac::keepSuspendedUnless(mach_port_t thread, mach_port_t stepped) {
+    if (thread != stepped && thread_suspend(thread) == KERN_SUCCESS) {
+        keptSuspended.push_back(thread);
+        return;
+    }
+    mach_port_deallocate(mach_task_self(), thread);
+}
+
+// Ends a step, once the target stopped: the stepped thread no longer traps
+// and the others may run again.
+void PtracePlatformMac::finishStep() {
+    if (steppingThread == 0) return;
+    setSingleStep(static_cast<mach_port_t>(steppingThread), false);
+    steppingThread = 0;
+    for (auto thread : keptSuspended) {
+        thread_resume(thread);
+        mach_port_deallocate(mach_task_self(), thread);
+    }
+    keptSuspended.clear();
 }
 
 void PtracePlatformMac::ptraceKill(int pid) {
@@ -253,6 +297,7 @@ Status PtracePlatformMac::acquireProcess(int pid) {
 }
 
 void PtracePlatformMac::releaseProcess() {
+    finishStep();
     resumeHeld();
     stopExceptionServer();
     lastStopThread = 0;
@@ -859,13 +904,14 @@ bool PtracePlatformMac::passesThrough(const HeldException& exception) {
 }
 
 // Reports the first stop not reported yet, as the signal it stands for, or
-// answers 0 when there is none.
+// answers 0 when there is none. A stop ends any step under way.
 int PtracePlatformMac::takeStop() {
     std::lock_guard<std::mutex> lock(exceptionMutex);
     for (auto& exception : held) {
         if (exception.reported) continue;
         exception.reported = true;
         lastStopThread = exception.thread;
+        finishStep();
         return signalOf(exception.exception, exception.code, exception.subcode);
     }
     return 0;

@@ -90,6 +90,10 @@ private:
     // signal: that signal is the program's to handle, not another stop.
     std::set<ThreadId> deliverNextSignal;
 
+    // The thread being stepped, and the others kept suspended meanwhile.
+    ThreadId steppingThread{0};
+    std::vector<mach_port_t> keptSuspended;
+
     Status startExceptionServer();
     void stopExceptionServer();
     void exceptionServerLoop();
@@ -97,6 +101,8 @@ private:
     bool passesThrough(const HeldException& exception);
     void hold(const HeldException& exception);
     int takeStop();
+    void keepSuspendedUnless(mach_port_t thread, mach_port_t stepped);
+    void finishStep();
     void resumeHeld();
     void answer(const HeldException& exception, kern_return_t result);
     void logFault(const MachExceptionMessage& msg) const;
