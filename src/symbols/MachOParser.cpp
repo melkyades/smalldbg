@@ -65,7 +65,7 @@ void MachOParser::processNlistEntry(const struct nlist_64& nl,
     ResolvedSymbol sym;
     sym.address = nl.n_value + slide;
     sym.rawName = stripped;
-    sym.name = demangle(stripped);
+    sym.name = symbolName(stripped);
     sym.size = 0;
     symbols.push_back(std::move(sym));
 }
@@ -116,11 +116,14 @@ void MachOParser::parseMachO64(const uint8_t* base, size_t fileSize,
             return a.address < b.address;
         });
 
-    // Estimate sizes from gaps between consecutive symbols
+    // Estimate sizes from gaps between consecutive symbols. The last one in
+    // the code runs to the end of __TEXT.
     for (size_t i = 0; i + 1 < out.symbols.size(); i++)
         out.symbols[i].size = out.symbols[i + 1].address - out.symbols[i].address;
-    if (!out.symbols.empty())
-        out.symbols.back().size = 1;
+    if (!out.symbols.empty()) {
+        ResolvedSymbol& last = out.symbols.back();
+        last.size = out.textEnd > last.address ? out.textEnd - last.address : 1;
+    }
 }
 
 // ---------------------------------------------------------------------------
