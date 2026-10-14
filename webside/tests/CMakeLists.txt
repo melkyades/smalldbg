@@ -12,6 +12,7 @@ add_executable(webside_tests
 target_include_directories(webside_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/vmdbg/tests)
 target_link_libraries(webside_tests PRIVATE webside_common doctest::doctest)
+smalldbg_sign_as_debugger(webside_tests)
 
 # The live frame-API test drives a real target process.
 add_dependencies(webside_tests test_target)

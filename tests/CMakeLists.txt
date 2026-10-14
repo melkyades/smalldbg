@@ -25,6 +25,7 @@ endif()
 # migrated to the doctest-based backend suite.
 add_executable(test_backend test_harness.cpp)
 target_link_libraries(test_backend PRIVATE smalldbg)
+smalldbg_sign_as_debugger(test_backend)
 
 if(WIN32)
     add_executable(test_attach test_attach.cpp)

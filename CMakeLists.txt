@@ -113,6 +113,19 @@ if(SMALLDBG_USE_DBGENG)
     target_compile_definitions(smalldbg PRIVATE SMALLDBG_USE_DBGENG=1)
 endif()
 
+# On macOS a process may only take another's task port, and so debug it, when
+# it is signed with the debugger entitlement. Every executable that launches or
+# attaches to a target is signed after it is linked; elsewhere this does nothing.
+function(smalldbg_sign_as_debugger target)
+    if(APPLE)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND codesign --force --sign -
+                --entitlements ${PROJECT_SOURCE_DIR}/debugger.entitlements
+                $<TARGET_FILE:${target}>
+            COMMENT "Signing ${target} with the debugger entitlement")
+    endif()
+endfunction()
+
 # enable_testing() must be called at the top level, before any subdirectory that
 # registers tests (webside/tests, tests/), so `ctest` from the build root finds them.
 enable_testing()

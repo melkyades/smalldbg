@@ -117,6 +117,16 @@ cmake --build build
 ctest --test-dir build
 ```
 
+On macOS a process may debug another only when it is signed with the
+debugger entitlement in `debugger.entitlements`. The build signs every
+executable that launches or attaches to a target, ad hoc, as it links it
+(`smalldbg_sign_as_debugger` in the root `CMakeLists.txt`); Developer Mode
+must be on (`DevToolsSecurity -status`). A target signed with the hardened
+runtime and without `get-task-allow` cannot be debugged.
+
+macOS keeps port 7000, the servers' default, for its AirPlay Receiver. Pass
+another with `--port`, or turn the receiver off in System Settings.
+
 ### Always pass `--output-folder`
 
 A bare `conan install .` writes `conan_toolchain.cmake`, the generated
