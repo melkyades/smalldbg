@@ -102,6 +102,9 @@ public:
         return std::nullopt;
     }
     
+    // Takes in a stop the target has made, for a backend that learns of stops
+    // only when it looks; one with an event thread of its own does nothing.
+    virtual void noticeStop() {}
     virtual StopReason getStopReason() const = 0;
     virtual bool isStopped() const = 0;
     virtual Address getStopAddress() const = 0;

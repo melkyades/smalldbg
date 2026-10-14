@@ -379,7 +379,10 @@ ThreadIdentity Debugger::identify(Thread& thread) {
     return identity;
 }
 
-StopReason Debugger::getStopReason() const { return backend->getStopReason(); }
+StopReason Debugger::getStopReason() {
+    backend->noticeStop();
+    return backend->getStopReason();
+}
 
 const char* stopReasonName(StopReason reason) {
     switch (reason) {
@@ -398,9 +401,15 @@ const char* stopReasonName(StopReason reason) {
     return "unknown";
 }
 
-bool Debugger::isStopped() const { return backend->isStopped(); }
+bool Debugger::isStopped() {
+    backend->noticeStop();
+    return backend->isStopped();
+}
 
-Address Debugger::getStopAddress() const { return backend->getStopAddress(); }
+Address Debugger::getStopAddress() {
+    backend->noticeStop();
+    return backend->getStopAddress();
+}
 
 std::optional<ExceptionInfo> Debugger::getStopException() const {
     return backend->getStopException();

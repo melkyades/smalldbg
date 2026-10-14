@@ -236,6 +236,10 @@ Status PtraceBackend::completeStep() {
     return Status::Ok;
 }
 
+void PtraceBackend::noticeStop() {
+    if (attached && !stopped) waitForEvent(StopReason::None, 0);
+}
+
 // Returns once the target has halted, so the caller never reads threads and
 // frames off a running process.
 Status PtraceBackend::suspend() {

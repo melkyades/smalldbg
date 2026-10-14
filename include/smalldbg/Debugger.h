@@ -115,10 +115,11 @@ public:
     // Empty string on backends that don't support it.
     std::string executeCommand(const std::string& cmd) const;
     
-    // state queries
-    StopReason getStopReason() const;
-    bool isStopped() const;
-    Address getStopAddress() const;
+    // state queries. They take in a stop the target has made since it was
+    // last looked at, so a target stops even when nobody waits for it.
+    StopReason getStopReason();
+    bool isStopped();
+    Address getStopAddress();
     // The exception the target is stopped on, with its code, address and
     // parameters. Returns nothing when the stop was not an exception.
     std::optional<ExceptionInfo> getStopException() const;

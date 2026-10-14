@@ -41,6 +41,7 @@ public:
     // (HW watchpoints, VM region scan).
     PtracePlatform* getPlatform() const { return platform.get(); }
 
+    void noticeStop() override;
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }
     Address getStopAddress() const override { return stopAddress; }
