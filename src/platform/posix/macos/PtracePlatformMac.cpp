@@ -1,7 +1,8 @@
 // PtracePlatformMac — macOS implementation using ptrace + Mach APIs.
 //
 // Uses:
-//   - ptrace(PT_TRACE_ME / PT_ATTACHEXC / PT_DETACH / PT_CONTINUE / PT_STEP)
+//   - ptrace(PT_ATTACHEXC / PT_THUPDATE / PT_DETACH) and a Mach exception
+//     server through which every stop of the target arrives
 //   - Mach VM APIs for memory access  (mach_vm_read_overwrite / mach_vm_write)
 //   - Mach thread APIs for registers  (thread_get_state / thread_set_state)
 //   - task_threads() for thread enumeration
@@ -64,22 +65,22 @@ int PtracePlatformMac::ptraceTraceMe() {
 }
 
 // ---------------------------------------------------------------------------
-// spawnStopped — macOS-specific launch using posix_spawn + PT_ATTACHEXC.
+// Launching and attaching
 // ---------------------------------------------------------------------------
 //
-// macOS does NOT deliver a posix SIGTRAP to a PT_TRACE_ME-tracing parent after
-// the child's exec — the kernel routes exec stops through Mach exceptions.
-// The standard pattern (used by LLDB) is:
-//   1. posix_spawn with POSIX_SPAWN_START_SUSPENDED:
-//        the kernel forks, execs the new image, then sends the child SIGSTOP
-//        before any user code runs.  The parent gets back the child pid.
-//   2. waitpid for the SIGSTOP — confirms the child is at the entry of the
-//      new image and suspended.
-//   3. PT_ATTACHEXC on the child — installs Mach exception ports through
-//      ptrace, so subsequent stops (breakpoints, crashes, signals) deliver
-//      via waitpid as on Linux.
-// At return the child is still SIGSTOP'd and ready for inspection; the caller
-// resumes it later via ptraceContinue().
+// Under PT_ATTACHEXC macOS reports every signal the target gets as a Mach
+// exception (EXC_SOFTWARE / EXC_SOFT_SIGNAL) sent to the task's exception
+// port, not as a waitpid stop; a signal nobody answers is delivered for real,
+// so a breakpoint's SIGTRAP would kill the target. The exception server is
+// therefore started, and takes the target's exception ports, before ptrace
+// attaches: from then on every stop, the first one included, is a message
+// held by the server (see "Mach exception server" below).
+//
+// A launch spawns the target suspended at its first instruction
+// (POSIX_SPAWN_START_SUSPENDED), takes its ports, attaches and lets it go: its
+// first stop is the SIGSTOP of the suspended spawn, before any of its code
+// runs.
+
 int PtracePlatformMac::spawnStopped(const std::string& path,
                                     const std::vector<std::string>& args,
                                     const std::string& workingDir) {
@@ -149,8 +150,6 @@ int PtracePlatformMac::spawnStopped(const std::string& path,
         return -1;
     }
 
-    // The exception server takes the child's ports before ptrace attaches, so
-    // the first stop, the SIGSTOP of the suspended spawn, is held there too.
     bool attachedStopped = acquireProcess(child) == Status::Ok
         && ptraceAttach(child) == 0
         && ptrace(PT_CONTINUE, child, reinterpret_cast<caddr_t>(1), 0) == 0
@@ -635,51 +634,26 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 // Mach exception server
 // ---------------------------------------------------------------------------
 //
-// Why this exists
-// ---------------
-// PT_ATTACHEXC routes the target task's exception ports through the parent so
-// SIGTRAP-style stops (breakpoints / single-step) surface as waitpid events.
-// What it does NOT do reliably on modern macOS is convert *fatal* exceptions
-// (EXC_BAD_ACCESS = SIGSEGV/SIGBUS, EXC_CRASH = SIGABRT, EXC_BAD_INSTRUCTION,
-// EXC_ARITHMETIC, EXC_GUARD) into ptrace stops.  Those bypass waitpid: the
-// child gets killed and waitpid returns WIFSIGNALED — at which point it is
-// too late to inspect anything.
+// Every stop of the target reaches the debugger here, as a Mach exception
+// message on a port the server owns and the target's exception ports point
+// at: a breakpoint or a single step (EXC_BREAKPOINT), a signal, including the
+// SIGSTOP of a suspend (EXC_SOFTWARE / EXC_SOFT_SIGNAL, which PT_ATTACHEXC
+// turns signals into), and a fault (EXC_BAD_ACCESS and the like).
 //
-// The canonical fix is to drain the Mach exception port ourselves.  We:
-//   1. Allocate a Mach receive port and grant ourselves a send right.
-//   2. task_set_exception_ports() on the target with EXC_MASK_ALL pointing
-//      at our port (this REPLACES the kernel default-handler chain that
-//      PT_ATTACHEXC put in place — and that's intentional).
-//   3. Spin up a dedicated thread that does mach_msg(MACH_RCV_MSG) in a loop.
-//
-// When an exception arrives we:
-//   - Hand-decode the message (rather than depending on MIG-generated stubs).
-//     The wire format is documented as mach_exception_raise (msg id 2401):
-//        mach_msg_header_t
-//        mach_msg_body_t body          // descriptor_count
-//        mach_msg_port_descriptor_t thread
-//        mach_msg_port_descriptor_t task
-//        NDR_record_t NDR
-//        exception_type_t exception
-//        mach_msg_type_number_t codeCnt
-//        mach_exception_data_type_t code[2]   // int64_t on 64-bit kernels
-//   - Suspend the target task so it stays paused while the debugger inspects.
-//   - Hold the exception, in a queue, and DON'T reply to the Mach message: the
-//     target stays suspended and the faulting thread frozen in exception state.
-//     waitForStop() reports it as a stop, on its thread. Once we've claimed
-//     the exception there's no posix signal-stop left for waitpid to wake on,
-//     so this cross-thread queue of held exceptions is the only channel back.
-//
-// EXC_BREAKPOINT / HW watchpoints
-// -------------------------------
-// Breakpoint and single-step traps normally stay on the ptrace-synthesised
-// path, so we don't register EXC_MASK_BREAKPOINT by default. The exception is
-// HW watchpoints: when one is configured we add EXC_MASK_BREAKPOINT so the hit
-// reaches this server, where the EXC_BREAKPOINT handler runs the
-// single-step/re-arm dance and reads the post-store value.
+// The thread that raised it waits for the answer, so the server suspends the
+// task and holds the message unanswered: the target stays where it stopped
+// while the debugger looks at it. waitForStop() reports held messages one at
+// a time, and resuming answers all of them:
+//   - a signal is first given to the thread to deliver (PT_THUPDATE): none
+//     for the SIGTRAP and SIGSTOP the debugger caused, the signal itself for
+//     any other, which is the program's;
+//   - a fault is answered with KERN_FAILURE, so the kernel raises the signal
+//     the program would have got without a debugger;
+//   - anything else is answered with KERN_SUCCESS and the thread goes on.
 
-// Wire-format of a mach_exception_raise message we expect to receive.
-// Packed so offsets match the kernel's layout exactly.
+// The mach_exception_raise message (EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES)
+// as the kernel lays it out: the codes follow the count with no padding, so
+// the struct is packed to 4 bytes.
 #pragma pack(push, 4)
 struct MachExceptionMessage {
     mach_msg_header_t header;
@@ -690,8 +664,7 @@ struct MachExceptionMessage {
     exception_type_t exception;
     mach_msg_type_number_t codeCnt;
     int64_t code[2];
-    // Trailer follows but we don't read it.
-    char trailer[64];
+    char trailer[64];  // room for the trailer the kernel appends
 };
 #pragma pack(pop)
 
