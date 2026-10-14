@@ -95,9 +95,8 @@ private:
     int takeStop();
     void resumeHeld();
     void answer(const HeldException& exception, kern_return_t result);
-    void resumeAfter(const MachExceptionMessage& msg);
     void logFault(const MachExceptionMessage& msg) const;
-    bool handleWatchpointException(const MachExceptionMessage& msg);
+    bool handleWatchpointException(const HeldException& exception);
     void logWatchpointHit(mach_port_t thread);
 
     // HW watchpoint helpers (ARM64). installWatchpointAllThreads sets a

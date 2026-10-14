@@ -839,11 +839,7 @@ void PtracePlatformMac::logFault(const MachExceptionMessage& msg) const {
 }
 
 void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
-    // Suspend the target so it stays paused for the debugger to inspect.
-    task_suspend(taskPort);
     logFault(msg);
-    if (handleWatchpointException(msg)) return;
-
     HeldException exception;
     exception.replyPort = msg.header.msgh_remote_port;
     exception.replyBits = MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits);
@@ -853,6 +849,10 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
     exception.code = msg.codeCnt > 0 ? msg.code[0] : 0;
     exception.subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
     mach_port_deallocate(mach_task_self(), msg.task.name);
+    if (handleWatchpointException(exception)) return;
+
+    // Suspend the target so it stays paused for the debugger to inspect.
+    task_suspend(taskPort);
     hold(exception);
 }
 
@@ -933,21 +933,6 @@ void PtracePlatformMac::answer(const HeldException& exception, kern_return_t res
     mach_port_deallocate(mach_task_self(), static_cast<mach_port_t>(exception.thread));
 }
 
-// Answers an exception the server dealt with itself, so the thread goes on.
-void PtracePlatformMac::resumeAfter(const MachExceptionMessage& msg) {
-    MachExceptionRaiseReply reply{};
-    reply.header.msgh_bits = MACH_MSGH_BITS(MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits), 0);
-    reply.header.msgh_size = sizeof(reply);
-    reply.header.msgh_remote_port = msg.header.msgh_remote_port;
-    reply.header.msgh_local_port = MACH_PORT_NULL;
-    reply.header.msgh_id = msg.header.msgh_id + 100;
-    reply.NDR = msg.NDR;
-    reply.RetCode = KERN_SUCCESS;
-    mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
-             MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-    task_resume(taskPort);
-}
-
 void PtracePlatformMac::exceptionServerLoop() {
     while (!exceptionThreadStop.load()) {
         MachExceptionMessage msg{};
@@ -980,10 +965,10 @@ void PtracePlatformMac::exceptionServerLoop() {
 //   B. the step: the store has happened, so read the value, re-arm the
 //      watchpoint and stop only when the value matches what was asked for.
 // Answers true when the exception was dealt with and the target goes on.
-bool PtracePlatformMac::handleWatchpointException(const MachExceptionMessage& msg) {
+bool PtracePlatformMac::handleWatchpointException(const HeldException& exception) {
 #if defined(__arm64__) || defined(__aarch64__)
-    if (msg.exception != EXC_BREAKPOINT) return false;
-    mach_port_t thread = msg.thread.name;
+    if (exception.exception != EXC_BREAKPOINT) return false;
+    mach_port_t thread = static_cast<mach_port_t>(exception.thread);
 
     if (steppingThreads_.count(thread) == 0) {
         logWatchpointHit(thread);
@@ -995,7 +980,7 @@ bool PtracePlatformMac::handleWatchpointException(const MachExceptionMessage& ms
         thread_set_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&dbg, count);
         setSingleStep(thread, true);
         steppingThreads_.insert(thread);
-        resumeAfter(msg);
+        answer(exception, KERN_SUCCESS);
         return true;
     }
 
@@ -1012,10 +997,10 @@ bool PtracePlatformMac::handleWatchpointException(const MachExceptionMessage& ms
     bool matches = watchMatchLive_ != 0
                    && (value & watchMaskLive_) == watchMatchLive_;
     if (matches) return false;
-    resumeAfter(msg);
+    answer(exception, KERN_SUCCESS);
     return true;
 #else
-    (void)msg;
+    (void)exception;
     return false;
 #endif
 }
