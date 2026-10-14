@@ -24,8 +24,7 @@
 #if defined(__x86_64__)
 #include <sys/user.h>  // struct user_regs_struct
 #elif defined(__aarch64__)
-#include <elf.h>       // NT_PRSTATUS
-#include <linux/uio.h>
+#include <elf.h>       // NT_PRSTATUS; struct iovec comes from <sys/uio.h>
 #endif
 
 namespace smalldbg {
