@@ -782,6 +782,17 @@ void PtracePlatformMac::stopExceptionServer() {
     exceptionPort = MACH_PORT_NULL;
 }
 
+void PtracePlatformMac::logFault(const MachExceptionMessage& msg) const {
+    char line[256];
+    snprintf(line, sizeof(line),
+             "(mach) caught %s code=0x%llx subcode=0x%llx thread=0x%llx",
+             exceptionName(msg.exception),
+             (unsigned long long)(msg.codeCnt > 0 ? msg.code[0] : 0),
+             (unsigned long long)(msg.codeCnt > 1 ? msg.code[1] : 0),
+             (unsigned long long)msg.thread.name);
+    doLog(line);
+}
+
 // Answers an exception the server dealt with itself, so the thread goes on.
 void PtracePlatformMac::resumeAfter(const MachExceptionMessage& msg) {
     MachExceptionRaiseReply reply{};
@@ -835,12 +846,7 @@ void PtracePlatformMac::exceptionServerLoop() {
             pending_.subcode   = subcode;
             pending_.thread    = msg.thread.name;
         }
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-                 "(mach) caught %s code=0x%lx subcode=0x%lx thread=0x%llx",
-                 exceptionName(msg.exception), pending_.code, pending_.subcode,
-                 (unsigned long long)pending_.thread);
-        doLog(buf);
+        logFault(msg);
 
         // Hardware watchpoints are only implemented for ARM64.
 #if defined(__arm64__) || defined(__aarch64__)
