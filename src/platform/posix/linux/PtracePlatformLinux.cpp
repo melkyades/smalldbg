@@ -7,6 +7,11 @@
 //   - PTRACE_GETREGS / PTRACE_SETREGS (x86_64) or PTRACE_GETREGSET (ARM64)
 //   - /proc/<pid>/task/ for thread enumeration
 //   - /proc/<pid>/maps for module enumeration
+//
+// Every thread is traced: those there when attaching, and through
+// PTRACE_O_TRACECLONE each one the target starts. They stop together, as a
+// debugger's user expects: when one stops the others are sent SIGSTOP and
+// waited for, and continuing resumes them all.
 
 #include "PtracePlatformLinux.h"
 #include "../../../../include/smalldbg/Arch.h"
@@ -15,11 +20,14 @@
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
+#include <sys/syscall.h>
 #include <signal.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <chrono>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #if defined(__x86_64__)
 #include <sys/user.h>  // struct user_regs_struct
@@ -52,40 +60,285 @@ int PtracePlatformLinux::ptraceAttach(int pid) {
     return static_cast<int>(result);
 }
 
+// A thread is detached only while stopped, and only once any SIGSTOP of ours
+// has reached it: one left queued would stop the target with nobody there to
+// continue it.
 int PtracePlatformLinux::ptraceDetach(int pid) {
-    return static_cast<int>(ptrace(PTRACE_DETACH, pid, nullptr, nullptr));
+    if (threads.empty())
+        return static_cast<int>(ptrace(PTRACE_DETACH, pid, nullptr, nullptr));
+
+    haltOthers(0);
+    for (ThreadId tid : stopQueued) {
+        if (ptrace(PTRACE_CONT, static_cast<pid_t>(tid), nullptr, 0) < 0) continue;
+        int status = 0;
+        waitpid(static_cast<pid_t>(tid), &status, __WALL);
+    }
+    stopQueued.clear();
+
+    int result = 0;
+    for (const auto& [tid, state] : threads)
+        if (ptrace(PTRACE_DETACH, static_cast<pid_t>(tid), nullptr, nullptr) < 0
+            && tid == static_cast<ThreadId>(pid))
+            result = -1;
+    forget();
+    return result;
 }
 
+// A stop met while halting the threads is still to be reported, so the target
+// is left as it is: the next wait answers that stop at once, as if the target
+// had run into it.
 int PtracePlatformLinux::ptraceContinue(int pid) {
-    long result = ptrace(PTRACE_CONT, pid, nullptr, 0);
-    if (result < 0)
-        doLog("(ptrace) PTRACE_CONT failed: " + std::string(strerror(errno)));
-    return static_cast<int>(result);
+    if (!pendingStops.empty()) return 0;
+
+    int result = -1;
+    for (auto& [tid, state] : threads) {
+        if (state != ThreadState::Stopped) continue;
+        if (ptrace(PTRACE_CONT, static_cast<pid_t>(tid), nullptr, 0) < 0) {
+            doLog("(ptrace) PTRACE_CONT failed for tid " + std::to_string(tid) + ": "
+                  + strerror(errno));
+            continue;
+        }
+        state = ThreadState::Running;
+        result = 0;
+    }
+    if (threads.empty()) result = static_cast<int>(ptrace(PTRACE_CONT, pid, nullptr, 0));
+    return result;
 }
 
+// Only `thread` runs; the others stay stopped.
 int PtracePlatformLinux::ptraceStep(int pid, ThreadId thread) {
-    (void)thread;  // steps the process's own thread, as it always has
-    long result = ptrace(PTRACE_SINGLESTEP, pid, nullptr, 0);
-    if (result < 0)
+    ThreadId tid = thread != 0 ? thread : static_cast<ThreadId>(pid);
+    long result = ptrace(PTRACE_SINGLESTEP, static_cast<pid_t>(tid), nullptr, 0);
+    if (result < 0) {
         doLog("(ptrace) PTRACE_SINGLESTEP failed: " + std::string(strerror(errno)));
-    return static_cast<int>(result);
+        return static_cast<int>(result);
+    }
+    stepping = tid;
+    auto known = threads.find(tid);
+    if (known != threads.end()) known->second = ThreadState::Running;
+    return 0;
 }
 
 void PtracePlatformLinux::ptraceKill(int pid) {
     kill(pid, SIGKILL);
 }
 
+// The thread the process started on is the one stopped.
+int PtracePlatformLinux::interrupt(int pid) {
+    ThreadId target = 0;
+    for (const auto& [tid, state] : threads)
+        if (state == ThreadState::Running && (target == 0 || tid == static_cast<ThreadId>(pid)))
+            target = tid;
+    if (target == 0) return threads.empty() ? kill(pid, SIGSTOP) : -1;
+    return static_cast<int>(syscall(SYS_tgkill, pid, static_cast<pid_t>(target), SIGSTOP));
+}
+
+// Attaches every thread the process has, looking again until no new one has
+// appeared, since a running process may start threads meanwhile.
+int PtracePlatformLinux::attachStopped(int pid) {
+    forget();
+    targetPid = pid;
+    for (bool found = true; found;) {
+        found = false;
+        for (ThreadId tid : enumerateThreads()) {
+            if (threads.count(tid)) continue;
+            if (ptrace(PTRACE_ATTACH, static_cast<pid_t>(tid), nullptr, nullptr) < 0) {
+                if (tid != static_cast<ThreadId>(pid)) continue;  // it has just ended
+                doLog("(ptrace) PTRACE_ATTACH failed: " + std::string(strerror(errno)));
+                ptraceDetach(pid);
+                return -1;
+            }
+            int status = 0;
+            if (waitpid(static_cast<pid_t>(tid), &status, __WALL) < 0 || !WIFSTOPPED(status)) {
+                continue;
+            }
+            threads[tid] = ThreadState::Stopped;
+            if (WSTOPSIG(status) != SIGSTOP) {
+                stopQueued.insert(tid);
+                pendingStops.emplace_back(tid, status);
+            }
+            found = true;
+        }
+    }
+    if (!threads.count(static_cast<ThreadId>(pid))) {
+        doLog("(ptrace) child did not stop after attach");
+        ptraceDetach(pid);
+        return -1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Stops — waited for thread by thread
+// ---------------------------------------------------------------------------
+
+void PtracePlatformLinux::traceClones(ThreadId tid) const {
+    if (ptrace(PTRACE_SETOPTIONS, static_cast<pid_t>(tid), nullptr,
+               reinterpret_cast<void*>(PTRACE_O_TRACECLONE)) < 0)
+        doLog("(ptrace) PTRACE_SETOPTIONS failed: " + std::string(strerror(errno)));
+}
+
+void PtracePlatformLinux::resumeThread(ThreadId tid) {
+    int request = tid == stepping ? PTRACE_SINGLESTEP : PTRACE_CONT;
+    if (ptrace(static_cast<__ptrace_request>(request), static_cast<pid_t>(tid),
+               nullptr, 0) < 0)
+        return;
+    threads[tid] = ThreadState::Running;
+}
+
+// Waits only on the target's own threads, each by its id: this process may be
+// debugging other targets, whose stops are not this one's to take.
+bool PtracePlatformLinux::nextEvent(ThreadId& tid, int& status) {
+    std::vector<ThreadId> known;
+    for (const auto& [id, state] : threads)
+        if (state != ThreadState::Stopped) known.push_back(id);
+    for (ThreadId id : known) {
+        pid_t r = waitpid(static_cast<pid_t>(id), &status, WNOHANG | __WALL);
+        if (r > 0) { tid = id; return true; }
+        if (r < 0 && errno == ECHILD) {
+            threads.erase(id);
+            stopQueued.erase(id);
+        }
+    }
+    return false;
+}
+
+// Returns a new thread's id, taken from the clone event its parent stopped on.
+ThreadId PtracePlatformLinux::addClone(ThreadId parent) {
+    unsigned long child = 0;
+    ptrace(PTRACE_GETEVENTMSG, static_cast<pid_t>(parent), nullptr, &child);
+    ThreadId tid = static_cast<ThreadId>(child);
+    if (tid != 0 && !threads.count(tid)) threads[tid] = ThreadState::Starting;
+    return tid;
+}
+
+// Returns the signal that stopped `tid`, -2 when the process is gone, or
+// kHandled for an event that is not a stop to report: a thread starting or
+// ending, or a SIGSTOP of ours arriving late.
+int PtracePlatformLinux::accept(ThreadId tid, int status) {
+    if (WIFEXITED(status) || WIFSIGNALED(status)) {
+        threads.erase(tid);
+        stopQueued.erase(tid);
+        // The thread the process started on is reported last, when the
+        // whole process has ended.
+        return tid == static_cast<ThreadId>(targetPid) ? -2 : kHandled;
+    }
+    if (!WIFSTOPPED(status)) return kHandled;
+
+    int sig = WSTOPSIG(status);
+    if (sig == SIGTRAP && (status >> 16) == PTRACE_EVENT_CLONE) {
+        addClone(tid);
+        resumeThread(tid);
+        return kHandled;
+    }
+    if (sig == SIGSTOP && threads[tid] == ThreadState::Starting) {
+        resumeThread(tid);
+        return kHandled;
+    }
+    if (sig == SIGSTOP && stopQueued.erase(tid)) {
+        resumeThread(tid);
+        return kHandled;
+    }
+    threads[tid] = ThreadState::Stopped;
+    return sig;
+}
+
+// Stops every thread but `except` and waits until each has. One that stops
+// for something else first keeps that stop for a later report.
+void PtracePlatformLinux::haltOthers(ThreadId except) {
+    std::vector<ThreadId> waiting;
+    for (const auto& [tid, state] : threads) {
+        if (tid == except || state == ThreadState::Stopped) continue;
+        if (state == ThreadState::Running) {
+            syscall(SYS_tgkill, targetPid, static_cast<pid_t>(tid), SIGSTOP);
+            stopQueued.insert(tid);
+        }
+        waiting.push_back(tid);
+    }
+
+    for (size_t i = 0; i < waiting.size(); i++) {
+        ThreadId tid = waiting[i];
+        int status = 0;
+        if (waitpid(static_cast<pid_t>(tid), &status, __WALL) < 0
+            || WIFEXITED(status) || WIFSIGNALED(status)) {
+            threads.erase(tid);
+            stopQueued.erase(tid);
+            continue;
+        }
+        if (!WIFSTOPPED(status)) continue;
+
+        int sig = WSTOPSIG(status);
+        if (sig == SIGTRAP && (status >> 16) == PTRACE_EVENT_CLONE) {
+            ThreadId child = addClone(tid);
+            if (child != 0 && threads[child] == ThreadState::Starting)
+                waiting.push_back(child);
+        } else if (sig == SIGSTOP) {
+            stopQueued.erase(tid);
+        } else {
+            pendingStops.emplace_back(tid, status);
+        }
+        threads[tid] = ThreadState::Stopped;
+    }
+}
+
+int PtracePlatformLinux::waitForStop(int pid, int timeoutMs, int& status) {
+    (void)pid;
+    if (stepping == 0 && !pendingStops.empty()) {
+        auto [tid, pending] = pendingStops.front();
+        pendingStops.pop_front();
+        lastStopped = tid;
+        status = pending;
+        return WSTOPSIG(pending);
+    }
+
+    auto deadline = std::chrono::steady_clock::now()
+                  + std::chrono::milliseconds(timeoutMs);
+    while (true) {
+        ThreadId tid = 0;
+        int event = 0;
+        while (nextEvent(tid, event)) {
+            int sig = accept(tid, event);
+            if (sig == kHandled) continue;
+            status = event;
+            if (sig == -2) return -2;
+            stepping = 0;
+            lastStopped = tid;
+            haltOthers(tid);
+            return sig;
+        }
+        if (threads.empty()) return -2;
+        if (timeoutMs == 0
+            || (timeoutMs > 0 && std::chrono::steady_clock::now() >= deadline))
+            return -1;
+        usleep(1000);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Process handle — no kernel resource to acquire on Linux
 // ---------------------------------------------------------------------------
 
+// The target is stopped here, launched or attached: from now on its threads
+// report the threads they start.
 Status PtracePlatformLinux::acquireProcess(int pid) {
     targetPid = pid;
+    if (threads.empty()) threads[static_cast<ThreadId>(pid)] = ThreadState::Stopped;
+    for (const auto& [tid, state] : threads) traceClones(tid);
+    lastStopped = static_cast<ThreadId>(pid);
     return Status::Ok;
 }
 
 void PtracePlatformLinux::releaseProcess() {
+    forget();
+}
+
+void PtracePlatformLinux::forget() {
     targetPid = -1;
+    threads.clear();
+    stopQueued.clear();
+    pendingStops.clear();
+    lastStopped = 0;
+    stepping = 0;
 }
 
 // ---------------------------------------------------------------------------

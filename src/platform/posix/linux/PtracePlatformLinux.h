@@ -3,6 +3,11 @@
 
 #include "../../../backends/PtracePlatform.h"
 
+#include <deque>
+#include <map>
+#include <set>
+#include <utility>
+
 namespace smalldbg {
 
 class PtracePlatformLinux : public PtracePlatform {
@@ -15,6 +20,10 @@ public:
     int ptraceContinue(int pid) override;
     int ptraceStep(int pid, ThreadId thread) override;
     void ptraceKill(int pid) override;
+    int interrupt(int pid) override;
+    int attachStopped(int pid) override;
+    int waitForStop(int pid, int timeoutMs, int& status) override;
+    ThreadId stoppedThread() const override { return lastStopped; }
 
     Status acquireProcess(int pid) override;
     void releaseProcess() override;
@@ -30,6 +39,34 @@ public:
 
 private:
     int targetPid{-1};
+
+    // Every thread of the target is traced, and they stop and run together:
+    // when one stops the others are halted, so that any of them can be read.
+    enum class ThreadState {
+        Running,
+        Stopped,
+        Starting,  // cloned, and its first stop not yet seen
+    };
+    std::map<ThreadId, ThreadState> threads;
+    // Threads sent a SIGSTOP to halt them that stopped for something else
+    // first; the SIGSTOP still comes, and is taken when it does.
+    std::set<ThreadId> stopQueued;
+    // Stops met while halting the other threads, to be reported in turn
+    // before the target runs again: each with the thread and its wait status.
+    std::deque<std::pair<ThreadId, int>> pendingStops;
+    ThreadId lastStopped{0};
+    ThreadId stepping{0};  // the thread single-stepping, 0 when none is
+
+    // Answered by accept() for an event it dealt with itself
+    static constexpr int kHandled = -3;
+
+    void traceClones(ThreadId tid) const;
+    void resumeThread(ThreadId tid);
+    bool nextEvent(ThreadId& tid, int& status);
+    int accept(ThreadId tid, int status);
+    void haltOthers(ThreadId except);
+    ThreadId addClone(ThreadId parent);
+    void forget();
 
     // Write a single aligned word via PTRACE_POKEDATA
     Status pokeWord(Address wordAddr, long word) const;
