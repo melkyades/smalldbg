@@ -37,7 +37,8 @@ struct DwarfSubprogram {
  *  units. **/
 class DwarfTypeDatabase {
 public:
-    /** Parses the types in the .o files a Mach-O binary refers to. **/
+    /** Parses the types in the .o files a Mach-O binary refers to, or those
+     *  in an ELF binary's own DWARF sections. **/
     void loadFromBinary(const std::string& binaryPath);
 
     /** Returns the type with a fully qualified name such as "MyApp::Runtime",
@@ -70,14 +71,14 @@ private:
     // Subprogram database: address-range indexed
     std::vector<DwarfSubprogram> subprograms;
 
-    // Parse a single .o file's DWARF sections
+    // Parse the DWARF sections of a single .o file, or of an ELF image
     void parseObjectFile(const std::string& path);
 
     // Parse an .o member extracted from an .a archive
     void parseArchiveMember(const std::string& archivePath,
                             const std::string& memberName);
 
-    // Parse DWARF from memory-mapped Mach-O object file data
+    // Parse DWARF from a memory-mapped Mach-O object file or ELF image
     void parseDwarfFromObject(const uint8_t* base, size_t size);
 };
 

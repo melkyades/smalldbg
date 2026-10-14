@@ -1,20 +1,23 @@
-// DwarfTypes.cpp — Minimal DWARF5 parser for extracting C/C++ type info
-// from Mach-O .o files on macOS (referenced via N_OSO stab entries).
+// DwarfTypes.cpp — Minimal DWARF parser for extracting C/C++ type info:
+// from Mach-O .o files on macOS (referenced via N_OSO stab entries), and from
+// the ELF image itself on Linux.
 
 #include "DwarfTypes.h"
 #include "SymbolsInternal.h"
 
-#ifdef __APPLE__
-#include <mach-o/loader.h>
-#include <mach-o/nlist.h>
-#include <mach-o/fat.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <cstring>
-#include <cxxabi.h>
 #include <algorithm>
+
+#ifdef __APPLE__
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+#include <mach-o/fat.h>
+#else
+#include <elf.h>
 #endif
 
 namespace smalldbg {
@@ -868,8 +871,6 @@ static void processCompilationUnit(
 // DWARF section parser — walk one CU in .debug_info
 // =========================================================================
 
-#ifdef __APPLE__
-
 struct DwarfSections {
     const uint8_t* info{nullptr};
     size_t infoSize{0};
@@ -1030,6 +1031,8 @@ static void parseDwarfCU(const DwarfSections& sec,
         p = cuEnd;
     }
 }
+
+#ifdef __APPLE__
 
 // =========================================================================
 // Locate DWARF sections in a Mach-O .o file
@@ -1253,6 +1256,47 @@ static bool extractArchiveMember(const std::string& archivePath,
     return found;
 }
 
+#else
+
+// =========================================================================
+// Locate DWARF sections in an ELF image
+// =========================================================================
+
+// A linked ELF image carries its DWARF in sections of its own, which need no
+// relocation. A compressed section is left out, as if it were missing.
+static DwarfSections findDwarfSections(const uint8_t* base, size_t fileSize) {
+    DwarfSections sec;
+    if (fileSize < sizeof(Elf64_Ehdr)) return sec;
+
+    auto* ehdr = reinterpret_cast<const Elf64_Ehdr*>(base);
+    if (std::memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0 ||
+        ehdr->e_ident[EI_CLASS] != ELFCLASS64)
+        return sec;
+    if (ehdr->e_shoff + ehdr->e_shnum * sizeof(Elf64_Shdr) > fileSize ||
+        ehdr->e_shstrndx >= ehdr->e_shnum)
+        return sec;
+
+    auto* sections = reinterpret_cast<const Elf64_Shdr*>(base + ehdr->e_shoff);
+    const Elf64_Shdr& names = sections[ehdr->e_shstrndx];
+    if (names.sh_offset + names.sh_size > fileSize) return sec;
+
+    for (uint16_t i = 0; i < ehdr->e_shnum; i++) {
+        const Elf64_Shdr& sect = sections[i];
+        if (sect.sh_name >= names.sh_size) continue;
+        if (sect.sh_type == SHT_NOBITS || (sect.sh_flags & SHF_COMPRESSED)) continue;
+        if (sect.sh_offset + sect.sh_size > fileSize) continue;
+        std::string name = reinterpret_cast<const char*>(base + names.sh_offset + sect.sh_name);
+        const uint8_t* data = base + sect.sh_offset;
+        size_t sz = sect.sh_size;
+
+        if (name == ".debug_info") { sec.info = data; sec.infoSize = sz; }
+        else if (name == ".debug_abbrev") { sec.abbrev = data; sec.abbrevSize = sz; }
+        else if (name == ".debug_str") { sec.str = data; sec.strSize = sz; }
+        else if (name == ".debug_str_offsets") { sec.strOffsets = data; sec.strOffsetsSize = sz; }
+    }
+    return sec;
+}
+
 #endif // __APPLE__
 
 // =========================================================================
@@ -1260,17 +1304,12 @@ static bool extractArchiveMember(const std::string& archivePath,
 // =========================================================================
 
 void DwarfTypeDatabase::parseDwarfFromObject(const uint8_t* base, size_t size) {
-#ifdef __APPLE__
     auto sections = findDwarfSections(base, size);
     if (!sections.info || !sections.abbrev) return;
     parseDwarfCU(sections, types, variableTypes, subprograms);
-#else
-    (void)base; (void)size;
-#endif
 }
 
 void DwarfTypeDatabase::parseObjectFile(const std::string& path) {
-#ifdef __APPLE__
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) return;
 
@@ -1284,9 +1323,6 @@ void DwarfTypeDatabase::parseObjectFile(const std::string& path) {
 
     parseDwarfFromObject(static_cast<const uint8_t*>(mapped), fileSize);
     munmap(mapped, fileSize);
-#else
-    (void)path;
-#endif
 }
 
 void DwarfTypeDatabase::parseArchiveMember(const std::string& archivePath,
@@ -1321,7 +1357,7 @@ void DwarfTypeDatabase::loadFromBinary(const std::string& binaryPath) {
     }
 
 #else
-    (void)binaryPath;
+    parseObjectFile(binaryPath);
 #endif
 }
 
