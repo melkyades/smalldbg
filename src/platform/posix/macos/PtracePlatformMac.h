@@ -4,6 +4,7 @@
 #include "../../../backends/PtracePlatform.h"
 #include <mach/mach_types.h>
 #include <atomic>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -53,22 +54,6 @@ public:
     AsyncException pollAsyncException() override;
     void setWatchpoint(uint64_t addr, uint64_t match, uint64_t mask) override;
 
-    // Mach exception server interface — see PtracePlatformMac.cpp.
-    // After acquireProcess() succeeds, callers (the PtraceBackend wait loop)
-    // can poll for fatal mach exceptions that bypass the normal waitpid
-    // mechanism on macOS (EXC_BAD_ACCESS / EXC_BAD_INSTRUCTION /
-    // EXC_ARITHMETIC / EXC_CRASH / EXC_GUARD).  Without this, an assert()
-    // or null-deref in the child terminates the process before the debugger
-    // ever sees it.
-    struct PendingException {
-        bool present{false};
-        int exception{0};       // EXC_*
-        long code{0};           // first element of code array
-        long subcode{0};        // second element (often the faulting address)
-        ThreadId thread{0};     // offending mach thread port
-    };
-    PendingException takePendingException();
-
 private:
     int targetPid{-1};
     mach_port_t taskPort{MACH_PORT_NULL};
@@ -86,11 +71,20 @@ private:
     std::thread exceptionThread;
     std::atomic<bool> exceptionThreadStop{false};
     std::mutex exceptionMutex;
-    PendingException pending_;
+    // Exceptions caught and not yet answered, oldest first.
+    struct HeldException {
+        ThreadId thread{0};
+        int exception{0};   // EXC_*
+        int64_t code{0};
+        int64_t subcode{0};
+    };
+    std::deque<HeldException> held;
 
     Status startExceptionServer();
     void stopExceptionServer();
     void exceptionServerLoop();
+    void receiveException(const MachExceptionMessage& msg);
+    void hold(const HeldException& exception);
     void resumeAfter(const MachExceptionMessage& msg);
     void logFault(const MachExceptionMessage& msg) const;
     bool handleWatchpointException(const MachExceptionMessage& msg);

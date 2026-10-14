@@ -663,12 +663,12 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 //        mach_msg_type_number_t codeCnt
 //        mach_exception_data_type_t code[2]   // int64_t on 64-bit kernels
 //   - Suspend the target task so it stays paused while the debugger inspects.
-//   - Save a PendingException record and DON'T reply to the Mach message: the
+//   - Hold the exception, in a queue, and DON'T reply to the Mach message: the
 //     target stays suspended and the faulting thread frozen in exception state.
 //     PtraceBackend::waitForEvent polls pollAsyncException() to pick this up and
 //     turn it into a normal Exception stop. Once we've claimed the exception
 //     there's no posix signal-stop left for waitpid to wake on, so this
-//     cross-thread PendingException hand-off is the only channel back.
+//     cross-thread queue of held exceptions is the only channel back.
 //
 // EXC_BREAKPOINT / HW watchpoints
 // -------------------------------
@@ -793,6 +793,27 @@ void PtracePlatformMac::logFault(const MachExceptionMessage& msg) const {
     doLog(line);
 }
 
+void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
+    // Suspend the target so it stays paused for the debugger to inspect.
+    task_suspend(taskPort);
+    logFault(msg);
+    if (handleWatchpointException(msg)) return;
+
+    HeldException exception;
+    exception.thread = msg.thread.name;
+    exception.exception = msg.exception;
+    exception.code = msg.codeCnt > 0 ? msg.code[0] : 0;
+    exception.subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
+    hold(exception);
+}
+
+// The task stays suspended and the thread waits for the answer, so the
+// target stays where it stopped while the debugger looks at it.
+void PtracePlatformMac::hold(const HeldException& exception) {
+    std::lock_guard<std::mutex> lock(exceptionMutex);
+    held.push_back(exception);
+}
+
 // Answers an exception the server dealt with itself, so the thread goes on.
 void PtracePlatformMac::resumeAfter(const MachExceptionMessage& msg) {
     MachExceptionRaiseReply reply{};
@@ -805,10 +826,6 @@ void PtracePlatformMac::resumeAfter(const MachExceptionMessage& msg) {
     reply.RetCode = KERN_SUCCESS;
     mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
              MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-    {
-        std::lock_guard<std::mutex> lk(exceptionMutex);
-        pending_ = PendingException{};
-    }
     task_resume(taskPort);
 }
 
@@ -832,28 +849,7 @@ void PtracePlatformMac::exceptionServerLoop() {
         if (msg.header.msgh_id == 0xDEADBEEF)
             break;  // shutdown wakeup
 
-        // Suspend the target so it stays paused for the debugger to inspect.
-        // It's almost certainly already suspended (the kernel pauses the
-        // crashing thread while awaiting our reply), but be defensive.
-        task_suspend(taskPort);
-
-        long subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
-        {
-            std::lock_guard<std::mutex> lk(exceptionMutex);
-            pending_.present   = true;
-            pending_.exception = msg.exception;
-            pending_.code      = msg.codeCnt > 0 ? msg.code[0] : 0;
-            pending_.subcode   = subcode;
-            pending_.thread    = msg.thread.name;
-        }
-        logFault(msg);
-
-        if (handleWatchpointException(msg)) continue;
-
-        // Don't reply to the Mach message and don't task_resume. The task
-        // is suspended; the faulting thread is frozen in exception state.
-        // Backend polls pollAsyncException() to surface this as a normal
-        // Exception stop the rest of the debugger machinery handles.
+        receiveException(msg);
     }
 }
 
@@ -1032,24 +1028,17 @@ void PtracePlatformMac::setWatchpoint(uint64_t addr, uint64_t match, uint64_t ma
     doLog(buf);
 }
 
-PtracePlatformMac::PendingException PtracePlatformMac::takePendingException() {
-    std::lock_guard<std::mutex> lk(exceptionMutex);
-    PendingException out = pending_;
-    pending_ = PendingException{};
-    return out;
-}
-
 PtracePlatform::AsyncException PtracePlatformMac::pollAsyncException() {
-    std::lock_guard<std::mutex> lk(exceptionMutex);
+    std::lock_guard<std::mutex> lock(exceptionMutex);
     AsyncException out;
-    if (pending_.present) {
-        out.present   = true;
-        out.thread    = pending_.thread;
-        out.exception = pending_.exception;
-        out.code      = pending_.code;
-        out.subcode   = pending_.subcode;
-        pending_ = PendingException{};
-    }
+    if (held.empty()) return out;
+    const HeldException& exception = held.front();
+    out.present   = true;
+    out.thread    = exception.thread;
+    out.exception = exception.exception;
+    out.code      = exception.code;
+    out.subcode   = exception.subcode;
+    held.pop_front();
     return out;
 }
 
