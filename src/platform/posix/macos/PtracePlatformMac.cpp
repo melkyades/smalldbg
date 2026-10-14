@@ -823,6 +823,7 @@ void PtracePlatformMac::stopExceptionServer() {
     // Anything that arrived meanwhile is answered rather than left waiting.
     resumeHeld();
     mach_port_deallocate(mach_task_self(), exceptionPort);
+    mach_port_mod_refs(mach_task_self(), exceptionPort, MACH_PORT_RIGHT_RECEIVE, -1);
     exceptionPort = MACH_PORT_NULL;
 }
 
@@ -851,6 +852,7 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
     exception.exception = msg.exception;
     exception.code = msg.codeCnt > 0 ? msg.code[0] : 0;
     exception.subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
+    mach_port_deallocate(mach_task_self(), msg.task.name);
     hold(exception);
 }
 
