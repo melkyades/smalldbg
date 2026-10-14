@@ -649,6 +649,7 @@ void PtracePlatformMac::exceptionServerLoop() {
                  (unsigned long long)pending_.thread);
         doLog(buf);
 
+#if defined(__arm64__) || defined(__aarch64__)
         // Dump the faulting thread's ARM64 register state so we can identify
         // which object/slot is bad without needing the backend's downstream
         // getRegisters to work (it doesn't, because SIGSTOP isn't the
@@ -682,7 +683,28 @@ void PtracePlatformMac::exceptionServerLoop() {
             doLog("(mach) thread_get_state failed: " +
                   std::string(mach_error_string(gkr)));
         }
+#else
+        // The x86_64 equivalent: where the thread is and its frame.
+        x86_thread_state64_t state{};
+        mach_msg_type_number_t cnt = x86_THREAD_STATE64_COUNT;
+        kern_return_t gkr = thread_get_state(msg.thread.name,
+                                             x86_THREAD_STATE64,
+                                             (thread_state_t)&state, &cnt);
+        if (gkr == KERN_SUCCESS) {
+            char rb[256];
+            snprintf(rb, sizeof(rb), "(mach) rip=0x%llx rsp=0x%llx rbp=0x%llx rax=0x%llx rdi=0x%llx",
+                (unsigned long long)state.__rip, (unsigned long long)state.__rsp,
+                (unsigned long long)state.__rbp, (unsigned long long)state.__rax,
+                (unsigned long long)state.__rdi);
+            doLog(rb);
+        } else {
+            doLog("(mach) thread_get_state failed: " +
+                  std::string(mach_error_string(gkr)));
+        }
+#endif
 
+        // Hardware watchpoints are only implemented for ARM64.
+#if defined(__arm64__) || defined(__aarch64__)
         // EXC_BREAKPOINT (HW watchpoint hit OR software-step completion).
         //
         // Two-phase state machine:
@@ -858,6 +880,7 @@ void PtracePlatformMac::exceptionServerLoop() {
             }
             // Match — fall through to "stay stopped" so debugger inspects.
         }
+#endif
 
         // Don't reply to the Mach message and don't task_resume. The task
         // is suspended; the faulting thread is frozen in exception state.
@@ -880,6 +903,10 @@ void PtracePlatformMac::exceptionServerLoop() {
 // first write touching the watched word. Our Mach handler catches it and
 // dumps registers, so we can identify the writer.
 void PtracePlatformMac::installWatchpointOnThread(mach_port_t thread, uint64_t addr) {
+#if !(defined(__arm64__) || defined(__aarch64__))
+    (void)thread; (void)addr;
+    doLog("(watch) hardware watchpoints are only implemented for ARM64");
+#else
     if (addr & 7) {
         doLog("(watch) address not 8-byte aligned, ignoring");
         return;
@@ -909,9 +936,13 @@ void PtracePlatformMac::installWatchpointOnThread(mach_port_t thread, uint64_t a
              "(watch) armed thread=0x%x addr=0x%llx (store, 8 bytes)",
              (unsigned)thread, (unsigned long long)addr);
     doLog(buf);
+#endif
 }
 
 void PtracePlatformMac::installWatchpointAllThreads(uint64_t addr) {
+#if !(defined(__arm64__) || defined(__aarch64__))
+    if (addr != 0) installWatchpointOnThread(MACH_PORT_NULL, addr);
+#else
     thread_act_array_t threads;
     mach_msg_type_number_t count;
     kern_return_t kr = task_threads(taskPort, &threads, &count);
@@ -935,6 +966,7 @@ void PtracePlatformMac::installWatchpointAllThreads(uint64_t addr) {
     }
     vm_deallocate(mach_task_self(), (vm_address_t)threads,
                   count * sizeof(thread_act_t));
+#endif
 }
 
 // Runtime setter. addr=0 clears the watchpoint. match=0 means "never break,
