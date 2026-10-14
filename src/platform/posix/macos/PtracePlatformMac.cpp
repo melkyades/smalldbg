@@ -257,6 +257,30 @@ void PtracePlatformMac::ptraceKill(int pid) {
     ptrace(PT_KILL, pid, nullptr, 0);
 }
 
+// Suspending the task stops every thread where it is, with no signal left
+// pending to stop it again later; the stop is held as if a SIGSTOP had
+// arrived on the first thread.
+int PtracePlatformMac::interrupt(int pid) {
+    (void)pid;
+    if (task_suspend(taskPort) != KERN_SUCCESS) return -1;
+
+    HeldException interrupted;
+    interrupted.exception = EXC_SOFTWARE;
+    interrupted.code = EXC_SOFT_SIGNAL;
+    interrupted.subcode = SIGSTOP;
+    thread_act_array_t threads = nullptr;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(taskPort, &threads, &count) == KERN_SUCCESS && count > 0) {
+        interrupted.thread = threads[0];
+        for (mach_msg_type_number_t i = 1; i < count; i++)
+            mach_port_deallocate(mach_task_self(), threads[i]);
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads),
+                      count * sizeof(thread_act_t));
+    }
+    hold(interrupted);
+    return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Process handle (Mach task port)
 // ---------------------------------------------------------------------------
@@ -949,6 +973,13 @@ void PtracePlatformMac::resumeHeld() {
         answering.swap(held);
     }
     for (const auto& exception : answering) {
+        if (exception.replyPort == MACH_PORT_NULL) {
+            if (exception.thread != 0)
+                mach_port_deallocate(mach_task_self(),
+                                     static_cast<mach_port_t>(exception.thread));
+            task_resume(taskPort);
+            continue;
+        }
         if (isSignal(exception.exception, exception.code)) {
             int signal = static_cast<int>(exception.subcode);
             int delivered = isDebuggerSignal(signal) ? 0 : signal;

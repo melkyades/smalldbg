@@ -32,6 +32,7 @@ public:
     int ptraceContinue(int pid) override;
     int ptraceStep(int pid, ThreadId thread) override;
     void ptraceKill(int pid) override;
+    int interrupt(int pid) override;
 
     int spawnStopped(const std::string& path,
                      const std::vector<std::string>& args,
@@ -73,8 +74,9 @@ private:
     std::atomic<bool> exceptionThreadStop{false};
     std::mutex exceptionMutex;
     // Exceptions caught and not yet answered, oldest first.
+    // An interrupt is held the same way, with no message to answer.
     struct HeldException {
-        mach_port_t replyPort{MACH_PORT_NULL};
+        mach_port_t replyPort{MACH_PORT_NULL};  // none for an interrupt
         mach_msg_bits_t replyBits{0};
         mach_msg_id_t replyId{0};
         ThreadId thread{0};
