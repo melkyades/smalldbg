@@ -22,6 +22,7 @@
 #include <mach/mach_vm.h>
 #include <mach/exception_types.h>
 #include <mach/task.h>
+#include <optional>
 
 namespace smalldbg {
 
@@ -263,17 +264,45 @@ Status PtracePlatformMac::readMemory(Address addr, void* buf, size_t size) const
     return Status::Ok;
 }
 
+namespace {
+
+// The protection of the region holding `addr`, or nothing when no region
+// holds it.
+std::optional<vm_prot_t> protectionAt(mach_port_t task, Address addr) {
+    mach_vm_address_t start = addr;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(task, &start, &size, VM_REGION_BASIC_INFO_64,
+                                      reinterpret_cast<vm_region_info_t>(&info),
+                                      &count, &object);
+    if (kr != KERN_SUCCESS || start > addr) return std::nullopt;
+    return info.protection;
+}
+
+} // namespace
+
+// Code pages are mapped read-only and executable, so writing a breakpoint
+// makes a private, writable copy of the pages it touches, writes, and gives
+// them back the protection they had. Taking execute away and not giving it
+// back would fault the target on the next instruction it runs from those
+// pages. Executed memory also has its instruction cache flushed, so the
+// target runs what was written.
 Status PtracePlatformMac::writeMemory(Address addr, const void* data, size_t size) {
     if (taskPort == MACH_PORT_NULL) return Status::NotAttached;
 
-    // Mach VM write may need the region to be writable.  Try to set
-    // VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY first; if the region is
-    // already writable this is a harmless no-op.
-    mach_vm_protect(taskPort,
-                    static_cast<mach_vm_address_t>(addr & ~0xFFFULL),
-                    0x1000,
-                    false,
-                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    auto protection = protectionAt(taskPort, addr);
+    if (!protection) return Status::Error;
+
+    mach_vm_address_t pageStart = mach_vm_trunc_page(addr);
+    mach_vm_size_t pagesSize = mach_vm_round_page(addr + size) - pageStart;
+    bool writable = (*protection & VM_PROT_WRITE) != 0;
+    if (!writable) {
+        kern_return_t kr = mach_vm_protect(taskPort, pageStart, pagesSize, false,
+                                           VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+        if (kr != KERN_SUCCESS) return Status::Error;
+    }
 
     kern_return_t kr = mach_vm_write(
         taskPort,
@@ -281,7 +310,14 @@ Status PtracePlatformMac::writeMemory(Address addr, const void* data, size_t siz
         reinterpret_cast<vm_offset_t>(data),
         static_cast<mach_msg_type_number_t>(size));
 
+    if (!writable)
+        mach_vm_protect(taskPort, pageStart, pagesSize, false, *protection);
     if (kr != KERN_SUCCESS) return Status::Error;
+
+    if (*protection & VM_PROT_EXECUTE) {
+        vm_machine_attribute_val_t flush = MATTR_VAL_CACHE_FLUSH;
+        mach_vm_machine_attribute(taskPort, addr, size, MATTR_CACHE, &flush);
+    }
     return Status::Ok;
 }
 
