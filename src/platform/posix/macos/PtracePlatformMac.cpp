@@ -149,22 +149,19 @@ int PtracePlatformMac::spawnStopped(const std::string& path,
         return -1;
     }
 
-    // Install Mach exception ports through ptrace so future stops surface via
-    // waitpid the way they do on Linux.
-    if (ptrace(PT_ATTACHEXC, child, nullptr, 0) < 0) {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "(ptrace) PT_ATTACHEXC failed: %s", strerror(errno));
-        doLog(buf);
+    // The exception server takes the child's ports before ptrace attaches, so
+    // the first stop, the SIGSTOP of the suspended spawn, is held there too.
+    bool attachedStopped = acquireProcess(child) == Status::Ok
+        && ptraceAttach(child) == 0
+        && ptrace(PT_CONTINUE, child, reinterpret_cast<caddr_t>(1), 0) == 0
+        && waitForStop(child, 5000, status) == SIGSTOP;
+    if (!attachedStopped) {
+        doLog("(ptrace) " + path + " did not stop at its entry");
+        releaseProcess();
         kill(child, SIGKILL);
         waitpid(child, nullptr, 0);
         return -1;
     }
-
-    // After PT_ATTACHEXC the kernel may push an additional stop event onto
-    // the queue. Drain it with a non-blocking waitpid so the child is in a
-    // clean stopped state when we return.
-    waitpid(child, &status, WNOHANG | WUNTRACED);
-
     return static_cast<int>(child);
 }
 
@@ -179,22 +176,10 @@ int PtracePlatformMac::ptraceDetach(int pid) {
     return ptrace(PT_DETACH, pid, nullptr, 0);
 }
 
-// A target stopped on an exception the server holds runs again when the
-// exception is answered; one that waitpid saw stop is continued by ptrace.
 int PtracePlatformMac::ptraceContinue(int pid) {
-    bool holding = false;
-    {
-        std::lock_guard<std::mutex> lock(exceptionMutex);
-        holding = !held.empty();
-    }
-    if (holding) {
-        resumeHeld();
-        return 0;
-    }
-    int result = ptrace(PT_CONTINUE, pid, reinterpret_cast<caddr_t>(1), 0);
-    if (result < 0)
-        doLog("(ptrace) PT_CONTINUE failed: " + std::string(strerror(errno)));
-    return result;
+    (void)pid;  // the target is resumed by answering what stopped it
+    resumeHeld();
+    return 0;
 }
 
 // Hardware single-step is only used by the ARM64 watchpoints for now.
@@ -234,6 +219,7 @@ void PtracePlatformMac::ptraceKill(int pid) {
 // ---------------------------------------------------------------------------
 
 Status PtracePlatformMac::acquireProcess(int pid) {
+    if (taskPort != MACH_PORT_NULL && targetPid == pid) return Status::Ok;
     targetPid = pid;
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &taskPort);
     if (kr != KERN_SUCCESS) {
@@ -241,13 +227,13 @@ Status PtracePlatformMac::acquireProcess(int pid) {
               + " (requires sudo or com.apple.security.cs.debugger entitlement)");
         return Status::Error;
     }
-    // Install a Mach exception server so EXC_BAD_ACCESS / EXC_BAD_INSTRUCTION /
-    // EXC_CRASH etc. surface to the debugger instead of terminating the child.
-    // Failure here is non-fatal — we fall back to the existing PT_ATTACHEXC
-    // path which only catches SIGTRAP (breakpoints/single-step).
-    if (startExceptionServer() != Status::Ok)
-        doLog("(ptrace) Mach exception server failed to start; fatal signals "
-              "will terminate the child silently");
+    // Every stop of the target reaches the debugger through the exception
+    // server, so there is no debugging it without one.
+    if (startExceptionServer() != Status::Ok) {
+        mach_port_deallocate(mach_task_self(), taskPort);
+        taskPort = MACH_PORT_NULL;
+        return Status::Error;
+    }
 
     // Optional HW watchpoint seeded from the environment. Useful when chasing
     // "which code path wrote this stale pointer" bugs: set SMALLDBG_WATCH_ADDR
@@ -270,6 +256,7 @@ Status PtracePlatformMac::acquireProcess(int pid) {
 void PtracePlatformMac::releaseProcess() {
     resumeHeld();
     stopExceptionServer();
+    lastStopThread = 0;
 
     for (auto port : cachedThreadPorts)
         mach_port_deallocate(mach_task_self(), port);
@@ -710,6 +697,11 @@ struct MachExceptionMessage {
 
 namespace {
 
+// Signals the debugger causes itself, which the program never gets.
+bool isDebuggerSignal(int signal) {
+    return signal == SIGTRAP || signal == SIGSTOP;
+}
+
 bool isSignal(int exception, int64_t code) {
     return exception == EXC_SOFTWARE && code == EXC_SOFT_SIGNAL;
 }
@@ -781,15 +773,11 @@ Status PtracePlatformMac::startExceptionServer() {
         exceptionPort = MACH_PORT_NULL;
         return Status::Error;
     }
-    // Route fatal task-level exceptions to us. EXC_BREAKPOINT is included
-    // when a HW watchpoint is configured — without it the kernel would
-    // deliver watchpoint hits to the previous (ptrace) handler instead of
-    // ours, and we'd lose the rich register dump the Mach handler can do.
+    // Signals come as EXC_SOFTWARE under PT_ATTACHEXC, and breakpoints and
+    // steps as EXC_BREAKPOINT: every stop of the target comes here.
     exception_mask_t mask =
-        EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION |
-        EXC_MASK_ARITHMETIC | EXC_MASK_CRASH | EXC_MASK_GUARD;
-    if (std::getenv("SMALLDBG_WATCH_ADDR"))
-        mask |= EXC_MASK_BREAKPOINT;
+        EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_ARITHMETIC |
+        EXC_MASK_SOFTWARE | EXC_MASK_BREAKPOINT | EXC_MASK_CRASH | EXC_MASK_GUARD;
     kr = task_set_exception_ports(taskPort, mask, exceptionPort,
                                   EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
                                   THREAD_STATE_NONE);
@@ -839,7 +827,6 @@ void PtracePlatformMac::logFault(const MachExceptionMessage& msg) const {
 }
 
 void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
-    logFault(msg);
     HeldException exception;
     exception.replyPort = msg.header.msgh_remote_port;
     exception.replyBits = MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits);
@@ -853,6 +840,7 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
 
     // Suspend the target so it stays paused for the debugger to inspect.
     task_suspend(taskPort);
+    if (isFault(exception.exception)) logFault(msg);
     hold(exception);
 }
 
@@ -884,13 +872,9 @@ int PtracePlatformMac::waitForStop(int pid, int timeoutMs, int& status) {
                     + std::chrono::milliseconds(std::max(timeoutMs, 0));
     while (true) {
         if (int signal = takeStop()) return signal;
-        if (waitpid(pid, &status, WNOHANG) > 0) {
-            if (WIFEXITED(status) || WIFSIGNALED(status)) return -2;
-            if (WIFSTOPPED(status)) {
-                lastStopThread = 0;
-                return WSTOPSIG(status);
-            }
-        }
+        if (waitpid(pid, &status, WNOHANG) > 0
+            && (WIFEXITED(status) || WIFSIGNALED(status)))
+            return -2;
         if (timeoutMs >= 0 && std::chrono::steady_clock::now() >= deadline)
             return -1;
 
@@ -904,9 +888,10 @@ int PtracePlatformMac::waitForStop(int pid, int timeoutMs, int& status) {
     }
 }
 
-// Answers every held exception, so the target runs again. A fault is
-// answered with KERN_FAILURE, so the kernel raises the signal the program
-// would have got without a debugger.
+// Answers every held exception, so the target runs again. A signal is given
+// to its thread to deliver, except the SIGTRAP and SIGSTOP the debugger
+// caused. A fault is answered with KERN_FAILURE, so the kernel raises the
+// signal the program would have got without a debugger.
 void PtracePlatformMac::resumeHeld() {
     std::deque<HeldException> answering;
     {
@@ -914,6 +899,13 @@ void PtracePlatformMac::resumeHeld() {
         answering.swap(held);
     }
     for (const auto& exception : answering) {
+        if (isSignal(exception.exception, exception.code)) {
+            int signal = static_cast<int>(exception.subcode);
+            int delivered = isDebuggerSignal(signal) ? 0 : signal;
+            ptrace(PT_THUPDATE, targetPid,
+                   reinterpret_cast<caddr_t>(static_cast<uintptr_t>(exception.thread)),
+                   delivered);
+        }
         answer(exception, isFault(exception.exception) ? KERN_FAILURE : KERN_SUCCESS);
         if (taskPort != MACH_PORT_NULL) task_resume(taskPort);
     }
@@ -971,6 +963,8 @@ bool PtracePlatformMac::handleWatchpointException(const HeldException& exception
     mach_port_t thread = static_cast<mach_port_t>(exception.thread);
 
     if (steppingThreads_.count(thread) == 0) {
+        // Breakpoints and steps are stops; only a watchpoint hit is handled here.
+        if (watchAddrLive_ == 0 || exception.code != EXC_ARM_DA_DEBUG) return false;
         logWatchpointHit(thread);
 
         arm_debug_state64_t dbg{};
