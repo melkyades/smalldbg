@@ -108,14 +108,21 @@ void HttpServer::run() {
 }
 
 void HttpServer::bindAndListen() {
-    // httplib sets SO_REUSEADDR, which on Windows lets a second server bind a
-    // port that is in use and then take some of its connections. Exclusive
-    // use makes the second bind fail instead.
+    // httplib's default socket options let a second server bind a port that
+    // is in use and then take some of its connections: SO_REUSEADDR does on
+    // Windows, SO_REUSEPORT does elsewhere. Exclusive use on Windows, and
+    // SO_REUSEADDR alone elsewhere, which still lets a server restart on a
+    // port left in TIME_WAIT, make the second bind fail instead.
 #ifdef _WIN32
     server->set_socket_options([](auto sock) {
         int exclusive = 1;
         setsockopt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
                    reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+    });
+#else
+    server->set_socket_options([](auto sock) {
+        int reuse = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     });
 #endif
 
