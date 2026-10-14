@@ -655,9 +655,12 @@ static DwarfVariable evaluateVariableLocation(
 // Process subprograms from parsed DIEs
 // =========================================================================
 
+using ChildIndex = std::unordered_map<uint32_t, std::vector<uint32_t>>;
+
 static void processSubprogramDIE(
     const ParsedDIE& spDie, uint32_t spOffset, uint32_t cuOffset,
     const std::unordered_map<uint32_t, ParsedDIE>& dies,
+    const ChildIndex& children,
     std::vector<DwarfSubprogram>& out) {
 
     if (!spDie.hasLowPC || !spDie.hasHighPC) return;
@@ -690,18 +693,24 @@ static void processSubprogramDIE(
 
     uint32_t frameBaseReg = extractFrameBaseReg(spDie.frameBaseExpr);
 
-    // Collect direct children and children of lexical blocks
-    for (auto& [offset, die] : dies) {
-        bool isChild = (die.parentOffset == spOffset);
-        if (!isChild) {
-            // Check if inside a lexical block that's a child of this subprogram
-            auto pit = dies.find(die.parentOffset);
-            if (pit != dies.end() && pit->second.tag == DW5_TAG_lexical_block &&
-                pit->second.parentOffset == spOffset) {
-                isChild = true;
-            }
-        }
-        if (!isChild) continue;
+    // Collect direct children and children of lexical blocks. Looked up by
+    // parent: a scan of the unit for each subprogram is quadratic, and an
+    // ELF image's units are whole source files.
+    std::vector<uint32_t> owned;
+    auto childrenOf = [&](uint32_t parent) -> const std::vector<uint32_t>& {
+        static const std::vector<uint32_t> none;
+        auto it = children.find(parent);
+        return it != children.end() ? it->second : none;
+    };
+    for (uint32_t child : childrenOf(spOffset)) {
+        owned.push_back(child);
+        if (dies.at(child).tag == DW5_TAG_lexical_block)
+            for (uint32_t nested : childrenOf(child)) owned.push_back(nested);
+    }
+    std::sort(owned.begin(), owned.end());
+
+    for (uint32_t offset : owned) {
+        const ParsedDIE& die = dies.at(offset);
 
         bool isParam = (die.tag == DW5_TAG_formal_parameter);
         bool isLocal = (die.tag == DW5_TAG_variable);
@@ -1023,9 +1032,12 @@ static void parseDwarfCU(const DwarfSections& sec,
         processCompilationUnit(dies, cuOffset, typeDB, varDB);
 
         // Third pass: extract subprogram variables
+        ChildIndex children;
+        for (auto& [offset, die] : dies)
+            children[die.parentOffset].push_back(offset);
         for (auto& [offset, die] : dies) {
             if (die.tag == DW5_TAG_subprogram)
-                processSubprogramDIE(die, offset, cuOffset, dies, subprograms);
+                processSubprogramDIE(die, offset, cuOffset, dies, children, subprograms);
         }
 
         p = cuEnd;
