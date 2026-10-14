@@ -850,39 +850,18 @@ void PtracePlatformMac::exceptionServerLoop() {
 
         // Hardware watchpoints are only implemented for ARM64.
 #if defined(__arm64__) || defined(__aarch64__)
-        // EXC_BREAKPOINT (HW watchpoint hit OR software-step completion).
-        //
-        // Two-phase state machine:
-        //
-        //   Phase A: real watchpoint hit (thread NOT in steppingThreads_).
-        //     1. Log writer PC/LR (post-write value isn't valid yet — store
-        //        hasn't completed). Save the PC.
-        //     2. Disable the HW watchpoint on this thread.
-        //     3. Set ARM64 software-step bits (MDSCR_EL1.SS + PSTATE.SS=1).
-        //     4. Mark thread as stepping, reply KERN_SUCCESS, resume.
-        //        The kernel executes ONE instruction (the trapping store)
-        //        with the watchpoint disabled — so the store actually
-        //        completes — then raises another EXC_BREAKPOINT for the
-        //        step.
-        //
-        //   Phase B: step completion (thread IS in steppingThreads_).
-        //     1. NOW the store has happened — read the post-write value
-        //        at the watched address.
-        //     2. Clear ARM64 step bits.
-        //     3. Re-arm the HW watchpoint.
-        //     4. Match check: stop if (value & mask) == match. Else log
-        //        the value, clear pending, reply KERN_SUCCESS, resume.
-        //
-        // This preserves program semantics (the store actually happens)
-        // while still letting us observe every write to the watched word.
+        // A watchpoint hit (EXC_BREAKPOINT) traps before the store completes.
+        // Two phases keep the program's semantics while still observing
+        // every write to the watched word:
+        //   A. the hit: log the writer, disable the watchpoint on the thread,
+        //      step it over the store and let it go;
+        //   B. the step: the store has happened, so read the value, re-arm
+        //      the watchpoint and stop only when the value matches what was
+        //      asked for.
         if (msg.exception == EXC_BREAKPOINT) {
             mach_port_t thr = msg.thread.name;
             bool isStep = steppingThreads_.count(thr) > 0;
             if (!isStep) {
-                // Phase A: real watchpoint hit. The store hasn't happened
-                // yet (HW watchpoint fires synchronously before the store
-                // completes). Don't try to read the post-write value here
-                // — read it in Phase B after the step.
                 logWatchpointHit(thr);
 
                 // Disable the watchpoint and step the thread over the store.
