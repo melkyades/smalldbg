@@ -848,62 +848,61 @@ void PtracePlatformMac::exceptionServerLoop() {
         }
         logFault(msg);
 
-        // Hardware watchpoints are only implemented for ARM64.
-#if defined(__arm64__) || defined(__aarch64__)
-        // A watchpoint hit (EXC_BREAKPOINT) traps before the store completes.
-        // Two phases keep the program's semantics while still observing
-        // every write to the watched word:
-        //   A. the hit: log the writer, disable the watchpoint on the thread,
-        //      step it over the store and let it go;
-        //   B. the step: the store has happened, so read the value, re-arm
-        //      the watchpoint and stop only when the value matches what was
-        //      asked for.
-        if (msg.exception == EXC_BREAKPOINT) {
-            mach_port_t thr = msg.thread.name;
-            bool isStep = steppingThreads_.count(thr) > 0;
-            if (!isStep) {
-                logWatchpointHit(thr);
-
-                // Disable the watchpoint and step the thread over the store.
-                arm_debug_state64_t dbg{};
-                mach_msg_type_number_t dcnt = ARM_DEBUG_STATE64_COUNT;
-                thread_get_state(thr, ARM_DEBUG_STATE64,
-                                 (thread_state_t)&dbg, &dcnt);
-                dbg.__wcr[0] = 0;
-                thread_set_state(thr, ARM_DEBUG_STATE64,
-                                 (thread_state_t)&dbg, dcnt);
-                setSingleStep(thr, true);
-                steppingThreads_.insert(thr);
-                resumeAfter(msg);
-                continue;
-            }
-            // Phase B: step completion. The store has now executed.
-            steppingThreads_.erase(thr);
-            uint64_t curValue = 0;
-            readMemory(watchAddrLive_, &curValue, sizeof curValue);
-            char buf[160];
-            snprintf(buf, sizeof(buf),
-                "(watch)   post-store value=0x%llx",
-                (unsigned long long)curValue);
-            doLog(buf);
-            setSingleStep(thr, false);
-            if (watchAddrLive_ != 0) installWatchpointOnThread(thr, watchAddrLive_);
-            // Match check.
-            bool stop = (watchMatchLive_ != 0) &&
-                        ((curValue & watchMaskLive_) == watchMatchLive_);
-            if (!stop) {
-                resumeAfter(msg);
-                continue;
-            }
-            // Match — fall through to "stay stopped" so debugger inspects.
-        }
-#endif
+        if (handleWatchpointException(msg)) continue;
 
         // Don't reply to the Mach message and don't task_resume. The task
         // is suspended; the faulting thread is frozen in exception state.
         // Backend polls pollAsyncException() to surface this as a normal
         // Exception stop the rest of the debugger machinery handles.
     }
+}
+
+// A watchpoint hit (EXC_BREAKPOINT) traps before the store completes. Two
+// phases keep the program's semantics while still observing every write to
+// the watched word:
+//   A. the hit: log the writer, disable the watchpoint on the thread, step it
+//      over the store and let it go;
+//   B. the step: the store has happened, so read the value, re-arm the
+//      watchpoint and stop only when the value matches what was asked for.
+// Answers true when the exception was dealt with and the target goes on.
+bool PtracePlatformMac::handleWatchpointException(const MachExceptionMessage& msg) {
+#if defined(__arm64__) || defined(__aarch64__)
+    if (msg.exception != EXC_BREAKPOINT) return false;
+    mach_port_t thread = msg.thread.name;
+
+    if (steppingThreads_.count(thread) == 0) {
+        logWatchpointHit(thread);
+
+        arm_debug_state64_t dbg{};
+        mach_msg_type_number_t count = ARM_DEBUG_STATE64_COUNT;
+        thread_get_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&dbg, &count);
+        dbg.__wcr[0] = 0;
+        thread_set_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&dbg, count);
+        setSingleStep(thread, true);
+        steppingThreads_.insert(thread);
+        resumeAfter(msg);
+        return true;
+    }
+
+    steppingThreads_.erase(thread);
+    setSingleStep(thread, false);
+    uint64_t value = 0;
+    readMemory(watchAddrLive_, &value, sizeof value);
+    char line[160];
+    snprintf(line, sizeof(line), "(watch)   post-store value=0x%llx",
+             (unsigned long long)value);
+    doLog(line);
+    if (watchAddrLive_ != 0) installWatchpointOnThread(thread, watchAddrLive_);
+
+    bool matches = watchMatchLive_ != 0
+                   && (value & watchMaskLive_) == watchMatchLive_;
+    if (matches) return false;
+    resumeAfter(msg);
+    return true;
+#else
+    (void)msg;
+    return false;
+#endif
 }
 
 // Logs where a watchpoint hit happened, with the frames above it.
