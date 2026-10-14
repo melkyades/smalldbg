@@ -89,6 +89,15 @@ private:
     std::deque<HeldException> held;
     std::condition_variable exceptionCv;
     ThreadId lastStopThread{0};
+
+    // The exception ports the target had before ours, given back on detach.
+    struct SavedPorts {
+        mach_msg_type_number_t count{0};
+        exception_mask_t masks[EXC_TYPES_COUNT]{};
+        mach_port_t ports[EXC_TYPES_COUNT]{};
+        exception_behavior_t behaviors[EXC_TYPES_COUNT]{};
+        thread_state_flavor_t flavors[EXC_TYPES_COUNT]{};
+    } savedPorts;
     // Threads whose fault was answered by letting the kernel raise its
     // signal: that signal is the program's to handle, not another stop.
     std::set<ThreadId> deliverNextSignal;
@@ -99,10 +108,12 @@ private:
 
     Status startExceptionServer();
     void stopExceptionServer();
+    void restoreExceptionPorts();
     void exceptionServerLoop();
     void receiveException(const MachExceptionMessage& msg);
     bool passesThrough(const HeldException& exception);
     void hold(const HeldException& exception);
+    bool holdSigstop(int pid);
     int takeStop();
     void keepSuspendedUnless(mach_port_t thread, mach_port_t stepped);
     void finishStep();

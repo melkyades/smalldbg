@@ -185,8 +185,24 @@ int PtracePlatformMac::ptraceAttach(int pid) {
     return result;
 }
 
+// The target keeps running once detached, with the exception ports it had.
+//
+// PT_DETACH only lets go of a target the kernel has stopped, which it does
+// while a signal of the target's waits for the server's answer. So a SIGSTOP
+// is held first and the target gets its own exception ports back; once
+// detached, everything held is answered. Answering first would let the
+// stopped thread go on in the kernel before PT_DETACH could see it stopped.
 int PtracePlatformMac::ptraceDetach(int pid) {
-    return ptrace(PT_DETACH, pid, nullptr, 0);
+    if (taskPort != MACH_PORT_NULL) {
+        finishStep();
+        holdSigstop(pid);
+        restoreExceptionPorts();
+    }
+    int result = ptrace(PT_DETACH, pid, reinterpret_cast<caddr_t>(1), 0);
+    if (result < 0)
+        doLog("(ptrace) PT_DETACH failed: " + std::string(strerror(errno)));
+    resumeHeld();
+    return result;
 }
 
 int PtracePlatformMac::ptraceContinue(int pid) {
@@ -850,12 +866,17 @@ Status PtracePlatformMac::startExceptionServer() {
     exception_mask_t mask =
         EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_ARITHMETIC |
         EXC_MASK_SOFTWARE | EXC_MASK_BREAKPOINT | EXC_MASK_CRASH | EXC_MASK_GUARD;
-    kr = task_set_exception_ports(taskPort, mask, exceptionPort,
-                                  EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
-                                  THREAD_STATE_NONE);
+    savedPorts.count = EXC_TYPES_COUNT;
+    kr = task_swap_exception_ports(taskPort, mask, exceptionPort,
+                                   EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
+                                   THREAD_STATE_NONE,
+                                   savedPorts.masks, &savedPorts.count,
+                                   savedPorts.ports, savedPorts.behaviors,
+                                   savedPorts.flavors);
     if (kr != KERN_SUCCESS) {
-        doLog("(mach) task_set_exception_ports failed: " +
+        doLog("(mach) task_swap_exception_ports failed: " +
               std::string(mach_error_string(kr)));
+        savedPorts.count = 0;
         mach_port_deallocate(mach_task_self(), exceptionPort);
         exceptionPort = MACH_PORT_NULL;
         return Status::Error;
@@ -863,6 +884,13 @@ Status PtracePlatformMac::startExceptionServer() {
     exceptionThreadStop.store(false);
     exceptionThread = std::thread([this] { this->exceptionServerLoop(); });
     return Status::Ok;
+}
+
+void PtracePlatformMac::restoreExceptionPorts() {
+    for (mach_msg_type_number_t i = 0; i < savedPorts.count; i++)
+        task_set_exception_ports(taskPort, savedPorts.masks[i], savedPorts.ports[i],
+                                 savedPorts.behaviors[i], savedPorts.flavors[i]);
+    savedPorts.count = 0;
 }
 
 void PtracePlatformMac::stopExceptionServer() {
@@ -1006,6 +1034,21 @@ void PtracePlatformMac::resumeHeld() {
         answer(exception, fault ? KERN_FAILURE : KERN_SUCCESS);
         if (taskPort != MACH_PORT_NULL) task_resume(taskPort);
     }
+}
+
+// Sends the target a SIGSTOP and waits for the server to hold it, letting go
+// of any stop held before so that it can arrive. Answers false when it does
+// not arrive in time.
+bool PtracePlatformMac::holdSigstop(int pid) {
+    if (kill(pid, SIGSTOP) < 0) return false;
+    resumeHeld();
+    std::unique_lock<std::mutex> lock(exceptionMutex);
+    return exceptionCv.wait_for(lock, std::chrono::seconds(2), [this] {
+        return std::any_of(held.begin(), held.end(), [](const HeldException& e) {
+            return e.replyPort != MACH_PORT_NULL && isSignal(e.exception, e.code)
+                && e.subcode == SIGSTOP;
+        });
+    });
 }
 
 void PtracePlatformMac::answer(const HeldException& exception, kern_return_t result) {
