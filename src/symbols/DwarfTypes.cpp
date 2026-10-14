@@ -86,7 +86,7 @@ enum : uint8_t {
     DW5_FORM_strx1         = 0x25,
     DW5_FORM_strx2         = 0x26,
     DW5_FORM_strx4         = 0x28,
-    DW5_FORM_data8         = 0x08,
+    DW5_FORM_data8         = 0x07,
     DW5_FORM_ref_addr      = 0x10,
     DW5_FORM_block1        = 0x0a,
     DW5_FORM_loclistx      = 0x22,
@@ -94,7 +94,24 @@ enum : uint8_t {
     DW5_FORM_ref2          = 0x12,
     DW5_FORM_strp          = 0x0e,
     DW5_FORM_flag          = 0x0c,
-    DW5_FORM_string        = 0x08, // actually same value as data8, need to check
+    DW5_FORM_string        = 0x08,
+    DW5_FORM_block2        = 0x03,
+    DW5_FORM_block4        = 0x04,
+    DW5_FORM_block         = 0x09,
+    DW5_FORM_ref8          = 0x14,
+    DW5_FORM_ref_udata     = 0x15,
+    DW5_FORM_strx          = 0x1a,
+    DW5_FORM_ref_sup4      = 0x1c,
+    DW5_FORM_strp_sup      = 0x1d,
+    DW5_FORM_data16        = 0x1e,
+    DW5_FORM_line_strp     = 0x1f,
+    DW5_FORM_ref_sig8      = 0x20,
+    DW5_FORM_ref_sup8      = 0x24,
+    DW5_FORM_strx3         = 0x27,
+    DW5_FORM_addrx1        = 0x29,
+    DW5_FORM_addrx2        = 0x2a,
+    DW5_FORM_addrx3        = 0x2b,
+    DW5_FORM_addrx4        = 0x2c,
 };
 
 enum : uint8_t {
@@ -255,12 +272,16 @@ static AttrValue readFormValue(uint8_t form, const uint8_t*& p,
     case DW5_FORM_sec_offset:
         if (p + 4 <= end) { uint32_t v; std::memcpy(&v, p, 4); val.unsigned_val = v; p += 4; }
         break;
+    case DW5_FORM_strx:
     case DW5_FORM_strx1:
     case DW5_FORM_strx2:
+    case DW5_FORM_strx3:
     case DW5_FORM_strx4: {
         uint32_t index = 0;
-        if (form == DW5_FORM_strx1 && p < end) { index = *p++; }
+        if (form == DW5_FORM_strx) { index = static_cast<uint32_t>(readULEB128(p, end)); }
+        else if (form == DW5_FORM_strx1 && p < end) { index = *p++; }
         else if (form == DW5_FORM_strx2 && p + 2 <= end) { uint16_t v; std::memcpy(&v, p, 2); index = v; p += 2; }
+        else if (form == DW5_FORM_strx3 && p + 3 <= end) { index = p[0] | (p[1] << 8) | (p[2] << 16); p += 3; }
         else if (form == DW5_FORM_strx4 && p + 4 <= end) { std::memcpy(&index, p, 4); p += 4; }
 
         // Resolve: strOffsBase + index * 4 → offset into .debug_str
@@ -281,6 +302,46 @@ static AttrValue readFormValue(uint8_t form, const uint8_t*& p,
                 val.string_val = reinterpret_cast<const char*>(strSection + strOffset);
         }
         break;
+    case DW5_FORM_string: {
+        const uint8_t* nul = static_cast<const uint8_t*>(std::memchr(p, 0, end - p));
+        if (!nul) { p = end; break; }
+        val.string_val.assign(reinterpret_cast<const char*>(p), nul - p);
+        p = nul + 1;
+        break;
+    }
+    // Strings this parser has no section for, and references to other
+    // units or files, are skipped.
+    case DW5_FORM_line_strp:
+    case DW5_FORM_strp_sup:
+    case DW5_FORM_ref_sup4:
+        p += 4;
+        break;
+    case DW5_FORM_ref8:
+    case DW5_FORM_ref_sig8:
+    case DW5_FORM_ref_sup8:
+        p += 8;
+        break;
+    case DW5_FORM_data16:
+        p += 16;
+        break;
+    case DW5_FORM_ref_udata:
+        val.unsigned_val = readULEB128(p, end);
+        break;
+    case DW5_FORM_addrx1: p += 1; break;
+    case DW5_FORM_addrx2: p += 2; break;
+    case DW5_FORM_addrx3: p += 3; break;
+    case DW5_FORM_addrx4: p += 4; break;
+    case DW5_FORM_block2:
+    case DW5_FORM_block4:
+    case DW5_FORM_block: {
+        uint64_t len = 0;
+        if (form == DW5_FORM_block2 && p + 2 <= end) { uint16_t v; std::memcpy(&v, p, 2); len = v; p += 2; }
+        else if (form == DW5_FORM_block4 && p + 4 <= end) { uint32_t v; std::memcpy(&v, p, 4); len = v; p += 4; }
+        else if (form == DW5_FORM_block) len = readULEB128(p, end);
+        if (p + len <= end) val.block_val.assign(p, p + len);
+        p += len;
+        break;
+    }
     case DW5_FORM_exprloc: {
         uint64_t len = readULEB128(p, end);
         if (p + len <= end) {
