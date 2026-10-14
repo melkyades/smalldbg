@@ -184,6 +184,26 @@ int PtracePlatformMac::ptraceContinue(int pid) {
     return result;
 }
 
+// Hardware single-step is only used by the ARM64 watchpoints for now.
+#if defined(__arm64__) || defined(__aarch64__)
+namespace {
+
+// Makes `thread` trap after its next instruction, or stop doing so.
+kern_return_t setSingleStep(mach_port_t thread, bool on) {
+    arm_debug_state64_t state{};
+    mach_msg_type_number_t count = ARM_DEBUG_STATE64_COUNT;
+    kern_return_t kr = thread_get_state(thread, ARM_DEBUG_STATE64,
+                                        reinterpret_cast<thread_state_t>(&state), &count);
+    if (kr != KERN_SUCCESS) return kr;
+    if (on) state.__mdscr_el1 |= 1;  // MDSCR_EL1.SS
+    else state.__mdscr_el1 &= ~uint64_t(1);
+    return thread_set_state(thread, ARM_DEBUG_STATE64,
+                            reinterpret_cast<thread_state_t>(&state), count);
+}
+
+} // namespace
+#endif
+
 int PtracePlatformMac::ptraceStep(int pid, ThreadId thread) {
     (void)thread;  // steps the process, as it always has
     int result = ptrace(PT_STEP, pid, reinterpret_cast<caddr_t>(1), 0);
@@ -951,21 +971,15 @@ void PtracePlatformMac::exceptionServerLoop() {
                     }
                 }
 
-                // Disable watchpoint AND set single-step bits.
+                // Disable the watchpoint and step the thread over the store.
                 arm_debug_state64_t dbg{};
                 mach_msg_type_number_t dcnt = ARM_DEBUG_STATE64_COUNT;
                 thread_get_state(thr, ARM_DEBUG_STATE64,
                                  (thread_state_t)&dbg, &dcnt);
                 dbg.__wcr[0] = 0;
-                dbg.__mdscr_el1 |= 0x1; // SS
                 thread_set_state(thr, ARM_DEBUG_STATE64,
                                  (thread_state_t)&dbg, dcnt);
-                // Also set PSTATE.SS (bit 21 of CPSR) so the kernel
-                // single-steps after this exception is dismissed.
-                ts.__cpsr |= (1u << 21);
-                tcnt = ARM_THREAD_STATE64_COUNT;
-                thread_set_state(thr, ARM_THREAD_STATE64,
-                                 (thread_state_t)&ts, tcnt);
+                setSingleStep(thr, true);
                 steppingThreads_.insert(thr);
                 resumeAfter(msg);
                 continue;
@@ -990,27 +1004,18 @@ void PtracePlatformMac::exceptionServerLoop() {
                 "(watch)   post-store value=0x%llx",
                 (unsigned long long)curValue);
             doLog(buf);
-            // Clear single-step bits AND re-arm watchpoint.
+            setSingleStep(thr, false);
+            // Re-arm the watchpoint.
             arm_debug_state64_t dbg{};
             mach_msg_type_number_t dcnt = ARM_DEBUG_STATE64_COUNT;
             thread_get_state(thr, ARM_DEBUG_STATE64,
                              (thread_state_t)&dbg, &dcnt);
-            dbg.__mdscr_el1 &= ~uint64_t(0x1);
             if (watchAddrLive_) {
                 dbg.__wvr[0] = watchAddrLive_;
                 dbg.__wcr[0] = 0x1 | (0x2 << 1) | (0x2 << 3) | (0xFF << 5);
             }
             thread_set_state(thr, ARM_DEBUG_STATE64,
                              (thread_state_t)&dbg, dcnt);
-            // Clear PSTATE.SS too.
-            arm_thread_state64_t ts{};
-            mach_msg_type_number_t tcnt = ARM_THREAD_STATE64_COUNT;
-            thread_get_state(thr, ARM_THREAD_STATE64,
-                             (thread_state_t)&ts, &tcnt);
-            ts.__cpsr &= ~uint32_t(1u << 21);
-            tcnt = ARM_THREAD_STATE64_COUNT;
-            thread_set_state(thr, ARM_THREAD_STATE64,
-                             (thread_state_t)&ts, tcnt);
             // Match check.
             bool stop = (watchMatchLive_ != 0) &&
                         ((curValue & watchMaskLive_) == watchMatchLive_);
