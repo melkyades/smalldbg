@@ -267,6 +267,10 @@ Status Debugger::readMemory(Address address, void *outBuf, size_t size) const {
     return backend->readMemory(address, outBuf, size);
 }
 
+std::pair<Address, Address> Debugger::allocationContaining(Address address) const {
+    return backend->allocationContaining(address);
+}
+
 std::vector<ModuleSection> Debugger::moduleSections(const ModuleInfo& module) const {
     auto read = [this](uint64_t address, void* out, size_t size) {
         return readMemory(address, out, size) == Status::Ok;

@@ -320,6 +320,11 @@ Status PtraceBackend::writeMemory(Address address, const void *data, size_t size
     return platform->writeMemory(address, data, size);
 }
 
+std::pair<Address, Address> PtraceBackend::allocationContaining(Address address) const {
+    if (!attached) return {0, 0};
+    return platform->allocationContaining(address);
+}
+
 // ---------------------------------------------------------------------------
 // Register access — delegate to platform
 // ---------------------------------------------------------------------------

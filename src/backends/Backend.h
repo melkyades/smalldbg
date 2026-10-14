@@ -74,6 +74,8 @@ public:
                                  uint64_t /*mask*/) { return Status::NotSupported; }
 
     virtual Status readMemory(Address address, void *outBuf, size_t size) const = 0;
+    // The allocation holding `address`; see Debugger::allocationContaining.
+    virtual std::pair<Address, Address> allocationContaining(Address) const { return {0, 0}; }
     virtual Status writeMemory(Address address, const void *data, size_t size) = 0;
     virtual Status getRegisters(Thread* thread, Registers &out) const = 0;
     

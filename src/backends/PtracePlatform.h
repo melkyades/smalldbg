@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace smalldbg {
 
@@ -67,6 +68,8 @@ public:
     // -- Memory --
     virtual Status readMemory(Address addr, void* buf, size_t size) const = 0;
     virtual Status writeMemory(Address addr, const void* data, size_t size) = 0;
+    // The allocation holding `addr`, or {0, 0} when the platform cannot tell.
+    virtual std::pair<Address, Address> allocationContaining(Address) const { return {0, 0}; }
 
     // -- Registers --
     virtual Status getThreadRegisters(ThreadId tid, const Arch* arch, Registers& out) const = 0;

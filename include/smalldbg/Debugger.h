@@ -167,6 +167,11 @@ public:
      *  its code and data. Returns none when the headers cannot be read. **/
     std::vector<ModuleSection> moduleSections(const ModuleInfo& module) const;
 
+    /** Returns the allocation holding `address`, as [start, end): the
+     *  stretch of mapped memory around it that was reserved as one. Returns
+     *  {0, 0} when nothing is mapped there or the backend cannot tell. **/
+    std::pair<Address, Address> allocationContaining(Address address) const;
+
     // accessors provided by the backend implementation
     Status readMemory(Address address, void *outBuf, size_t size) const;
     Status writeMemory(Address address, const void *data, size_t size);
