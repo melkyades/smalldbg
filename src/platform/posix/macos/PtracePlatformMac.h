@@ -86,11 +86,15 @@ private:
     std::deque<HeldException> held;
     std::condition_variable exceptionCv;
     ThreadId lastStopThread{0};
+    // Threads whose fault was answered by letting the kernel raise its
+    // signal: that signal is the program's to handle, not another stop.
+    std::set<ThreadId> deliverNextSignal;
 
     Status startExceptionServer();
     void stopExceptionServer();
     void exceptionServerLoop();
     void receiveException(const MachExceptionMessage& msg);
+    bool passesThrough(const HeldException& exception);
     void hold(const HeldException& exception);
     int takeStop();
     void resumeHeld();

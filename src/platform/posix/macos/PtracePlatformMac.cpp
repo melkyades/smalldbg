@@ -256,6 +256,7 @@ void PtracePlatformMac::releaseProcess() {
     resumeHeld();
     stopExceptionServer();
     lastStopThread = 0;
+    deliverNextSignal.clear();
 
     for (auto port : cachedThreadPorts)
         mach_port_deallocate(mach_task_self(), port);
@@ -648,8 +649,11 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 //     for the SIGTRAP and SIGSTOP the debugger caused, the signal itself for
 //     any other, which is the program's;
 //   - a fault is answered with KERN_FAILURE, so the kernel raises the signal
-//     the program would have got without a debugger;
+//     the program would have got without a debugger, which then passes
+//     through to it;
 //   - anything else is answered with KERN_SUCCESS and the thread goes on.
+// Signals a program takes in its stride, such as SIGCHLD or SIGALRM, pass
+// through as they arrive and never stop the target.
 
 // The mach_exception_raise message (EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES)
 // as the kernel lays it out: the codes follow the count with no padding, so
@@ -673,6 +677,18 @@ namespace {
 // Signals the debugger causes itself, which the program never gets.
 bool isDebuggerSignal(int signal) {
     return signal == SIGTRAP || signal == SIGSTOP;
+}
+
+// Signals a program takes in its stride: they reach it without stopping it.
+bool isRoutineSignal(int signal) {
+    switch (signal) {
+        case SIGCHLD: case SIGWINCH: case SIGURG: case SIGALRM: case SIGVTALRM:
+        case SIGPROF: case SIGIO: case SIGINFO: case SIGPIPE: case SIGUSR1:
+        case SIGUSR2: case SIGCONT:
+            return true;
+        default:
+            return false;
+    }
 }
 
 bool isSignal(int exception, int64_t code) {
@@ -809,6 +825,7 @@ void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
     exception.code = msg.codeCnt > 0 ? msg.code[0] : 0;
     exception.subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
     mach_port_deallocate(mach_task_self(), msg.task.name);
+    if (passesThrough(exception)) return;
     if (handleWatchpointException(exception)) return;
 
     // Suspend the target so it stays paused for the debugger to inspect.
@@ -825,6 +842,20 @@ void PtracePlatformMac::hold(const HeldException& exception) {
         held.push_back(exception);
     }
     exceptionCv.notify_all();
+}
+
+// A routine signal, or the one a fault the debugger let go of raises, goes
+// straight to the program.
+bool PtracePlatformMac::passesThrough(const HeldException& exception) {
+    if (!isSignal(exception.exception, exception.code)) return false;
+    int signal = static_cast<int>(exception.subcode);
+    bool faultSignal = deliverNextSignal.erase(exception.thread) > 0;
+    if (!faultSignal && !isRoutineSignal(signal)) return false;
+
+    ptrace(PT_THUPDATE, targetPid,
+           reinterpret_cast<caddr_t>(static_cast<uintptr_t>(exception.thread)), signal);
+    answer(exception, KERN_SUCCESS);
+    return true;
 }
 
 // Reports the first stop not reported yet, as the signal it stands for, or
@@ -879,7 +910,9 @@ void PtracePlatformMac::resumeHeld() {
                    reinterpret_cast<caddr_t>(static_cast<uintptr_t>(exception.thread)),
                    delivered);
         }
-        answer(exception, isFault(exception.exception) ? KERN_FAILURE : KERN_SUCCESS);
+        bool fault = isFault(exception.exception);
+        if (fault) deliverNextSignal.insert(exception.thread);
+        answer(exception, fault ? KERN_FAILURE : KERN_SUCCESS);
         if (taskPort != MACH_PORT_NULL) task_resume(taskPort);
     }
 }
