@@ -79,7 +79,8 @@ int PtracePlatformMac::ptraceTraceMe() {
 // A launch spawns the target suspended at its first instruction
 // (POSIX_SPAWN_START_SUSPENDED), takes its ports, attaches and lets it go: its
 // first stop is the SIGSTOP of the suspended spawn, before any of its code
-// runs.
+// runs. An attach takes the ports of the running target and attaches: its
+// first stop is the SIGSTOP attaching sends.
 
 int PtracePlatformMac::spawnStopped(const std::string& path,
                                     const std::vector<std::string>& args,
@@ -162,6 +163,19 @@ int PtracePlatformMac::spawnStopped(const std::string& path,
         return -1;
     }
     return static_cast<int>(child);
+}
+
+int PtracePlatformMac::attachStopped(int pid) {
+    int status = 0;
+    bool attachedStopped = acquireProcess(pid) == Status::Ok
+        && ptraceAttach(pid) == 0
+        && waitForStop(pid, 5000, status) == SIGSTOP;
+    if (attachedStopped) return 0;
+
+    doLog("(ptrace) pid " + std::to_string(pid) + " did not stop after attach");
+    ptraceDetach(pid);
+    releaseProcess();
+    return -1;
 }
 
 int PtracePlatformMac::ptraceAttach(int pid) {
@@ -707,8 +721,8 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 // Every stop of the target reaches the debugger here, as a Mach exception
 // message on a port the server owns and the target's exception ports point
 // at: a breakpoint or a single step (EXC_BREAKPOINT), a signal, including the
-// SIGSTOP of a suspend (EXC_SOFTWARE / EXC_SOFT_SIGNAL, which PT_ATTACHEXC
-// turns signals into), and a fault (EXC_BAD_ACCESS and the like).
+// SIGSTOP of a suspend or an attach (EXC_SOFTWARE / EXC_SOFT_SIGNAL, which
+// PT_ATTACHEXC turns signals into), and a fault (EXC_BAD_ACCESS and the like).
 //
 // The thread that raised it waits for the answer, so the server suspends the
 // task and holds the message unanswered: the target stays where it stopped

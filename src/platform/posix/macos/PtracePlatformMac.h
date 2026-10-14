@@ -38,6 +38,7 @@ public:
                      const std::vector<std::string>& args,
                      const std::string& workingDir) override;
 
+    int attachStopped(int pid) override;
     int waitForStop(int pid, int timeoutMs, int& status) override;
     ThreadId stoppedThread() const override { return lastStopThread; }
 
