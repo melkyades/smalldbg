@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <cxxabi.h>
 
 namespace smalldbg {
