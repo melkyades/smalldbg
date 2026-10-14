@@ -23,6 +23,8 @@ public:
                          Address loadAddress) override;
     bool readLoadedExtent(const smalldbg_internal::MemoryReader& read,
                           Address loadAddress, ModuleSymbols& out) override;
+    bool parseLoadedSymbols(const smalldbg_internal::MemoryReader& read,
+                            Address loadAddress, ModuleSymbols& out) override;
 
 private:
     // Parse a single 64-bit Mach-O image at the given base pointer.
@@ -34,6 +36,10 @@ private:
                                   const char* strtab, uint32_t strsize,
                                   int64_t slide,
                                   std::vector<ResolvedSymbol>& symbols);
+    static void processLoadedEntry(const struct nlist_64& nl,
+                                   smalldbg_internal::StringTable& strings,
+                                   int64_t slide,
+                                   std::vector<ResolvedSymbol>& symbols);
     static bool definesSymbol(const struct nlist_64& nl);
     static void addSymbol(const char* name, Address address,
                           std::vector<ResolvedSymbol>& symbols);
@@ -82,6 +88,15 @@ void MachOParser::processNlistEntry(const struct nlist_64& nl,
     uint32_t strIdx = nl.n_un.n_strx;
     if (strIdx >= strsize) return;
     addSymbol(strtab + strIdx, nl.n_value + slide, symbols);
+}
+
+void MachOParser::processLoadedEntry(const struct nlist_64& nl,
+                                     smalldbg_internal::StringTable& strings,
+                                     int64_t slide,
+                                     std::vector<ResolvedSymbol>& symbols) {
+    if (!definesSymbol(nl)) return;
+    std::string name = strings.at(nl.n_un.n_strx);
+    addSymbol(name.c_str(), nl.n_value + slide, symbols);
 }
 
 void MachOParser::finishSymbols(ModuleSymbols& out) {
@@ -199,6 +214,24 @@ bool MachOParser::readLoadedExtent(const smalldbg_internal::MemoryReader& read,
     smalldbg_internal::LoadedMachO image;
     if (!smalldbg_internal::readLoadedMachO(read, loadAddress, image)) return false;
     out.textEnd = image.textEnd;
+    return true;
+}
+
+bool MachOParser::parseLoadedSymbols(const smalldbg_internal::MemoryReader& read,
+                                     Address loadAddress, ModuleSymbols& out) {
+    smalldbg_internal::LoadedMachO image;
+    if (!smalldbg_internal::readLoadedMachO(read, loadAddress, image)) return false;
+    out.textEnd = image.textEnd;
+    if (!image.hasSymbols) return true;
+
+    std::vector<struct nlist_64> nlists(image.symbolCount);
+    if (!read(image.symbols, nlists.data(), nlists.size() * sizeof(struct nlist_64)))
+        return false;
+    smalldbg_internal::StringTable strings(read, image.strings, image.stringsSize);
+    out.symbols.reserve(nlists.size() / 2);
+    for (const auto& nl : nlists)
+        processLoadedEntry(nl, strings, image.slide, out.symbols);
+    finishSymbols(out);
     return true;
 }
 
