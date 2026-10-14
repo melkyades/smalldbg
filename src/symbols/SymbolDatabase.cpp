@@ -1,4 +1,5 @@
 #include "smalldbg/symbols/SymbolDatabase.h"
+#include "Glob.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,23 +22,6 @@ bool isBetterThan(const SymbolicInfo& candidate, const SymbolicInfo& current) {
         return candidate.size < current.size;
     }
     return candidate.start > current.start;
-}
-
-bool globMatches(const char* pattern, const char* text) {
-    for (; *pattern; ++pattern, ++text) {
-        if (*pattern == '*') {
-            for (const char* rest = text;; ++rest) {
-                if (globMatches(pattern + 1, rest)) return true;
-                if (!*rest) return false;
-            }
-        }
-        if (!*text) return false;
-        if (*pattern != '?'
-            && std::tolower(static_cast<unsigned char>(*pattern))
-               != std::tolower(static_cast<unsigned char>(*text)))
-            return false;
-    }
-    return !*text;
 }
 
 } // namespace
