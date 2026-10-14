@@ -928,48 +928,7 @@ void PtracePlatformMac::exceptionServerLoop() {
                 // yet (HW watchpoint fires synchronously before the store
                 // completes). Don't try to read the post-write value here
                 // — read it in Phase B after the step.
-                arm_thread_state64_t ts{};
-                mach_msg_type_number_t tcnt = ARM_THREAD_STATE64_COUNT;
-                thread_get_state(thr, ARM_THREAD_STATE64,
-                                 (thread_state_t)&ts, &tcnt);
-                static int hitCount = 0;
-                hitCount++;
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "(watch) hit #%d pc=0x%llx lr=0x%llx fp=0x%llx sp=0x%llx (pre-store)",
-                    hitCount,
-                    (unsigned long long)ts.__pc,
-                    (unsigned long long)ts.__lr,
-                    (unsigned long long)ts.__fp,
-                    (unsigned long long)ts.__sp);
-                doLog(buf);
-                // Walk the ARM64 frame chain to give us a 6-deep backtrace.
-                // Each frame on AArch64: [x29 (prev FP)][LR]. We read the
-                // child's task memory directly via mach_vm_read since this
-                // thread is suspended in the exception.
-                {
-                    uint64_t fp = ts.__fp;
-                    for (int depth = 0; depth < 6 && fp != 0; depth++) {
-                        struct { uint64_t prevFp; uint64_t savedLr; } frame{};
-                        vm_size_t got = 0;
-                        vm_offset_t data = 0;
-                        kern_return_t rk = mach_vm_read(taskPort, fp,
-                                                        sizeof(frame), &data,
-                                                        (mach_msg_type_number_t*)&got);
-                        if (rk != KERN_SUCCESS || got < sizeof(frame)) break;
-                        frame = *(decltype(frame)*)data;
-                        vm_deallocate(mach_task_self(), data, got);
-                        char fbuf[160];
-                        snprintf(fbuf, sizeof(fbuf),
-                            "(watch)   frame[%d] fp=0x%llx lr=0x%llx",
-                            depth, (unsigned long long)fp,
-                            (unsigned long long)frame.savedLr);
-                        doLog(fbuf);
-                        // Sanity: stop if frame doesn't grow upward sensibly.
-                        if (frame.prevFp <= fp) break;
-                        fp = frame.prevFp;
-                    }
-                }
+                logWatchpointHit(thr);
 
                 // Disable the watchpoint and step the thread over the store.
                 arm_debug_state64_t dbg{};
@@ -1032,6 +991,37 @@ void PtracePlatformMac::exceptionServerLoop() {
         // Backend polls pollAsyncException() to surface this as a normal
         // Exception stop the rest of the debugger machinery handles.
     }
+}
+
+// Logs where a watchpoint hit happened, with the frames above it.
+void PtracePlatformMac::logWatchpointHit(mach_port_t thread) {
+#if defined(__arm64__) || defined(__aarch64__)
+    arm_thread_state64_t state{};
+    mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+    thread_get_state(thread, ARM_THREAD_STATE64, (thread_state_t)&state, &count);
+    char line[160];
+    snprintf(line, sizeof(line),
+             "(watch) hit pc=0x%llx lr=0x%llx fp=0x%llx sp=0x%llx (pre-store)",
+             (unsigned long long)arm_thread_state64_get_pc(state),
+             (unsigned long long)arm_thread_state64_get_lr(state),
+             (unsigned long long)arm_thread_state64_get_fp(state),
+             (unsigned long long)arm_thread_state64_get_sp(state));
+    doLog(line);
+
+    // Each AArch64 frame record is [previous fp][return address].
+    uint64_t fp = arm_thread_state64_get_fp(state);
+    for (int depth = 0; depth < 6 && fp != 0; depth++) {
+        uint64_t record[2] = {0, 0};
+        if (readMemory(fp, record, sizeof record) != Status::Ok) break;
+        snprintf(line, sizeof(line), "(watch)   frame[%d] fp=0x%llx lr=0x%llx",
+                 depth, (unsigned long long)fp, (unsigned long long)record[1]);
+        doLog(line);
+        if (record[0] <= fp) break;
+        fp = record[0];
+    }
+#else
+    (void)thread;
+#endif
 }
 
 // ARM64 HW watchpoint installer.

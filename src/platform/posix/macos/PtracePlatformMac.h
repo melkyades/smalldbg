@@ -92,6 +92,7 @@ private:
     void stopExceptionServer();
     void exceptionServerLoop();
     void resumeAfter(const MachExceptionMessage& msg);
+    void logWatchpointHit(mach_port_t thread);
 
     // HW watchpoint helpers (ARM64). installWatchpointAllThreads sets a
     // write watchpoint on `addr` (must be 8-byte aligned) on every
