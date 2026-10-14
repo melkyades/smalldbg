@@ -696,6 +696,20 @@ struct MachExceptionMessage {
 #pragma pack(pop)
 
 namespace {
+
+const char* exceptionName(int exception) {
+    switch (exception) {
+        case EXC_BAD_ACCESS:      return "EXC_BAD_ACCESS";
+        case EXC_BAD_INSTRUCTION: return "EXC_BAD_INSTRUCTION";
+        case EXC_ARITHMETIC:      return "EXC_ARITHMETIC";
+        case EXC_SOFTWARE:        return "EXC_SOFTWARE";
+        case EXC_BREAKPOINT:      return "EXC_BREAKPOINT";
+        case EXC_CRASH:           return "EXC_CRASH";
+        case EXC_GUARD:           return "EXC_GUARD";
+        default:                  return "EXC_?";
+    }
+}
+
 struct MachExceptionRaiseReply {
     mach_msg_header_t header;
     NDR_record_t NDR;
@@ -821,77 +835,12 @@ void PtracePlatformMac::exceptionServerLoop() {
             pending_.subcode   = subcode;
             pending_.thread    = msg.thread.name;
         }
-        // Surface a one-liner so the user sees the precise fault even when
-        // the backend's downstream signal-stop handler reports only "signal N".
-        const char* name = "EXC_?";
-        switch (msg.exception) {
-            case EXC_BAD_ACCESS:      name = "EXC_BAD_ACCESS";      break;
-            case EXC_BAD_INSTRUCTION: name = "EXC_BAD_INSTRUCTION"; break;
-            case EXC_ARITHMETIC:      name = "EXC_ARITHMETIC";      break;
-            case EXC_CRASH:           name = "EXC_CRASH";           break;
-            case EXC_GUARD:           name = "EXC_GUARD";           break;
-            case EXC_BREAKPOINT:      name = "EXC_BREAKPOINT (watchpoint)"; break;
-        }
         char buf[256];
         snprintf(buf, sizeof(buf),
                  "(mach) caught %s code=0x%lx subcode=0x%lx thread=0x%llx",
-                 name, pending_.code, pending_.subcode,
+                 exceptionName(msg.exception), pending_.code, pending_.subcode,
                  (unsigned long long)pending_.thread);
         doLog(buf);
-
-#if defined(__arm64__) || defined(__aarch64__)
-        // Dump the faulting thread's ARM64 register state so we can identify
-        // which object/slot is bad without needing the backend's downstream
-        // getRegisters to work (it doesn't, because SIGSTOP isn't the
-        // "expected" stop reason the backend was built for).
-        arm_thread_state64_t state{};
-        mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
-        kern_return_t gkr = thread_get_state(msg.thread.name,
-                                             ARM_THREAD_STATE64,
-                                             (thread_state_t)&state, &cnt);
-        if (gkr == KERN_SUCCESS) {
-            // Emit each line separately so doLog doesn't truncate at first \n.
-            char rb[256];
-            snprintf(rb, sizeof(rb), "(mach) pc=0x%llx lr=0x%llx fp=0x%llx sp=0x%llx",
-                (unsigned long long)state.__pc, (unsigned long long)state.__lr,
-                (unsigned long long)state.__fp, (unsigned long long)state.__sp);
-            doLog(rb);
-            for (int i = 0; i < 29; i += 4) {
-                snprintf(rb, sizeof(rb),
-                    "(mach) x%d=0x%llx x%d=0x%llx x%d=0x%llx x%d=0x%llx",
-                    i,   (unsigned long long)state.__x[i],
-                    i+1, (unsigned long long)state.__x[i+1],
-                    i+2, (unsigned long long)state.__x[i+2],
-                    i+3, (unsigned long long)state.__x[i+3]);
-                doLog(rb);
-            }
-            // Try to dump 64 bytes at x0 (typical 'this' / first arg).
-            // The faulting address (subcode/code depending on cpu) is what
-            // we *can't* read; dumping x0 helps identify which slot value
-            // is stale when the crash is reading the header of `*x0`.
-        } else {
-            doLog("(mach) thread_get_state failed: " +
-                  std::string(mach_error_string(gkr)));
-        }
-#else
-        // The x86_64 equivalent: where the thread is and its frame.
-        x86_thread_state64_t state{};
-        mach_msg_type_number_t cnt = x86_THREAD_STATE64_COUNT;
-        kern_return_t gkr = thread_get_state(msg.thread.name,
-                                             x86_THREAD_STATE64,
-                                             (thread_state_t)&state, &cnt);
-        if (gkr == KERN_SUCCESS) {
-            char rb[256];
-            snprintf(rb, sizeof(rb), "(mach) rip=0x%llx rsp=0x%llx rbp=0x%llx rax=0x%llx rdi=0x%llx",
-                (unsigned long long)state.__rip, (unsigned long long)state.__rsp,
-                (unsigned long long)state.__rbp, (unsigned long long)state.__rax,
-                (unsigned long long)state.__rdi);
-            doLog(rb);
-        } else {
-            doLog("(mach) thread_get_state failed: " +
-                  std::string(mach_error_string(gkr)));
-        }
-#endif
 
         // Hardware watchpoints are only implemented for ARM64.
 #if defined(__arm64__) || defined(__aarch64__)
