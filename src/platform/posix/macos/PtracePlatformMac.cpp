@@ -22,6 +22,9 @@
 #include <mach/mach_vm.h>
 #include <mach/exception_types.h>
 #include <mach/task.h>
+#include <mach-o/dyld_images.h>
+#include <mach-o/loader.h>
+#include <libproc.h>
 #include <optional>
 
 namespace smalldbg {
@@ -458,7 +461,7 @@ std::vector<ModuleInfo> PtracePlatformMac::enumerateModules() const {
     if (kr != KERN_SUCCESS) return modules;
 
     Address infosAddr = dyldInfo.all_image_info_addr;
-    if (infosAddr == 0) return modules;
+    if (infosAddr == 0) return modulesMappedByKernel();
 
     // Read version and infoArrayCount from dyld_all_image_infos.
     // Layout: uint32_t version, uint32_t infoArrayCount, uintptr_t infoArray
@@ -468,7 +471,8 @@ std::vector<ModuleInfo> PtracePlatformMac::enumerateModules() const {
     if (readMemory(infosAddr + 4, &imageCount, 4) != Status::Ok) return modules;
     if (readMemory(infosAddr + 8, &infoArrayPtr, 8) != Status::Ok) return modules;
 
-    if (imageCount == 0 || imageCount > 10000 || infoArrayPtr == 0) return modules;
+    if (imageCount == 0 || infoArrayPtr == 0) return modulesMappedByKernel();
+    if (imageCount > 10000) return modules;
 
     // Each dyld_image_info is: { const mach_header* imageLoadAddress,
     //                            const char* imageFilePath,
@@ -477,7 +481,58 @@ std::vector<ModuleInfo> PtracePlatformMac::enumerateModules() const {
     for (uint32_t i = 0; i < imageCount; i++) {
         readModuleEntry(modules, infoArrayPtr + i * 24);
     }
+
+    // dyld does not list itself, and every thread starts in it.
+    uint64_t dyldBase = 0;
+    if (readMemory(infosAddr + offsetof(dyld_all_image_infos, dyldImageLoadAddress),
+                   &dyldBase, sizeof dyldBase) == Status::Ok && dyldBase != 0) {
+        ModuleInfo dyld;
+        dyld.path = "/usr/lib/dyld";
+        dyld.loadAddress = dyldBase;
+        modules.push_back(std::move(dyld));
+    }
     return modules;
+}
+
+// Before dyld has run its image list is empty, and the modules there are
+// are the two the kernel mapped: the executable and dyld itself. They are
+// found by their Mach-O headers, at the start of a region.
+std::vector<ModuleInfo> PtracePlatformMac::modulesMappedByKernel() const {
+    std::vector<ModuleInfo> modules;
+    mach_vm_address_t address = 0;
+    while (true) {
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        if (mach_vm_region(taskPort, &address, &size, VM_REGION_BASIC_INFO_64,
+                           reinterpret_cast<vm_region_info_t>(&info), &count,
+                           &object) != KERN_SUCCESS)
+            break;
+        addKernelMappedModule(modules, address);
+        address += size;
+    }
+    return modules;
+}
+
+void PtracePlatformMac::addKernelMappedModule(std::vector<ModuleInfo>& modules,
+                                              Address address) const {
+    mach_header_64 header{};
+    if (readMemory(address, &header, sizeof header) != Status::Ok) return;
+    if (header.magic != MH_MAGIC_64) return;
+
+    ModuleInfo mod;
+    mod.loadAddress = address;
+    if (header.filetype == MH_EXECUTE) {
+        char path[PROC_PIDPATHINFO_MAXSIZE]{};
+        if (proc_pidpath(targetPid, path, sizeof path) <= 0) return;
+        mod.path = path;
+        // First, as dyld lists it once it has run.
+        modules.insert(modules.begin(), std::move(mod));
+    } else if (header.filetype == MH_DYLINKER) {
+        mod.path = "/usr/lib/dyld";
+        modules.push_back(std::move(mod));
+    }
 }
 
 void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,

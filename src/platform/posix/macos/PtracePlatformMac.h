@@ -65,6 +65,8 @@ private:
 
     // Read one dyld_image_info entry and append to modules
     void readModuleEntry(std::vector<ModuleInfo>& modules, Address entryAddr) const;
+    std::vector<ModuleInfo> modulesMappedByKernel() const;
+    void addKernelMappedModule(std::vector<ModuleInfo>& modules, Address address) const;
 
     // Mach exception server state.
     mach_port_t exceptionPort{MACH_PORT_NULL};
