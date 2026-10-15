@@ -6,6 +6,7 @@
 #include "smalldbg/Thread.h"
 #include "smalldbg/symbols/SymbolProvider.h"
 
+#include <algorithm>
 #include <iostream>
 
 namespace vmdbg {
@@ -259,6 +260,95 @@ bool VMSession::reverseResume() {
     afterTargetStops();
     return ran;
 }
+
+// How many screen updates in a row may show the same picture before the
+// search for a different one gives up.
+static constexpr int kMaxSameFrames = 64;
+
+std::vector<uint64_t> VMSession::screenUpdateAddresses() const {
+    std::vector<uint64_t> addresses;
+    auto* provider = debugger().getSymbolProvider();
+    for (const std::string& name : screenUpdateFunctions())
+        if (auto symbol = provider->getSymbolByName(name))
+            addresses.push_back(symbol->address);
+    return addresses;
+}
+
+// The breakpoints live only for the run, like the one runTo sets, and one the
+// user already has at an update function stays. Any other stop, such as the
+// end of a replay, is not a screen update.
+bool VMSession::runToScreenUpdate(bool backwards, const std::vector<uint64_t>& addresses) {
+    const std::vector<uint64_t> added = addBreakpointsAt(addresses);
+    beforeTargetRuns();
+    const smalldbg::Status started = backwards ? debugger().reverseResume() : debugger().resume();
+    const bool stopped = started == smalldbg::Status::Ok
+        && debugger().waitForEvent(smalldbg::StopReason::None, kRunToTimeoutMs)
+           != smalldbg::StopReason::None;
+    afterTargetStops();
+    for (uint64_t address : added) debugger().clearBreakpoint(address);
+    return stopped && atScreenUpdate(addresses);
+}
+
+static bool hasBreakpointAt(const std::vector<smalldbg::Breakpoint>& breakpoints,
+                            uint64_t address) {
+    return std::any_of(breakpoints.begin(), breakpoints.end(),
+                       [address](const smalldbg::Breakpoint& b) { return b.addr == address; });
+}
+
+std::vector<uint64_t> VMSession::addBreakpointsAt(const std::vector<uint64_t>& addresses) {
+    const std::vector<smalldbg::Breakpoint> existing = debugger().listBreakpoints();
+    std::vector<uint64_t> added;
+    for (uint64_t address : addresses)
+        if (!hasBreakpointAt(existing, address)
+            && debugger().setBreakpoint(address, "screen update") == smalldbg::Status::Ok)
+            added.push_back(address);
+    return added;
+}
+
+// The VM calls these once a frame is drawn, so the target stops with the
+// framebuffer whole rather than half drawn. A VM puts its screen in the window
+// more often than the picture changes, such as once per changed rectangle, so
+// updates that show the picture the target started on are passed over.
+bool VMSession::runToFrame(bool backwards) {
+    const std::vector<uint64_t> addresses = screenUpdateAddresses();
+    if (addresses.empty()) return false;
+
+    const std::optional<Framebuffer> start = inspector().framebuffer();
+    bool reached = false;
+    for (int run = 0; run < kMaxSameFrames; run++) {
+        reached = runToScreenUpdate(backwards, addresses);
+        if (!reached || !start) break;
+        const std::optional<Framebuffer> now = inspector().framebuffer();
+        if (!now || now->pixels != start->pixels) break;
+    }
+    return reached;
+}
+
+// Between two screen updates the framebuffer may hold a picture being drawn,
+// such as the background a redraw clears to before drawing over it. What the
+// screen showed then is what the VM last put in its window, so a replay is run
+// back to that update, read there, and returned to where it was.
+std::optional<Framebuffer> VMSession::shownFramebuffer() {
+    const std::vector<uint64_t> addresses = screenUpdateAddresses();
+    const std::optional<smalldbg::TracePosition> here = debugger().tracePosition();
+    if (!here || addresses.empty() || atScreenUpdate(addresses)) return inspector().framebuffer();
+
+    std::optional<Framebuffer> shown;
+    if (runToScreenUpdate(true, addresses)) shown = inspector().framebuffer();
+    seekTrace(*here);
+    return shown ? shown : inspector().framebuffer();
+}
+
+bool VMSession::atScreenUpdate(const std::vector<uint64_t>& addresses) const {
+    auto thread = debugger().getCurrentThread();
+    if (!thread) return false;
+    const uint64_t ip = thread->getInstructionPointer();
+    return std::find(addresses.begin(), addresses.end(), ip) != addresses.end();
+}
+
+bool VMSession::runToNextFrame() { return runToFrame(false); }
+
+bool VMSession::reverseRunToPreviousFrame() { return runToFrame(true); }
 
 // A replay that moves runs nothing, so what was read from it is dropped
 // rather than prepared for a run.
