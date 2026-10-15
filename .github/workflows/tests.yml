@@ -98,7 +98,13 @@ jobs:
       # started, so the log shows where they wait.
       - name: Webside tests, with their stacks if they hang
         if: runner.os == 'macOS'
+        continue-on-error: true
         run: .github/watch.sh 180 build/webside/tests/webside_tests
+      # Root takes another process's task port without asking anyone, so
+      # this shows whether the hang is in the authorization of task_for_pid.
+      - name: Webside tests as root
+        if: runner.os == 'macOS'
+        run: sudo .github/watch.sh 180 build/webside/tests/webside_tests
       # Shared runners are too noisy for the timing budgets of the perf tests.
       - name: Test
         run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600

@@ -23,7 +23,14 @@ echo "::error::$1 was still running after ${limit}s; the stacks follow"
 for p in "$pid" $(pgrep -P "$pid"); do
     echo "=== process $p"
     ps -o pid,stat,command -p "$p"
-    sample "$p" 1 2>&1 | sed -n '/^Call graph:/,/^Total number in stack/p'
+    # sample takes the task port of the process too, so it runs as root,
+    # which needs no authorization, and is stopped if it waits anyway.
+    sudo -n perl -e 'alarm 30; exec @ARGV' sample "$p" 1 2>&1 \
+        | sed -n '/^Call graph:/,/^Total number in stack/p'
 done
+# What the daemons that grant task ports said while the command waited.
+sudo -n log show --last "$((limit + 30))s" --style compact \
+    --predicate 'process == "authd" OR process == "taskgated" OR process == "taskgated-helper"' \
+    2>&1 | tail -80
 kill -9 $(pgrep -P "$pid") "$pid" 2>/dev/null
 exit 1
