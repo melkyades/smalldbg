@@ -64,6 +64,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
+    # Without a limit a hung job runs for GitHub's six hours, and a hung
+    # macOS job did not stop when its run was cancelled.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
