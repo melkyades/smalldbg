@@ -70,6 +70,7 @@ else()
         )
     else()
         target_sources(smalldbg PRIVATE
+            src/platform/posix/linux/CallFrameInfo.cpp
             src/platform/posix/linux/PtracePlatformLinux.cpp
         )
     endif()
