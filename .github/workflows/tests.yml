@@ -95,21 +95,27 @@ jobs:
           sudo dsmemberutil flushcache
           dsmemberutil checkmembership -U "$(whoami)" -G admin
           dsmemberutil checkmembership -U "$(whoami)" -G _developer
-      # The webside tests hang on the macOS runners and nowhere else. This
-      # runs them on their own and, when they are still running after three
-      # minutes, prints the stacks of the test process and of the targets it
-      # started, so the log shows where they wait.
-      - name: Webside tests, with their stacks if they hang
-        if: runner.os == 'macOS'
-        continue-on-error: true
-        run: .github/watch.sh 180 build/webside/tests/webside_tests
       # Shared runners are too noisy for the timing budgets of the perf tests.
-      # On macOS the webside tests sometimes hang only here, so this step is
-      # watched too.
+      # On macOS the backend's log goes to stderr, which ctest shows for a
+      # failure.
       - name: Test
         run: >-
-          ${{ runner.os == 'macOS' && '.github/watch.sh 300' || '' }}
+          ${{ runner.os == 'macOS' && 'SMALLDBG_TEST_LOG=1' || '' }}
           ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
+      # On the macOS runners the targets the webside tests detach from do not
+      # run on to their exit, and ctest waits for them. This shows what each
+      # one is doing, then ends them so the job can finish.
+      - name: Targets the tests left behind
+        if: always() && runner.os == 'macOS'
+        run: |
+          for p in $(pgrep -x test_target); do
+            ps -o pid,ppid,stat,command -p "$p"
+            sudo -n perl -e 'alarm 60; exec @ARGV' spindump "$p" 1 -onlyTarget -stdout \
+              -noProcessingWhileSampling 2>&1 | sed -n '/^Process:/,$p' | head -60
+          done
+          sudo -n pkill -9 -x test_target || true
+          sleep 2
+          pgrep -lx test_target || echo "no test_target left"
       # The x64 live tests once more, against the 32-bit test_target. ctest
       # runs them in build-x64/tests, so the target's path is made absolute.
       # The backend's log goes to stderr, which ctest shows for a failure.
