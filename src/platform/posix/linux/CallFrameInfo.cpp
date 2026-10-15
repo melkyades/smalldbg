@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <elf.h>
+#include <iterator>
 #include <string>
 
 namespace smalldbg {
@@ -225,7 +226,85 @@ std::optional<CallFrameInfo::Row> CallFrameInfo::rowAt(uint64_t pc) const {
     Row row = initial;
     if (!runInstructions(d->instructions, *d, d->start, pc, initial, row))
         return std::nullopt;
+    row.returnRegister = d->returnRegister;
     return row;
+}
+
+namespace {
+
+// Returns the register with DWARF number `reg`, or null when there is none.
+uint64_t* dwarfRegister(Registers& regs, unsigned reg) {
+    if (regs.arch == X64::instance()) {
+        auto& x = regs.x64;
+        uint64_t* numbered[] = {&x.rax, &x.rdx, &x.rcx, &x.rbx, &x.rsi, &x.rdi,
+                                &x.rbp, &x.rsp, &x.r8, &x.r9, &x.r10, &x.r11,
+                                &x.r12, &x.r13, &x.r14, &x.r15, &x.rip};
+        return reg < std::size(numbered) ? numbered[reg] : nullptr;
+    }
+    if (regs.arch == ARM64::instance()) {
+        auto& a = regs.arm64;
+        uint64_t* numbered[] = {&a.x0, &a.x1, &a.x2, &a.x3, &a.x4, &a.x5, &a.x6,
+                                &a.x7, &a.x8, &a.x9, &a.x10, &a.x11, &a.x12,
+                                &a.x13, &a.x14, &a.x15, &a.x16, &a.x17, &a.x18,
+                                &a.x19, &a.x20, &a.x21, &a.x22, &a.x23, &a.x24,
+                                &a.x25, &a.x26, &a.x27, &a.x28, &a.x29_fp,
+                                &a.x30_lr, &a.sp};
+        return reg < std::size(numbered) ? numbered[reg] : nullptr;
+    }
+    return nullptr;
+}
+
+} // namespace
+
+// The return address of a frame that made a call points past the call, which
+// may be the last instruction of the function, so the frame is looked up one
+// byte before it.
+bool CallFrameInfo::recoverCaller(Registers& regs, bool innermost) const {
+    auto row = rowAt(innermost ? regs.ip() : regs.ip() - 1);
+    if (!row) return false;
+    const uint64_t* base = dwarfRegister(regs, row->cfaRegister);
+    if (!base) return false;
+    uint64_t cfa = *base + row->cfaOffset;
+    // The caller's stack pointer is not below this frame's, as the stack
+    // grows down. Rules that say otherwise are wrong, and following them
+    // could go round in circles. A leaf function may leave it as it is.
+    if (cfa < regs.sp()) return false;
+
+    Registers caller = regs;
+    for (unsigned reg = 0; reg < kRegisters; reg++) {
+        uint64_t* value = dwarfRegister(caller, reg);
+        if (!value) continue;
+        const Rule& rule = row->rules[reg];
+        switch (rule.kind) {
+        case Rule::SameValue:
+            break;
+        case Rule::Undefined:
+            if (reg == row->returnRegister) return false;
+            break;
+        case Rule::Offset:
+            if (!memory(cfa + rule.value, value, sizeof(*value))) return false;
+            break;
+        case Rule::ValOffset:
+            *value = cfa + rule.value;
+            break;
+        case Rule::InRegister: {
+            const uint64_t* from = dwarfRegister(regs, static_cast<unsigned>(rule.value));
+            if (!from) return false;
+            *value = *from;
+            break;
+        }
+        case Rule::Expression:
+            if (reg == row->returnRegister) return false;
+            break;
+        }
+    }
+
+    const uint64_t* returnAddress = dwarfRegister(caller, row->returnRegister);
+    if (!returnAddress || *returnAddress == 0) return false;
+    caller.setIp(*returnAddress);
+    caller.setSp(cfa);
+    regs = caller;
+    return true;
 }
 
 } // namespace smalldbg

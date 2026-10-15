@@ -53,6 +53,7 @@ public:
         unsigned cfaRegister{0};
         int64_t cfaOffset{0};
         std::array<Rule, kRegisters> rules{};
+        unsigned returnRegister{0};  // the column of the return address
     };
 
     /** Reads the search table of the ELF image loaded at `base`. Returns
@@ -70,6 +71,12 @@ public:
     /** Returns the rules at `pc`, or nothing when no FDE covers it, or the
      *  CFA there is given by a DWARF expression, which is not followed. **/
     std::optional<Row> rowAt(uint64_t pc) const;
+
+    /** Sets `regs` to the caller's registers, by the rules at their ip.
+     *  `innermost` says they are those of the frame the thread stopped in,
+     *  whose ip is not a return address. Returns false when the rules do not
+     *  say where the caller is, or say the stack ends here. **/
+    bool recoverCaller(Registers& regs, bool innermost) const;
 
 private:
     struct Entry {
