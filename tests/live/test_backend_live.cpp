@@ -448,9 +448,13 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
     // 30 recursions, plus break_here, main and whatever started the thread.
     CHECK(frames.size() > 30);
 
+    // ntdll's thread start is the outermost frame, but on 32-bit Windows
+    // without symbols it is not exported, so it has a wrong name. It calls
+    // kernel32's BaseThreadInitThunk, which is exported everywhere: the walk
+    // reached the thread start when it got past that frame.
     bool reachedThreadStart = false;
-    for (const auto& frame : frames)
-        if (frame->functionName.find("RtlUserThreadStart") != std::string::npos)
+    for (size_t i = 0; i + 1 < frames.size(); i++)
+        if (frames[i]->functionName.find("BaseThreadInitThunk") != std::string::npos)
             reachedThreadStart = true;
     CHECK(reachedThreadStart);
 
