@@ -79,11 +79,19 @@ jobs:
       - name: Build
         run: .github/build.sh build "${{ matrix.conan_arch }}" "${{ matrix.cmake_arch }}"
       # A macOS debugger can only take another process's task port when the
-      # machine allows debugging. Otherwise task_for_pid asks for a password,
-      # and on a runner it waits for one forever.
+      # machine allows debugging and its user is an admin or a developer.
+      # Otherwise task_for_pid asks for a password, and on a runner it waits
+      # for one forever. Having sudo does not make the runner's user an
+      # admin, so it is made a member of _developer, and both memberships
+      # are printed.
       - name: Allow debugging
         if: runner.os == 'macOS'
-        run: sudo DevToolsSecurity -enable
+        run: |
+          sudo DevToolsSecurity -enable
+          sudo dseditgroup -o edit -a "$(whoami)" -t user _developer
+          sudo dsmemberutil flushcache
+          dsmemberutil checkmembership -U "$(whoami)" -G admin
+          dsmemberutil checkmembership -U "$(whoami)" -G _developer
       # Shared runners are too noisy for the timing budgets of the perf tests.
       - name: Test
         run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
