@@ -23,10 +23,11 @@ echo "::error::$1 was still running after ${limit}s; the stacks follow"
 for p in "$pid" $(pgrep -P "$pid"); do
     echo "=== process $p"
     ps -o pid,stat,command -p "$p"
-    # sample takes the task port of the process too, so it runs as root,
-    # which needs no authorization, and is stopped if it waits anyway.
-    sudo -n perl -e 'alarm 30; exec @ARGV' sample "$p" 1 2>&1 \
-        | sed -n '/^Call graph:/,/^Total number in stack/p'
+    # spindump shows the kernel frames too, for a process that waits in a
+    # system call. It takes the task port of the process, so it runs as
+    # root, which needs no authorization, and is stopped if it waits anyway.
+    sudo -n perl -e 'alarm 60; exec @ARGV' spindump "$p" 1 -onlyTarget -stdout \
+        -noProcessingWhileSampling 2>&1 | sed -n '/^Process:/,$p' | head -100
 done
 # What the daemons that grant task ports said while the command waited.
 sudo -n log show --last "$((limit + 30))s" --style compact \
