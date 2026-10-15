@@ -79,15 +79,15 @@ jobs:
       - name: Build
         run: .github/build.sh build "${{ matrix.conan_arch }}" "${{ matrix.cmake_arch }}"
       # A macOS debugger can only take another process's task port when the
-      # machine allows debugging and its user is an admin or a developer.
-      # Otherwise task_for_pid asks for a password, and on a runner it waits
-      # for one forever. Having sudo does not make the runner's user an
-      # admin, so it is made a member of _developer, and both memberships
-      # are printed.
+      # machine allows debugging and its user is a developer. Even then the
+      # system.privilege.taskport right asks that user for a password once
+      # per session, and on a runner task_for_pid waits for one forever, so
+      # the right is granted without asking. Both memberships are printed.
       - name: Allow debugging
         if: runner.os == 'macOS'
         run: |
           sudo DevToolsSecurity -enable
+          sudo security authorizationdb write system.privilege.taskport allow
           sudo dseditgroup -o edit -a "$(whoami)" -t user _developer
           sudo dsmemberutil flushcache
           dsmemberutil checkmembership -U "$(whoami)" -G admin
