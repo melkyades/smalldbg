@@ -134,6 +134,12 @@ public:
     Status setBreakpoint(Address addr, const std::string &name = {});
     Status clearBreakpoint(Address addr);
     std::vector<Breakpoint> listBreakpoints() const;
+    /** Stops the target when it writes any of the `size` bytes at `address`;
+     *  `size` is 1, 2, 4 or 8 and `address` is aligned to it. A replay run
+     *  backwards stops at the last write before where it is. Returns
+     *  NotSupported when the backend has no such breakpoints. **/
+    Status setWriteBreakpoint(Address address, size_t size);
+    Status clearWriteBreakpoint(Address address);
 
     // HW watchpoint (write, 8 bytes). addr=0 clears. match=0 means
     // "log every hit, never break"; non-zero means break when the value

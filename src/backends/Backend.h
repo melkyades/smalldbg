@@ -68,6 +68,9 @@ public:
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
     virtual Status clearBreakpoint(Address addr) = 0;
     virtual std::vector<Breakpoint> listBreakpoints() const = 0;
+    // See Debugger::setWriteBreakpoint. Default: NotSupported.
+    virtual Status setWriteBreakpoint(Address /*address*/, size_t /*size*/) { return Status::NotSupported; }
+    virtual Status clearWriteBreakpoint(Address /*address*/) { return Status::NotSupported; }
 
     // HW watchpoint — see Debugger::setWatchpoint. Default: NotSupported.
     virtual Status setWatchpoint(Address /*addr*/, uint64_t /*match*/,

@@ -99,6 +99,8 @@ public:
     Status setBreakpoint(Address addr, const std::string& name) override;
     Status clearBreakpoint(Address addr) override;
     std::vector<Breakpoint> listBreakpoints() const override;
+    Status setWriteBreakpoint(Address address, size_t size) override;
+    Status clearWriteBreakpoint(Address address) override;
 
     Status readMemory(Address address, void* outBuf, size_t size) const override;
     Status writeMemory(Address address, const void* data, size_t size) override;
@@ -318,6 +320,7 @@ protected:
     };
     mutable std::mutex bpMutex;
     std::vector<BpInfo> breakpoints;
+    std::vector<BpInfo> writeBreakpoints;  // data breakpoints; addr is the data watched
 
     // --- Register indices (per-architecture) ---
     // Resolved once after attach via ri.resolve().

@@ -259,6 +259,14 @@ Status Debugger::clearBreakpoint(Address addr) {
     return backend->clearBreakpoint(addr);
 }
 
+Status Debugger::setWriteBreakpoint(Address address, size_t size) {
+    return backend->setWriteBreakpoint(address, size);
+}
+
+Status Debugger::clearWriteBreakpoint(Address address) {
+    return backend->clearWriteBreakpoint(address);
+}
+
 std::vector<Breakpoint> Debugger::listBreakpoints() const {
     return backend->listBreakpoints();
 }
