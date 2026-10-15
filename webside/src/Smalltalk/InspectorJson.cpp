@@ -40,6 +40,7 @@ Json slotJson(const smalltalk::HeapObject& heap, int index,
               const std::vector<std::string>& names) {
     auto json = Json::object()
         .set("index", index)
+        .set("address", hexOf(heap.slotAddress(index), heap))
         .set("raw", hexOf(heap.rawSlotAt(index), heap));
     if (index < static_cast<int>(names.size())) json.set("name", names[index]);
     if (auto slot = heap.slotObjectAt(index)) {
