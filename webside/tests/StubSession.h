@@ -83,7 +83,8 @@ struct StubSession : WebsideSession {
 
 // A session that opens its target in the debugger, for tests that launch the
 // test target. It runs no VM, so the thread the target stopped on stands in
-// for the VM's.
+// for the VM's. The test target is built for the host, so its debugger takes
+// the host's architecture.
 struct LiveSession : StubSession {
     bool readsWithoutEngine(const vmdbg::TargetSpec&) const override {
         return false;
@@ -93,6 +94,10 @@ struct LiveSession : StubSession {
     std::shared_ptr<smalldbg::Thread> vmThread() const override {
         return debugger().getCurrentThread();
     }
+    smalldbg::Debugger& debugger() const override { return *liveDebugger; }
+
+    const std::unique_ptr<smalldbg::Debugger> liveDebugger{
+        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External)};
 };
 
 } // namespace webside
