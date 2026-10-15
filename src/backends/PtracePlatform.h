@@ -78,6 +78,14 @@ public:
     // the CPU signs return addresses, the signature bits are cleared. Default:
     // the address as it is.
     virtual Address codeAddress(Address returnAddress) const { return returnAddress; }
+    // Sets `regs` to the caller's registers, by the call frame information of
+    // the code at their ip. `innermost` says they are those of the frame the
+    // thread stopped in. Returns false when there is none for that code, and
+    // the frame pointer chain is to be followed instead. Default: false.
+    virtual bool recoverCallerFromFrameInfo(Registers& regs, bool innermost) const {
+        (void)regs; (void)innermost;
+        return false;
+    }
 
     // -- Thread enumeration --
     virtual std::vector<ThreadId> enumerateThreads() = 0;

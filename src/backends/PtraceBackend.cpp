@@ -8,6 +8,7 @@
 #include "PtraceBackend.h"
 #include "PtracePlatform.h"
 #include "smalldbg/Debugger.h"
+#include "smalldbg/NativeUnwinder.h"
 #include "smalldbg/Process.h"
 #include "smalldbg/Thread.h"
 #include "smalldbg/symbols/SymbolProvider.h"
@@ -345,6 +346,31 @@ Status PtraceBackend::getRegisters(Thread* thread, Registers &out) const {
 // ---------------------------------------------------------------------------
 // Caller register recovery (frame-pointer based unwinding)
 // ---------------------------------------------------------------------------
+
+namespace {
+
+// Native frames, unwound by the platform's call frame information where it
+// has some, and by the frame pointer chain otherwise: code built without
+// frame pointers, such as x86-64 code at -O2, breaks that chain.
+class PtraceUnwinder : public NativeUnwinder {
+public:
+    explicit PtraceUnwinder(const PtracePlatform& p) : platform(p) {}
+
+    Status unwind(StackFrame& frame, Debugger* debugger) override {
+        if (platform.recoverCallerFromFrameInfo(frame.registers, frame.allRegisters))
+            return Status::Ok;
+        return NativeUnwinder::unwind(frame, debugger);
+    }
+
+private:
+    const PtracePlatform& platform;
+};
+
+} // namespace
+
+std::unique_ptr<StackUnwinder> PtraceBackend::createUnwinder() const {
+    return std::make_unique<PtraceUnwinder>(*platform);
+}
 
 Status PtraceBackend::recoverCallerRegisters(Registers& regs) const {
     Address bp = regs.fp();

@@ -41,6 +41,8 @@ public:
     // (HW watchpoints, VM region scan).
     PtracePlatform* getPlatform() const { return platform.get(); }
 
+    std::unique_ptr<StackUnwinder> createUnwinder() const override;
+
     void noticeStop() override;
     StopReason getStopReason() const override { return stopReason; }
     bool isStopped() const override { return stopped; }

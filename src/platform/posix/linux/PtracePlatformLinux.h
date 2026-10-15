@@ -2,6 +2,7 @@
 #pragma once
 
 #include "../../../backends/PtracePlatform.h"
+#include "CallFrameInfo.h"
 
 #include <deque>
 #include <map>
@@ -34,6 +35,7 @@ public:
     Status getThreadRegisters(ThreadId tid, const Arch* arch, Registers& out) const override;
     Status setThreadPc(ThreadId tid, Address pc) const override;
     Address codeAddress(Address returnAddress) const override;
+    bool recoverCallerFromFrameInfo(Registers& regs, bool innermost) const override;
 
     std::vector<ThreadId> enumerateThreads() override;
     std::vector<ModuleInfo> enumerateModules() const override;
@@ -59,6 +61,13 @@ private:
     // The bits of a code address that hold a pointer authentication
     // signature, 0 where the CPU does not sign return addresses.
     Address signatureBits{0};
+
+    // The modules, and the call frame information of each by its load
+    // address, read while the target is stopped. Libraries load and unload
+    // while it runs, so both are dropped when it resumes.
+    mutable std::vector<ModuleInfo> stoppedModules;
+    mutable std::map<Address, std::optional<CallFrameInfo>> frameInfo;
+    void forgetModules();
     ThreadId stepping{0};  // the thread single-stepping, 0 when none is
 
     // Answered by accept() for an event it dealt with itself

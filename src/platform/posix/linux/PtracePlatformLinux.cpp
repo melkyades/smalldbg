@@ -89,6 +89,7 @@ int PtracePlatformLinux::ptraceDetach(int pid) {
 // had run into it.
 int PtracePlatformLinux::ptraceContinue(int pid) {
     if (!pendingStops.empty()) return 0;
+    forgetModules();
 
     int result = -1;
     for (auto& [tid, state] : threads) {
@@ -108,6 +109,7 @@ int PtracePlatformLinux::ptraceContinue(int pid) {
 // Only `thread` runs; the others stay stopped.
 int PtracePlatformLinux::ptraceStep(int pid, ThreadId thread) {
     ThreadId tid = thread != 0 ? thread : static_cast<ThreadId>(pid);
+    forgetModules();
     long result = ptrace(PTRACE_SINGLESTEP, static_cast<pid_t>(tid), nullptr, 0);
     if (result < 0) {
         doLog("(ptrace) PTRACE_SINGLESTEP failed: " + std::string(strerror(errno)));
@@ -342,6 +344,38 @@ Address PtracePlatformLinux::codeAddress(Address returnAddress) const {
 }
 
 // ---------------------------------------------------------------------------
+// Call frame information
+// ---------------------------------------------------------------------------
+
+// The code at regs' ip is in the module loaded last below it.
+bool PtracePlatformLinux::recoverCallerFromFrameInfo(Registers& regs, bool innermost) const {
+    if (stoppedModules.empty()) stoppedModules = enumerateModules();
+    const ModuleInfo* holder = nullptr;
+    for (const auto& module : stoppedModules)
+        if (module.loadAddress <= regs.ip()
+            && (!holder || module.loadAddress > holder->loadAddress))
+            holder = &module;
+    if (!holder) return false;
+
+    auto known = frameInfo.find(holder->loadAddress);
+    if (known == frameInfo.end()) {
+        auto read = [this](uint64_t address, void* out, size_t size) {
+            return readMemory(address, out, size) == Status::Ok;
+        };
+        known = frameInfo.emplace(holder->loadAddress,
+                                  CallFrameInfo::read(read, holder->loadAddress)).first;
+    }
+    if (!known->second || !known->second->recoverCaller(regs, innermost)) return false;
+    regs.setIp(codeAddress(regs.ip()));
+    return true;
+}
+
+void PtracePlatformLinux::forgetModules() {
+    stoppedModules.clear();
+    frameInfo.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Process handle — no kernel resource to acquire on Linux
 // ---------------------------------------------------------------------------
 
@@ -368,6 +402,7 @@ void PtracePlatformLinux::forget() {
     lastStopped = 0;
     stepping = 0;
     signatureBits = 0;
+    forgetModules();
 }
 
 // ---------------------------------------------------------------------------
