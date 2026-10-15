@@ -71,8 +71,12 @@ private:
     // Write a single aligned word via PTRACE_POKEDATA
     Status pokeWord(Address wordAddr, long word) const;
 
-    // Parse one line of /proc/<pid>/maps and append to modules if it names a file
-    void parseMapsLine(std::vector<ModuleInfo>& modules, const std::string& line) const;
+    // Parse one line of /proc/<pid>/maps and append to modules if it names a
+    // file with code. `imageStarts` keeps where each file's mapping at offset 0
+    // starts.
+    void parseMapsLine(std::vector<ModuleInfo>& modules,
+                       std::map<std::string, Address>& imageStarts,
+                       const std::string& line) const;
 };
 
 } // namespace smalldbg

@@ -523,7 +523,12 @@ std::vector<ThreadId> PtracePlatformLinux::enumerateThreads() {
 // Module enumeration (/proc/<pid>/maps)
 // ---------------------------------------------------------------------------
 
+// A module is loaded where its file's first mapping starts, the one at file
+// offset 0: that is where the ELF header and the first segment are. The code
+// is often in a later mapping. On x86-64, for example, the linker puts it in
+// a segment of its own, so it starts a page or more after the image.
 void PtracePlatformLinux::parseMapsLine(std::vector<ModuleInfo>& modules,
+                                         std::map<std::string, Address>& imageStarts,
                                          const std::string& line) const {
     // Format: addr1-addr2 perms offset dev inode [pathname]
     // Example: 7f1234000000-7f1234021000 r-xp 00000000 fd:01 12345 /usr/lib/libfoo.so
@@ -533,13 +538,14 @@ void PtracePlatformLinux::parseMapsLine(std::vector<ModuleInfo>& modules,
     std::getline(iss >> std::ws, path);
     if (path.empty() || path[0] != '/') return;
 
-    // Only use r-xp entries (executable mappings)
-    if (perms.size() < 4 || perms[2] != 'x') return;
-
-    // Parse load address from the range
     auto dash = addrRange.find('-');
     if (dash == std::string::npos) return;
-    Address loadAddr = std::strtoull(addrRange.substr(0, dash).c_str(), nullptr, 16);
+    Address start = std::strtoull(addrRange.substr(0, dash).c_str(), nullptr, 16);
+    Address fileOffset = std::strtoull(offset.c_str(), nullptr, 16);
+    if (fileOffset == 0 && !imageStarts.count(path)) imageStarts[path] = start;
+
+    // Only files with code are modules
+    if (perms.size() < 4 || perms[2] != 'x') return;
 
     // Avoid duplicates (same path already seen)
     for (auto& m : modules) {
@@ -548,7 +554,8 @@ void PtracePlatformLinux::parseMapsLine(std::vector<ModuleInfo>& modules,
 
     ModuleInfo mod;
     mod.path = path;
-    mod.loadAddress = loadAddr;
+    auto image = imageStarts.find(path);
+    mod.loadAddress = image != imageStarts.end() ? image->second : start - fileOffset;
     mod.slide = 0;
     modules.push_back(std::move(mod));
 }
@@ -561,9 +568,10 @@ std::vector<ModuleInfo> PtracePlatformLinux::enumerateModules() const {
     std::ifstream ifs(mapsPath);
     if (!ifs) return modules;
 
+    std::map<std::string, Address> imageStarts;
     std::string line;
     while (std::getline(ifs, line)) {
-        parseMapsLine(modules, line);
+        parseMapsLine(modules, imageStarts, line);
     }
     return modules;
 }
