@@ -356,11 +356,14 @@ TEST_CASE("running to an address stops there and keeps the user's breakpoints") 
     CHECK(regs.ip() == breakHere->address);
     CHECK(dbg.listBreakpoints().empty());
 
-    // At a function's first instruction the stack pointer points at the
-    // return address.
+    // At a function's first instruction the return address is where the call
+    // left it: on the stack on x86 and x64, in the link register on ARM64.
     Address returnAddress = 0;
-    REQUIRE(dbg.readMemory(regs.sp(), &returnAddress,
-                           dbg.arch()->pointerSize()) == Status::Ok);
+    if (dbg.arch() == ARM64::instance())
+        returnAddress = regs.arm64.x30_lr;
+    else
+        REQUIRE(dbg.readMemory(regs.sp(), &returnAddress,
+                               dbg.arch()->pointerSize()) == Status::Ok);
     REQUIRE(dbg.setBreakpoint(returnAddress, "mine") == Status::Ok);
     REQUIRE(dbg.runTo(returnAddress, 30000) == Status::Ok);
     REQUIRE(dbg.listBreakpoints().size() == 1);
