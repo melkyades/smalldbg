@@ -9,7 +9,7 @@ On top of the library sit two more: `vmdbg/`, for debugging virtual machines, an
 Features:
 - C++ Debugger class with attach/launch/detach, resume/step/suspend, run to an address, breakpoint API
 - Windows backends: Win32 Debug API and DbgEng engine (with Time Travel Debugging)
-- macOS backend: ptrace + Mach VM/thread APIs
+- macOS backend: ptrace + Mach VM/thread APIs. Every stop comes through a Mach exception server, and symbols are read from the target's memory, so the libraries of the dyld shared cache have them too
 - Linux backend: ptrace + /proc filesystem
 - **Crash dumps and TTD traces** - open a `.dmp` or a `.run`; replay a trace backwards and forwards, ask where the replay is and how far the trace runs, move to a position or a percentage, and find when an address last ran
 - Memory read/write operations, and each loaded module's sections from its image headers
