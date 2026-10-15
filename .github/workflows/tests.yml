@@ -106,14 +106,17 @@ jobs:
       # Shared runners are too noisy for the timing budgets of the perf tests.
       - name: Test
         run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
-      # The x64 live tests once more, against the 32-bit test_target.
+      # The x64 live tests once more, against the 32-bit test_target. ctest
+      # runs them in build-x64/tests, so the target's path is made absolute.
+      # The backend's log goes to stderr, which ctest shows for a failure.
       - name: Build x64 for WoW64
         if: matrix.wow64
         run: .github/build.sh build-x64 x86_64 x64
       - name: Test WoW64
         if: matrix.wow64
         run: |
-          SMALLDBG_TEST_TARGET=$(cygpath -w build/tests/Release/test_target.exe) \
+          SMALLDBG_TEST_TARGET=$(cygpath -aw build/tests/Release/test_target.exe) \
+          SMALLDBG_TEST_LOG=1 \
             ctest --test-dir build-x64 -C Release -R live-tests --output-on-failure --timeout 600
 
   # The VMs are repositories of their own and may lag behind smalldbg, so a
