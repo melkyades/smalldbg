@@ -68,6 +68,19 @@ struct TestServer : WebsideServer {
     std::string description() const override { return "test"; }
 };
 
+// Runs `server` on a thread of its own while it lives, so a test that stops
+// early on a failed REQUIRE still stops and joins it.
+struct Serving {
+    explicit Serving(TestServer& server) : server(server), thread([&server] { server.run(); }) {}
+    ~Serving() {
+        server.stop();
+        thread.join();
+    }
+
+    TestServer& server;
+    std::thread thread;
+};
+
 // A workspace with a snapshot of `memory` open, and a server over it.
 struct Served {
     explicit Served(std::vector<uint8_t> memory)
@@ -565,7 +578,7 @@ TEST_CASE("with nothing open, only the routes that need no target answer") {
         return std::make_unique<StubSession>();
     });
     TestServer server{workspace, port};
-    std::thread serving([&] { server.run(); });
+    Serving serving{server};
 
     httplib::Client client("127.0.0.1", port);
     httplib::Result logo;
@@ -579,9 +592,6 @@ TEST_CASE("with nothing open, only the routes that need no target answer") {
     CHECK(client.Get("/themes")->status == 200);
     CHECK(client.Get("/classes")->status == 503);
     CHECK(client.Get("/threads")->status == 503);
-
-    server.stop();
-    serving.join();
 }
 
 TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") {
@@ -591,7 +601,7 @@ TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") 
     });
     workspace.setBreakpoint(0x401000, "start");
     TestServer server{workspace, port};
-    std::thread serving([&] { server.run(); });
+    Serving serving{server};
 
     httplib::Client client("127.0.0.1", port);
     httplib::Result breakpoints;
@@ -629,9 +639,6 @@ TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") 
     CHECK(labels[0]["address"].asString() == Json::hex(uint64_t(0x403000)).asString());
     REQUIRE(client.Delete("/labels?address=0x403000"));
     CHECK(Json::parse(client.Get("/labels")->body).size() == 0);
-
-    server.stop();
-    serving.join();
 }
 
 TEST_CASE("a target that is no trace has no position and refuses to move") {
@@ -643,7 +650,7 @@ TEST_CASE("a target that is no trace has no position and refuses to move") {
     target.path = "snapshot";
     REQUIRE(workspace.open(target));
     TestServer server{workspace, port};
-    std::thread serving([&] { server.run(); });
+    Serving serving{server};
 
     httplib::Client client("127.0.0.1", port);
     httplib::Result position;
@@ -659,7 +666,4 @@ TEST_CASE("a target that is no trace has no position and refuses to move") {
         REQUIRE(moved);
         CHECK(moved->status == 400);
     }
-
-    server.stop();
-    serving.join();
 }
