@@ -216,6 +216,7 @@ protected:
     bool initOpenTrace();      // open a TTD trace file
     bool initOpenDump();       // open a crash/WER dump file
     bool initArchAndRegisters();  // validate target arch, resolve register indices
+    void setPacMask();  // let the engine strip signed return addresses
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
     void selectEventThread();

@@ -1229,6 +1229,7 @@ bool DbgEngBackend::initSession() {
         running = false;
         return false;
     }
+    setPacMask();
 
     registerSymbolBackend();
     captureStopState();
@@ -1512,6 +1513,18 @@ bool DbgEngBackend::initArchAndRegisters() {
     ri.resolve(registers);
     if (log) log("(dbgeng) architecture " + std::string(arch->name()) + ", register indices resolved");
     return true;
+}
+
+// On a CPU with pointer authentication (PAC), Windows ARM64 code signs the
+// return addresses it saves: the bits above the address hold a signature.
+// The engine strips them only with the mask of those bits, which it cannot
+// read from a live user-mode target, and without it the walk ends at the
+// first signed return address. User-mode addresses fit in 47 bits.
+void DbgEngBackend::setPacMask() {
+    if (arch != ARM64::instance()) return;
+    HRESULT hr = control->Execute(DEBUG_OUTCTL_IGNORE, ".pacmask 0xffff800000000000",
+                                  DEBUG_EXECUTE_NOT_LOGGED);
+    if (FAILED(hr) && log) log("(dbgeng) .pacmask failed hr=" + toHex((unsigned long)hr));
 }
 
 void DbgEngBackend::registerSymbolBackend() {
