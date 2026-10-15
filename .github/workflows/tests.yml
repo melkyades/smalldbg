@@ -78,6 +78,12 @@ jobs:
           cache-key: ${{ matrix.name }}
       - name: Build
         run: .github/build.sh build "${{ matrix.conan_arch }}" "${{ matrix.cmake_arch }}"
+      # A macOS debugger can only take another process's task port when the
+      # machine allows debugging. Otherwise task_for_pid asks for a password,
+      # and on a runner it waits for one forever.
+      - name: Allow debugging
+        if: runner.os == 'macOS'
+        run: sudo DevToolsSecurity -enable
       # Shared runners are too noisy for the timing budgets of the perf tests.
       - name: Test
         run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
