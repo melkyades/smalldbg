@@ -195,7 +195,8 @@ int PtracePlatformMac::ptraceAttach(int pid) {
 int PtracePlatformMac::ptraceDetach(int pid) {
     if (taskPort != MACH_PORT_NULL) {
         finishStep();
-        holdSigstop(pid);
+        if (!holdSigstop(pid))
+            doLog("(ptrace) the SIGSTOP to detach on was not held in time");
         restoreExceptionPorts();
     }
     int result = ptrace(PT_DETACH, pid, reinterpret_cast<caddr_t>(1), 0);
