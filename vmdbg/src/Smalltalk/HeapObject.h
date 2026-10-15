@@ -32,6 +32,11 @@ public:
      *  before the oop -- most of them -- leave this at the oop itself. **/
     virtual uint64_t bodyAddress() const { return rawOop; }
 
+    /** Where slot `index` is in memory. **/
+    uint64_t slotAddress(int index) const {
+        return bodyAddress() + static_cast<uint64_t>(index) * slotSize();
+    }
+
     /** The class of the receiver, however this dialect records it: a behavior
      *  pointer, a method-dictionary chain, a class-index table. **/
     virtual std::unique_ptr<HeapObject> classObject() const = 0;
