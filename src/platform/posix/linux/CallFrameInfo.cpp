@@ -143,4 +143,89 @@ std::optional<CallFrameInfo::Description> CallFrameInfo::describe(uint64_t pc) c
     return out;
 }
 
+namespace {
+
+/** Runs call frame instructions on `row`, from the function's address `loc`
+ *  until the next row would start past `pc`. `initial` is the row the CIE
+ *  sets up, which DW_CFA_restore goes back to. Returns false for an
+ *  instruction it does not know, or a CFA given by an expression. **/
+bool runInstructions(const std::vector<uint8_t>& code, const CallFrameInfo::Description& d,
+                     uint64_t loc, uint64_t pc, const CallFrameInfo::Row& initial,
+                     CallFrameInfo::Row& row) {
+    using Rule = CallFrameInfo::Rule;
+    std::vector<CallFrameInfo::Row> remembered;
+    auto set = [&](uint64_t reg, Rule::Kind kind, int64_t value) {
+        if (reg < CallFrameInfo::kRegisters) row.rules[reg] = {kind, value};
+    };
+    auto restore = [&](uint64_t reg) {
+        if (reg < CallFrameInfo::kRegisters) row.rules[reg] = initial.rules[reg];
+    };
+    auto advance = [&](uint64_t delta) {
+        loc += delta * d.codeAlignment;
+        return loc <= pc;
+    };
+
+    EhFrameCursor in(code, 0);
+    while (!in.atEnd()) {
+        uint8_t op = in.u8();
+        uint8_t low = op & 0x3f;
+        switch (op & 0xc0) {
+        case 0x40: if (!advance(low)) return true; continue;  // DW_CFA_advance_loc
+        case 0x80: set(low, Rule::Offset, static_cast<int64_t>(in.uleb()) * d.dataAlignment); continue;
+        case 0xc0: restore(low); continue;                     // DW_CFA_restore
+        }
+        switch (op) {
+        case 0x00: break;  // DW_CFA_nop
+        case 0x01: loc = in.pointer(d.pointerEncoding, 0); if (loc > pc) return true; break;
+        case 0x02: if (!advance(in.u8())) return true; break;
+        case 0x03: if (!advance(in.u16())) return true; break;
+        case 0x04: if (!advance(in.u32())) return true; break;
+        case 0x05: { uint64_t r = in.uleb(); set(r, Rule::Offset, static_cast<int64_t>(in.uleb()) * d.dataAlignment); break; }
+        case 0x06: restore(in.uleb()); break;
+        case 0x07: set(in.uleb(), Rule::Undefined, 0); break;
+        case 0x08: set(in.uleb(), Rule::SameValue, 0); break;
+        case 0x09: { uint64_t r = in.uleb(); set(r, Rule::InRegister, static_cast<int64_t>(in.uleb())); break; }
+        case 0x0a: remembered.push_back(row); break;  // DW_CFA_remember_state
+        case 0x0b:                                    // DW_CFA_restore_state
+            if (remembered.empty()) return false;
+            row = remembered.back();
+            remembered.pop_back();
+            break;
+        case 0x0c: row.cfaRegister = static_cast<unsigned>(in.uleb()); row.cfaOffset = static_cast<int64_t>(in.uleb()); break;
+        case 0x0d: row.cfaRegister = static_cast<unsigned>(in.uleb()); break;
+        case 0x0e: row.cfaOffset = static_cast<int64_t>(in.uleb()); break;
+        case 0x0f: return false;  // DW_CFA_def_cfa_expression
+        case 0x10:                // DW_CFA_expression
+        case 0x16: { uint64_t r = in.uleb(); in.skip(in.uleb()); set(r, Rule::Expression, 0); break; }
+        case 0x11: { uint64_t r = in.uleb(); set(r, Rule::Offset, in.sleb() * d.dataAlignment); break; }
+        case 0x12: row.cfaRegister = static_cast<unsigned>(in.uleb()); row.cfaOffset = in.sleb() * d.dataAlignment; break;
+        case 0x13: row.cfaOffset = in.sleb() * d.dataAlignment; break;
+        case 0x14: { uint64_t r = in.uleb(); set(r, Rule::ValOffset, static_cast<int64_t>(in.uleb()) * d.dataAlignment); break; }
+        case 0x15: { uint64_t r = in.uleb(); set(r, Rule::ValOffset, in.sleb() * d.dataAlignment); break; }
+        // DW_CFA_AARCH64_negate_ra_state: the return address is signed from
+        // here on. The unwinder clears the signature bits anyway.
+        case 0x2d: break;
+        case 0x2e: in.uleb(); break;  // DW_CFA_GNU_args_size
+        case 0x2f: { uint64_t r = in.uleb(); set(r, Rule::Offset, -static_cast<int64_t>(in.uleb()) * d.dataAlignment); break; }
+        default: return false;
+        }
+    }
+    return !in.failed();
+}
+
+} // namespace
+
+std::optional<CallFrameInfo::Row> CallFrameInfo::rowAt(uint64_t pc) const {
+    auto d = describe(pc);
+    if (!d) return std::nullopt;
+
+    Row initial;
+    if (!runInstructions(d->initialInstructions, *d, d->start, d->start, initial, initial))
+        return std::nullopt;
+    Row row = initial;
+    if (!runInstructions(d->instructions, *d, d->start, pc, initial, row))
+        return std::nullopt;
+    return row;
+}
+
 } // namespace smalldbg

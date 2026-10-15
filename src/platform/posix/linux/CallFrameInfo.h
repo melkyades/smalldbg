@@ -3,6 +3,7 @@
 
 #include "../../Platform.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -29,6 +30,31 @@ public:
         std::vector<uint8_t> instructions;         // the FDE's
     };
 
+    /** Where one of the caller's registers is. **/
+    struct Rule {
+        enum Kind {
+            SameValue,   // the function did not change it
+            Undefined,   // not known; for the return address, the stack ends
+            Offset,      // saved at CFA + value
+            ValOffset,   // is CFA + value
+            InRegister,  // is in register `value`
+            Expression,  // given by a DWARF expression, which is not followed
+        };
+        Kind kind{SameValue};
+        int64_t value{0};
+    };
+
+    // x86-64 numbers its registers 0 to 16, AArch64 0 to 32.
+    static constexpr unsigned kRegisters = 33;
+
+    /** The rules at one address of a function. The CFA is the stack pointer
+     *  the caller had before the call: a register plus an offset. **/
+    struct Row {
+        unsigned cfaRegister{0};
+        int64_t cfaOffset{0};
+        std::array<Rule, kRegisters> rules{};
+    };
+
     /** Reads the search table of the ELF image loaded at `base`. Returns
      *  nothing when the image has no .eh_frame_hdr, or it cannot be read. **/
     static std::optional<CallFrameInfo> read(const MemoryReader& memory, uint64_t base);
@@ -40,6 +66,10 @@ public:
     /** Returns what the FDE of the function holding `pc` says, or nothing when
      *  no FDE covers `pc` or it cannot be read. **/
     std::optional<Description> describe(uint64_t pc) const;
+
+    /** Returns the rules at `pc`, or nothing when no FDE covers it, or the
+     *  CFA there is given by a DWARF expression, which is not followed. **/
+    std::optional<Row> rowAt(uint64_t pc) const;
 
 private:
     struct Entry {
