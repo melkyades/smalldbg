@@ -344,16 +344,20 @@ static bool isImpossibleFrame(const StackFrame& frame,
     return false;
 }
 
+// Returns true for a frame the system puts on every thread's stack.
+static bool isThreadStarterFrame(const StackFrame& frame) {
+    // A frame matched to a module only carries the module as its function.
+    const std::string& module = frame.moduleName.empty() ? frame.functionName
+                                                         : frame.moduleName;
+    return smalldbg_internal::isThreadStarter(module, frame.functionName);
+}
+
 // Returns true for a frame that cannot name a thread: one the system put on
 // every thread's stack, one that cannot be real, or one with no name.
 static bool namesNoThread(const StackFrame& frame,
                           const std::vector<ModuleInfo>& modules) {
     if (isImpossibleFrame(frame, modules)) return true;
-    // A frame matched to a module only carries the module as its function.
-    const std::string& module = frame.moduleName.empty() ? frame.functionName
-                                                         : frame.moduleName;
-    if (smalldbg_internal::isThreadStarter(module, frame.functionName))
-        return true;
+    if (isThreadStarterFrame(frame)) return true;
     std::string label = frameLabel(frame);
     return label.empty() || label.find("<unknown>") != std::string::npos;
 }
@@ -371,7 +375,15 @@ ThreadIdentity Debugger::identify(Thread& thread) {
 
     auto modules = symbolProvider->getModules();
     const auto& frames = trace->getFrames();
-    for (auto frame = frames.rbegin(); frame != frames.rend(); ++frame) {
+
+    // The frames past the outermost starter are the system's too, even when
+    // they have a wrong name. On 32-bit Windows without symbols, ntdll's thread
+    // start is named after the export before it, as it is not exported.
+    auto from = frames.rbegin();
+    while (from != frames.rend() && !isThreadStarterFrame(**from)) ++from;
+    if (from == frames.rend()) from = frames.rbegin();
+
+    for (auto frame = from; frame != frames.rend(); ++frame) {
         if (namesNoThread(**frame, modules)) continue;
         identity.name = frameLabel(**frame);
         break;
