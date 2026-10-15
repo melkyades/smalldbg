@@ -75,6 +75,11 @@ public:
      *  when it stopped elsewhere, did not get there in time, or the target is
      *  not a replay. **/
     bool reverseRunToAddress(uint64_t address);
+    /** Runs the target until it writes any of the `size` bytes at `address`,
+     *  or a replay backwards to the last time it did. Returns false when the
+     *  debugger cannot watch memory, the target stopped elsewhere, or it did
+     *  not get there in time, when it is stopped where it was. **/
+    bool runToWrite(uint64_t address, size_t size, bool backwards);
     /** Runs a replay backwards to a breakpoint or to its start. Returns
      *  false when the target is not a replay. **/
     bool reverseResume();

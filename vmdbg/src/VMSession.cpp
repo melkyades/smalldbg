@@ -252,6 +252,23 @@ bool VMSession::reverseRunToAddress(uint64_t address) {
     return reached;
 }
 
+// The write breakpoint lives only for the run, like the one runTo sets, and
+// as runTo does, a target that does not get there in time is stopped. A write
+// breakpoint stops at the address it watches; any other stop is not a write.
+bool VMSession::runToWrite(uint64_t address, size_t size, bool backwards) {
+    if (debugger().setWriteBreakpoint(address, size) != smalldbg::Status::Ok) return false;
+    beforeTargetRuns();
+    const bool started = (backwards ? debugger().reverseResume() : debugger().resume())
+                         == smalldbg::Status::Ok;
+    const smalldbg::StopReason reason = started
+        ? debugger().waitForEvent(smalldbg::StopReason::None, kRunToTimeoutMs)
+        : smalldbg::StopReason::None;
+    if (started && reason == smalldbg::StopReason::None) debugger().suspend();
+    afterTargetStops();
+    debugger().clearWriteBreakpoint(address);
+    return reason == smalldbg::StopReason::Breakpoint && debugger().getStopAddress() == address;
+}
+
 bool VMSession::reverseResume() {
     beforeTargetRuns();
     bool ran = debugger().reverseResume() == smalldbg::Status::Ok
