@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstring>
 #include <elf.h>
+#include <string>
 
 namespace smalldbg {
 
@@ -70,6 +71,76 @@ uint64_t CallFrameInfo::fdeFor(uint64_t pc) const {
         [](uint64_t address, const Entry& entry) { return address < entry.start; });
     if (after == table.begin()) return 0;
     return std::prev(after)->fde;
+}
+
+// Reads the CIE or FDE at `address`: the bytes after its length. A length of
+// 0xffffffff starts a 64-bit entry, which linkers do not write in .eh_frame.
+bool CallFrameInfo::readEntry(uint64_t address, std::vector<uint8_t>& bytes) const {
+    uint32_t length = 0;
+    if (!memory(address, &length, sizeof(length))) return false;
+    if (length == 0 || length == 0xffffffff) return false;
+    bytes.resize(length);
+    return memory(address + sizeof(length), bytes.data(), bytes.size());
+}
+
+// A CIE's augmentation string says what its augmentation data holds. It must
+// start with 'z', which gives the data's size, so letters this code does not
+// know can be skipped. Older formats, such as GCC's "eh", are not read.
+bool CallFrameInfo::readCie(uint64_t address, Description& out,
+                            bool& hasAugmentationData) const {
+    std::vector<uint8_t> bytes;
+    if (!readEntry(address, bytes)) return false;
+    EhFrameCursor cie(bytes, address + 4);
+    if (cie.u32() != 0) return false;  // a CIE's id is 0
+    uint8_t version = cie.u8();
+    if (version != 1 && version != 3) return false;
+
+    std::string augmentation;
+    for (char letter; (letter = static_cast<char>(cie.u8())) != 0 && !cie.failed();)
+        augmentation += letter;
+    out.codeAlignment = cie.uleb();
+    out.dataAlignment = cie.sleb();
+    out.returnRegister = version == 1 ? cie.u8() : static_cast<unsigned>(cie.uleb());
+
+    hasAugmentationData = !augmentation.empty();
+    if (hasAugmentationData) {
+        if (augmentation[0] != 'z') return false;
+        uint64_t size = cie.uleb();
+        uint64_t end = cie.here() + size;
+        for (char letter : augmentation.substr(1)) {
+            if (letter == 'R') out.pointerEncoding = cie.u8();
+            else if (letter == 'P') cie.pointer(cie.u8(), 0);  // the personality routine
+            else if (letter == 'L') cie.u8();                   // how LSDAs are stored
+            else if (letter != 'S' && letter != 'B' && letter != 'G') break;
+        }
+        if (cie.here() > end) return false;
+        cie.skip(end - cie.here());
+    }
+    out.initialInstructions = cie.rest();
+    return !cie.failed();
+}
+
+// An FDE points back to its CIE: the offset is from the field itself.
+std::optional<CallFrameInfo::Description> CallFrameInfo::describe(uint64_t pc) const {
+    uint64_t fde = fdeFor(pc);
+    std::vector<uint8_t> bytes;
+    if (fde == 0 || !readEntry(fde, bytes)) return std::nullopt;
+    EhFrameCursor entry(bytes, fde + 4);
+
+    uint64_t cieField = entry.here();
+    uint32_t cieOffset = entry.u32();
+    Description out;
+    bool hasAugmentationData = false;
+    if (cieOffset == 0 || !readCie(cieField - cieOffset, out, hasAugmentationData))
+        return std::nullopt;
+
+    out.start = entry.pointer(out.pointerEncoding, 0);
+    out.end = out.start + entry.pointer(out.pointerEncoding & 0x0f, 0);
+    if (pc < out.start || pc >= out.end) return std::nullopt;
+    if (hasAugmentationData) entry.skip(entry.uleb());
+    out.instructions = entry.rest();
+    if (entry.failed()) return std::nullopt;
+    return out;
 }
 
 } // namespace smalldbg
