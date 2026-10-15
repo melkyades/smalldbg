@@ -92,6 +92,13 @@ jobs:
           sudo dsmemberutil flushcache
           dsmemberutil checkmembership -U "$(whoami)" -G admin
           dsmemberutil checkmembership -U "$(whoami)" -G _developer
+      # The webside tests hang on the macOS runners and nowhere else. This
+      # runs them on their own and, when they are still running after three
+      # minutes, prints the stacks of the test process and of the targets it
+      # started, so the log shows where they wait.
+      - name: Webside tests, with their stacks if they hang
+        if: runner.os == 'macOS'
+        run: .github/watch.sh 180 build/webside/tests/webside_tests
       # Shared runners are too noisy for the timing budgets of the perf tests.
       - name: Test
         run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
