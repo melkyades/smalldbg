@@ -133,6 +133,10 @@ protected:
     HttpResponse handleClassify(const HttpRequest& req) const;
     Json regionJson(const vmdbg::Region& region) const;
     HttpResponse handleInspect(const HttpRequest& req) const;
+    /** Returns the picture the VM last put on its screen as raw pixels, its
+     *  size, depth and bytes per row in headers, or 404 when the VM keeps
+     *  none. **/
+    HttpResponse handleFramebuffer() const;
 
     // ---- class / search route handlers ----
     HttpResponse handleClassList(const HttpRequest& req) const;
