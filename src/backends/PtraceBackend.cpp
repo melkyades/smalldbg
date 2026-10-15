@@ -357,7 +357,7 @@ Status PtraceBackend::recoverCallerRegisters(Registers& regs) const {
 
     if (nextBp == 0 || nextIp == 0) return Status::Error;
 
-    regs.setIp(nextIp);
+    regs.setIp(platform->codeAddress(nextIp));
     regs.setFp(nextBp);
     regs.setSp(bp + 2 * ptrSize);
     return Status::Ok;

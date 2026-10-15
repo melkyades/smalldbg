@@ -74,6 +74,10 @@ public:
     // -- Registers --
     virtual Status getThreadRegisters(ThreadId tid, const Arch* arch, Registers& out) const = 0;
     virtual Status setThreadPc(ThreadId tid, Address pc) const = 0;
+    // Returns a return address read from the stack as a code address. Where
+    // the CPU signs return addresses, the signature bits are cleared. Default:
+    // the address as it is.
+    virtual Address codeAddress(Address returnAddress) const { return returnAddress; }
 
     // -- Thread enumeration --
     virtual std::vector<ThreadId> enumerateThreads() = 0;

@@ -315,6 +315,33 @@ int PtracePlatformLinux::waitForStop(int pid, int timeoutMs, int& status) {
 }
 
 // ---------------------------------------------------------------------------
+// Pointer authentication
+// ---------------------------------------------------------------------------
+
+// The kernel says which bits of a code address hold the signature. A kernel or
+// CPU without pointer authentication has no such register set.
+static Address readSignatureBits(ThreadId tid) {
+#if defined(__aarch64__)
+    struct {
+        uint64_t dataMask;
+        uint64_t codeMask;
+    } masks{};
+    struct iovec iov = { &masks, sizeof(masks) };
+    if (ptrace(PTRACE_GETREGSET, static_cast<pid_t>(tid),
+               reinterpret_cast<void*>(NT_ARM_PAC_MASK), &iov) < 0)
+        return 0;
+    return masks.codeMask;
+#else
+    (void)tid;
+    return 0;
+#endif
+}
+
+Address PtracePlatformLinux::codeAddress(Address returnAddress) const {
+    return returnAddress & ~signatureBits;
+}
+
+// ---------------------------------------------------------------------------
 // Process handle — no kernel resource to acquire on Linux
 // ---------------------------------------------------------------------------
 
@@ -325,6 +352,7 @@ Status PtracePlatformLinux::acquireProcess(int pid) {
     if (threads.empty()) threads[static_cast<ThreadId>(pid)] = ThreadState::Stopped;
     for (const auto& [tid, state] : threads) traceClones(tid);
     lastStopped = static_cast<ThreadId>(pid);
+    signatureBits = readSignatureBits(static_cast<ThreadId>(pid));
     return Status::Ok;
 }
 
@@ -339,6 +367,7 @@ void PtracePlatformLinux::forget() {
     pendingStops.clear();
     lastStopped = 0;
     stepping = 0;
+    signatureBits = 0;
 }
 
 // ---------------------------------------------------------------------------
