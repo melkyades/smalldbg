@@ -43,6 +43,7 @@ class Debugger {
 public:
     // The backend is chosen here, for what the Debugger is to debug, and kept
     // until it is destroyed: debugging something else takes another Debugger.
+    // Without an architecture the target is taken to be the host's.
     explicit Debugger(Mode m, const Arch* arch = nullptr,
                       Debuggee debuggee = Debuggee::Process);
     ~Debugger();

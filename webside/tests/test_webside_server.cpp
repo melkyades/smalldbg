@@ -23,7 +23,8 @@ namespace {
 constexpr uint64_t kBase = 0x10000;
 
 // A session whose target is a snapshot of `kBase`, which reads like a stopped
-// process.
+// process. The memory the tests lay out holds x86-64 code, whatever the host
+// is.
 struct SnapshotSession : StubSession {
     explicit SnapshotSession(std::vector<uint8_t> memory) {
         REQUIRE(snapshot->openSnapshot({
@@ -35,7 +36,8 @@ struct SnapshotSession : StubSession {
 
     const std::unique_ptr<smalldbg::Debugger> snapshot{
         std::make_unique<smalldbg::Debugger>(
-            smalldbg::Mode::External, nullptr, smalldbg::Debuggee::Snapshot)};
+            smalldbg::Mode::External, smalldbg::X64::instance(),
+            smalldbg::Debuggee::Snapshot)};
 };
 
 // A server with nothing of its own, whose routes the tests call directly.

@@ -45,7 +45,7 @@ static Backend* backendFor(Debugger* debugger, Mode mode, const Arch* arch,
 }
 
 Debugger::Debugger(Mode mode, const Arch* arch, Debuggee debuggee)
-    : backend(backendFor(this, mode, arch ? arch : X64::instance(), debuggee)),
+    : backend(backendFor(this, mode, arch ? arch : hostArch(), debuggee)),
       symbolProvider(std::make_unique<SymbolProvider>(backend)),
       disassembler(std::make_unique<Disassembler>(backend->getArch())) {
 #ifdef _WIN32
