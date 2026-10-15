@@ -104,8 +104,12 @@ jobs:
         continue-on-error: true
         run: .github/watch.sh 180 build/webside/tests/webside_tests
       # Shared runners are too noisy for the timing budgets of the perf tests.
+      # On macOS the webside tests sometimes hang only here, so this step is
+      # watched too.
       - name: Test
-        run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
+        run: >-
+          ${{ runner.os == 'macOS' && '.github/watch.sh 300' || '' }}
+          ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
       # The x64 live tests once more, against the 32-bit test_target. ctest
       # runs them in build-x64/tests, so the target's path is made absolute.
       # The backend's log goes to stderr, which ctest shows for a failure.

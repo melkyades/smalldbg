@@ -8,6 +8,12 @@ set -u
 limit=$1
 shift
 
+# Prints a process and every process below it, parents first.
+descendants() {
+    echo "$1"
+    for child in $(pgrep -P "$1"); do descendants "$child"; done
+}
+
 "$@" &
 pid=$!
 
@@ -20,7 +26,8 @@ for ((elapsed = 0; elapsed < limit; elapsed++)); do
 done
 
 echo "::error::$1 was still running after ${limit}s; the stacks follow"
-for p in "$pid" $(pgrep -P "$pid"); do
+processes=$(descendants "$pid")
+for p in $processes; do
     echo "=== process $p"
     ps -o pid,stat,command -p "$p"
     # spindump shows the kernel frames too, for a process that waits in a
@@ -33,5 +40,5 @@ done
 sudo -n log show --last "$((limit + 30))s" --style compact \
     --predicate 'process == "authd" OR process == "taskgated" OR process == "taskgated-helper"' \
     2>&1 | tail -80
-kill -9 $(pgrep -P "$pid") "$pid" 2>/dev/null
+kill -9 $processes 2>/dev/null
 exit 1
