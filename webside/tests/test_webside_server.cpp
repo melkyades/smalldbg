@@ -12,6 +12,8 @@
 #include <httplib/httplib.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -134,6 +136,12 @@ struct Launched {
         target.path = WEBSIDE_TEST_TARGET;
         target.args = std::move(args);
         REQUIRE(workspace.open(target));
+        // The backend's log goes to stderr when SMALLDBG_TEST_LOG is set, as
+        // in the live tests; from the first stop on, detaching included.
+        if (std::getenv("SMALLDBG_TEST_LOG"))
+            debugger().setLogCallback([](const std::string& message) {
+                std::fprintf(stderr, "LOG %s\n", message.c_str());
+            });
         REQUIRE(debugger().waitForEvent(smalldbg::StopReason::None, 5000)
                 != smalldbg::StopReason::None);
     }
