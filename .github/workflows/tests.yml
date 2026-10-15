@@ -108,6 +108,8 @@ jobs:
       - name: Targets the tests left behind
         if: always() && runner.os == 'macOS'
         run: |
+          # A sample that fails must not stop the step before it ends them.
+          set +e +o pipefail
           for p in $(pgrep -x test_target); do
             ps -o pid,ppid,stat,command -p "$p"
             sudo -n perl -e 'alarm 60; exec @ARGV' spindump "$p" 1 -onlyTarget -stdout \
