@@ -1,12 +1,22 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace smalltalk { class Inspector; }
 
 namespace vmdbg {
+
+/** A picture a VM keeps in its own memory for the screen, such as the display
+ *  of a Smalltalk image. **/
+struct Framebuffer {
+    int width{0};
+    int height{0};
+    int depth{0};                 // bits per pixel
+    std::vector<uint8_t> pixels;  // rows from the top, as the VM keeps them
+};
 
 /** A named address range in the target: an object space, a code zone, a
  *  stack. Every VM divides its memory up somehow, and these are what answer
@@ -60,6 +70,10 @@ public:
     /** The Smalltalk view of this inspector, null when it inspects something
      *  else. Declared here so a server can ask without a downcast. **/
     virtual smalltalk::Inspector* smalltalkView() { return nullptr; }
+
+    /** Reads the picture the VM shows on its screen. Returns nothing when the
+     *  VM keeps none or it cannot be read; by default there is none. **/
+    virtual std::optional<Framebuffer> framebuffer() const { return std::nullopt; }
 
 protected:
     void clearRegions() { regionTable.clear(); }
