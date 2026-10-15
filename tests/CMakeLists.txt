@@ -104,7 +104,8 @@ if(WIN32)
     set_tests_properties(perf-tests PROPERTIES LABELS perf TIMEOUT 300)
 endif()
 
-# Include DbgEng register tests (Windows only, separate diagnostic tools)
-if(WIN32)
+# Include DbgEng register tests (Windows only, separate diagnostic tools).
+# Their target is x86 or x64 assembly, which MASM does not build for ARM64.
+if(WIN32 AND NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64")
     add_subdirectory(dbgeng_regs)
 endif()
