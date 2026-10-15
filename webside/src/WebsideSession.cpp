@@ -270,11 +270,13 @@ int physicalIndex(const std::vector<std::unique_ptr<smalldbg::StackFrame>>& fram
 }
 
 // Returns the role the slot at `address` has in `frame`, or null when it has
-// none.
+// none. On ARM64 the frame record is often at the bottom of the frame, so fp
+// and sp are the same slot; it is the sp then, as the return address next to
+// it already shows where the frame record is.
 const char* abiRole(const smalldbg::StackFrame& frame, uint64_t address, size_t slot) {
     if (address == frame.fp() + slot) return "retAddr";
-    if (address == frame.fp()) return "fp";
     if (address == frame.sp()) return "sp";
+    if (address == frame.fp()) return "fp";
     return nullptr;
 }
 
