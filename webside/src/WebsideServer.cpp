@@ -659,11 +659,18 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
         return res;
     }
 
+    // Without an address the whole stack is described, as a green thread's is.
     if (segments[2] == "stack") {
-        res.body = stackDescriptors(thread,
-                                    static_cast<int>(param64(req, "frame", 1)),
-                                    param64(req, "address"),
-                                    static_cast<int>(param64(req, "count", 64)));
+        const int selected = static_cast<int>(param64(req, "frame", 1));
+        auto* trace = thread.getStackTrace(256);
+        if (!trace)
+            res.body = "[]";
+        else if (req.params.count("address"))
+            res.body = session().stackDescriptors(
+                *trace, selected, param64(req, "address"),
+                static_cast<int>(param64(req, "count", 64)));
+        else
+            res.body = session().stackDescriptors(*trace, selected);
         return res;
     }
 
