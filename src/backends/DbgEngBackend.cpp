@@ -826,6 +826,25 @@ Status DbgEngBackend::readMemory(Address address, void* outBuf, size_t size) con
     return result;
 }
 
+// The engine knows the memory map of a live process and of a dump that kept
+// one. The regions after the one holding `address` belong to the same
+// allocation while they share its base.
+std::pair<Address, Address> DbgEngBackend::allocationContaining(Address address) const {
+    if (!attached || address == 0) return {0, 0};
+
+    std::pair<Address, Address> found{0, 0};
+    runOnEngineThread([&]{
+        MEMORY_BASIC_INFORMATION64 info{};
+        if (FAILED(dataSpaces->QueryVirtual(address, &info)) || info.State == MEM_FREE) return;
+        const Address start = info.AllocationBase;
+        Address end = start;
+        while (SUCCEEDED(dataSpaces->QueryVirtual(end, &info)) && info.AllocationBase == start)
+            end = info.BaseAddress + info.RegionSize;
+        found = {start, end};
+    });
+    return found;
+}
+
 Status DbgEngBackend::writeMemory(Address address, const void* data, size_t size) {
     if (!attached) return Status::NotAttached;
     if (!dataSpaces) return Status::NotSupported;

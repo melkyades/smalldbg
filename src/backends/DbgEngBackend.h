@@ -103,6 +103,7 @@ public:
     Status clearWriteBreakpoint(Address address) override;
 
     Status readMemory(Address address, void* outBuf, size_t size) const override;
+    std::pair<Address, Address> allocationContaining(Address address) const override;
     Status writeMemory(Address address, const void* data, size_t size) override;
     Status getRegisters(Thread* thread, Registers& out) const override;
     Status recoverCallerRegisters(Registers& regs) const override;
