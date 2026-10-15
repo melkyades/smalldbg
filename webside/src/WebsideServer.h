@@ -149,6 +149,9 @@ protected:
     // ---- hook for subclass-specific routes ----
     virtual void setupRoutes();
 
+    /** Runs the target to the next write of the memory the body names, or a
+     *  replay back to the last one. **/
+    HttpResponse handleRunToWrite(const HttpRequest& req, bool backwards);
     /** Runs the debugger's thread to the address in the request body,
      *  forwards or backwards. **/
     HttpResponse handleRunTo(const HttpRequest& req, bool backwards);

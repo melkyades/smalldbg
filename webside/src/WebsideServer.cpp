@@ -1467,6 +1467,19 @@ bool WebsideServer::stepAction(const std::vector<std::string>& segments) {
     return false;
 }
 
+// The body names the memory to watch, {address, size}; size defaults to a
+// pointer's, the size of an object's slot.
+HttpResponse WebsideServer::handleRunToWrite(const HttpRequest& req, bool backwards) {
+    auto body = Json::parse(req.body);
+    const uint64_t address = addressIn(body["address"]);
+    if (address == 0) return badRequest("address required");
+    const size_t size = body["size"].isNumber() ? static_cast<size_t>(body["size"].asUInt())
+                                                : session().pointerSize();
+    HttpResponse res;
+    res.body = runControlResult(session().runToWrite(address, size, backwards));
+    return res;
+}
+
 HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) {
     HttpResponse res;
     auto segments = splitPath(req.path);
@@ -1695,6 +1708,12 @@ void WebsideServer::setupDebuggerActionRoutes() {
 
         if (segments.size() >= 3 && segments[2] == "runto")
             return handleRunTo(req, false);
+
+        if (segments.size() >= 3 && segments[2] == "runtowrite")
+            return handleRunToWrite(req, false);
+
+        if (segments.size() >= 3 && segments[2] == "reverseruntowrite")
+            return handleRunToWrite(req, true);
 
         if (segments.size() >= 3 && segments[2] == "reverserunto")
             return handleRunTo(req, true);
