@@ -108,7 +108,7 @@ jobs:
         if: always() && runner.os == 'macOS'
         timeout-minutes: 2
         run: |
-          ps -o pid,ppid,stat,command -p "$(pgrep -d, -x test_target)" || true
+          if pids=$(pgrep -d, -x test_target); then ps -o pid,ppid,stat,command -p "$pids"; fi
           sudo -n pkill -9 -x test_target || true
           sleep 2
           pgrep -lx test_target || echo "no test_target left"
