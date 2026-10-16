@@ -102,19 +102,13 @@ jobs:
         run: >-
           ${{ runner.os == 'macOS' && 'SMALLDBG_TEST_LOG=1' || '' }}
           ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
-      # On the macOS runners the targets the webside tests detach from do not
-      # run on to their exit, and ctest waits for them. This shows what each
-      # one is doing, then ends them so the job can finish.
+      # On the macOS runners the targets the tests detach from stay stopped,
+      # and the runner cannot clean them up. This lists them and ends them.
       - name: Targets the tests left behind
         if: always() && runner.os == 'macOS'
+        timeout-minutes: 2
         run: |
-          # A sample that fails must not stop the step before it ends them.
-          set +e +o pipefail
-          for p in $(pgrep -x test_target); do
-            ps -o pid,ppid,stat,command -p "$p"
-            sudo -n perl -e 'alarm 60; exec @ARGV' spindump "$p" 1 -onlyTarget -stdout \
-              -noProcessingWhileSampling 2>&1 | sed -n '/^Process:/,$p' | head -60
-          done
+          ps -o pid,ppid,stat,command -p "$(pgrep -d, -x test_target)" || true
           sudo -n pkill -9 -x test_target || true
           sleep 2
           pgrep -lx test_target || echo "no test_target left"
