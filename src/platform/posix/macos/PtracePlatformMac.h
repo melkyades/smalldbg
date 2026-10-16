@@ -101,6 +101,8 @@ private:
     // Threads whose fault was answered by letting the kernel raise its
     // signal: that signal is the program's to handle, not another stop.
     std::set<ThreadId> deliverNextSignal;
+    // Set while a detach waits for the SIGCONT it holds the target on.
+    std::atomic<bool> holdingSigcont{false};
 
     // The thread being stepped, and the others kept suspended meanwhile.
     ThreadId steppingThread{0};
@@ -113,7 +115,7 @@ private:
     void receiveException(const MachExceptionMessage& msg);
     bool passesThrough(const HeldException& exception);
     void hold(const HeldException& exception);
-    bool holdSigstop(int pid);
+    bool holdSigcont(int pid);
     int takeStop();
     void keepSuspendedUnless(mach_port_t thread, mach_port_t stepped);
     void finishStep();

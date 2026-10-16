@@ -188,15 +188,17 @@ int PtracePlatformMac::ptraceAttach(int pid) {
 // The target keeps running once detached, with the exception ports it had.
 //
 // PT_DETACH only lets go of a target the kernel has stopped, which it does
-// while a signal of the target's waits for the server's answer. So a SIGSTOP
+// while a signal of the target's waits for the server's answer. So a signal
 // is held first and the target gets its own exception ports back; once
 // detached, everything held is answered. Answering first would let the
 // stopped thread go on in the kernel before PT_DETACH could see it stopped.
+// The signal held is a SIGCONT: macOS 26 delivers it once the target is
+// detached, and a SIGCONT, unlike a SIGSTOP, leaves the target running.
 int PtracePlatformMac::ptraceDetach(int pid) {
     if (taskPort != MACH_PORT_NULL) {
         finishStep();
-        if (!holdSigstop(pid))
-            doLog("(ptrace) the SIGSTOP to detach on was not held in time");
+        if (!holdSigcont(pid))
+            doLog("(ptrace) the SIGCONT to detach on was not held in time");
         restoreExceptionPorts();
     }
     int result = ptrace(PT_DETACH, pid, reinterpret_cast<caddr_t>(1), 0);
@@ -962,6 +964,7 @@ bool PtracePlatformMac::passesThrough(const HeldException& exception) {
     if (!isSignal(exception.exception, exception.code)) return false;
     int signal = static_cast<int>(exception.subcode);
     bool faultSignal = deliverNextSignal.erase(exception.thread) > 0;
+    if (holdingSigcont && signal == SIGCONT) return false;
     if (!faultSignal && !isRoutineSignal(signal)) return false;
 
     ptrace(PT_THUPDATE, targetPid,
@@ -1037,19 +1040,25 @@ void PtracePlatformMac::resumeHeld() {
     }
 }
 
-// Sends the target a SIGSTOP and waits for the server to hold it, letting go
+// Sends the target a SIGCONT and waits for the server to hold it, letting go
 // of any stop held before so that it can arrive. Answers false when it does
 // not arrive in time.
-bool PtracePlatformMac::holdSigstop(int pid) {
-    if (kill(pid, SIGSTOP) < 0) return false;
+bool PtracePlatformMac::holdSigcont(int pid) {
+    holdingSigcont = true;
+    if (kill(pid, SIGCONT) < 0) {
+        holdingSigcont = false;
+        return false;
+    }
     resumeHeld();
     std::unique_lock<std::mutex> lock(exceptionMutex);
-    return exceptionCv.wait_for(lock, std::chrono::seconds(2), [this] {
+    bool arrived = exceptionCv.wait_for(lock, std::chrono::seconds(2), [this] {
         return std::any_of(held.begin(), held.end(), [](const HeldException& e) {
             return e.replyPort != MACH_PORT_NULL && isSignal(e.exception, e.code)
-                && e.subcode == SIGSTOP;
+                && e.subcode == SIGCONT;
         });
     });
+    holdingSigcont = false;
+    return arrived;
 }
 
 void PtracePlatformMac::answer(const HeldException& exception, kern_return_t result) {
