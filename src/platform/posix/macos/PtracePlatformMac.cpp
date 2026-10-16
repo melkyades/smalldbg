@@ -1,7 +1,8 @@
 // PtracePlatformMac — macOS implementation using ptrace + Mach APIs.
 //
 // Uses:
-//   - ptrace(PT_TRACE_ME / PT_ATTACHEXC / PT_DETACH / PT_CONTINUE / PT_STEP)
+//   - ptrace(PT_ATTACHEXC / PT_THUPDATE / PT_DETACH) and a Mach exception
+//     server through which every stop of the target arrives
 //   - Mach VM APIs for memory access  (mach_vm_read_overwrite / mach_vm_write)
 //   - Mach thread APIs for registers  (thread_get_state / thread_set_state)
 //   - task_threads() for thread enumeration
@@ -22,6 +23,12 @@
 #include <mach/mach_vm.h>
 #include <mach/exception_types.h>
 #include <mach/task.h>
+#include <mach-o/dyld_images.h>
+#include <mach-o/loader.h>
+#include <libproc.h>
+#include <algorithm>
+#include <chrono>
+#include <optional>
 
 namespace smalldbg {
 
@@ -58,22 +65,23 @@ int PtracePlatformMac::ptraceTraceMe() {
 }
 
 // ---------------------------------------------------------------------------
-// spawnStopped — macOS-specific launch using posix_spawn + PT_ATTACHEXC.
+// Launching and attaching
 // ---------------------------------------------------------------------------
 //
-// macOS does NOT deliver a posix SIGTRAP to a PT_TRACE_ME-tracing parent after
-// the child's exec — the kernel routes exec stops through Mach exceptions.
-// The standard pattern (used by LLDB) is:
-//   1. posix_spawn with POSIX_SPAWN_START_SUSPENDED:
-//        the kernel forks, execs the new image, then sends the child SIGSTOP
-//        before any user code runs.  The parent gets back the child pid.
-//   2. waitpid for the SIGSTOP — confirms the child is at the entry of the
-//      new image and suspended.
-//   3. PT_ATTACHEXC on the child — installs Mach exception ports through
-//      ptrace, so subsequent stops (breakpoints, crashes, signals) deliver
-//      via waitpid as on Linux.
-// At return the child is still SIGSTOP'd and ready for inspection; the caller
-// resumes it later via ptraceContinue().
+// Under PT_ATTACHEXC macOS reports every signal the target gets as a Mach
+// exception (EXC_SOFTWARE / EXC_SOFT_SIGNAL) sent to the task's exception
+// port, not as a waitpid stop; a signal nobody answers is delivered for real,
+// so a breakpoint's SIGTRAP would kill the target. The exception server is
+// therefore started, and takes the target's exception ports, before ptrace
+// attaches: from then on every stop, the first one included, is a message
+// held by the server (see "Mach exception server" below).
+//
+// A launch spawns the target suspended at its first instruction
+// (POSIX_SPAWN_START_SUSPENDED), takes its ports, attaches and lets it go: its
+// first stop is the SIGSTOP of the suspended spawn, before any of its code
+// runs. An attach takes the ports of the running target and attaches: its
+// first stop is the SIGSTOP attaching sends.
+
 int PtracePlatformMac::spawnStopped(const std::string& path,
                                     const std::vector<std::string>& args,
                                     const std::string& workingDir) {
@@ -143,23 +151,31 @@ int PtracePlatformMac::spawnStopped(const std::string& path,
         return -1;
     }
 
-    // Install Mach exception ports through ptrace so future stops surface via
-    // waitpid the way they do on Linux.
-    if (ptrace(PT_ATTACHEXC, child, nullptr, 0) < 0) {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "(ptrace) PT_ATTACHEXC failed: %s", strerror(errno));
-        doLog(buf);
+    bool attachedStopped = acquireProcess(child) == Status::Ok
+        && ptraceAttach(child) == 0
+        && ptrace(PT_CONTINUE, child, reinterpret_cast<caddr_t>(1), 0) == 0
+        && waitForStop(child, 5000, status) == SIGSTOP;
+    if (!attachedStopped) {
+        doLog("(ptrace) " + path + " did not stop at its entry");
+        releaseProcess();
         kill(child, SIGKILL);
         waitpid(child, nullptr, 0);
         return -1;
     }
-
-    // After PT_ATTACHEXC the kernel may push an additional stop event onto
-    // the queue. Drain it with a non-blocking waitpid so the child is in a
-    // clean stopped state when we return.
-    waitpid(child, &status, WNOHANG | WUNTRACED);
-
     return static_cast<int>(child);
+}
+
+int PtracePlatformMac::attachStopped(int pid) {
+    int status = 0;
+    bool attachedStopped = acquireProcess(pid) == Status::Ok
+        && ptraceAttach(pid) == 0
+        && waitForStop(pid, 5000, status) == SIGSTOP;
+    if (attachedStopped) return 0;
+
+    doLog("(ptrace) pid " + std::to_string(pid) + " did not stop after attach");
+    ptraceDetach(pid);
+    releaseProcess();
+    return -1;
 }
 
 int PtracePlatformMac::ptraceAttach(int pid) {
@@ -169,26 +185,133 @@ int PtracePlatformMac::ptraceAttach(int pid) {
     return result;
 }
 
+// The target keeps running once detached, with the exception ports it had.
+//
+// PT_DETACH only lets go of a target the kernel has stopped, which it does
+// while a signal of the target's waits for the server's answer. So a signal
+// is held first and the target gets its own exception ports back; once
+// detached, everything held is answered. Answering first would let the
+// stopped thread go on in the kernel before PT_DETACH could see it stopped.
+// The signal held is a SIGCONT: macOS 26 delivers it once the target is
+// detached, and a SIGCONT, unlike a SIGSTOP, leaves the target running.
 int PtracePlatformMac::ptraceDetach(int pid) {
-    return ptrace(PT_DETACH, pid, nullptr, 0);
+    if (taskPort != MACH_PORT_NULL) {
+        finishStep();
+        if (!holdSigcont(pid))
+            doLog("(ptrace) the SIGCONT to detach on was not held in time");
+        restoreExceptionPorts();
+    }
+    int result = ptrace(PT_DETACH, pid, reinterpret_cast<caddr_t>(1), 0);
+    if (result < 0)
+        doLog("(ptrace) PT_DETACH failed: " + std::string(strerror(errno)));
+    resumeHeld();
+    return result;
 }
 
 int PtracePlatformMac::ptraceContinue(int pid) {
-    int result = ptrace(PT_CONTINUE, pid, reinterpret_cast<caddr_t>(1), 0);
-    if (result < 0)
-        doLog("(ptrace) PT_CONTINUE failed: " + std::string(strerror(errno)));
-    return result;
+    (void)pid;  // the target is resumed by answering what stopped it
+    resumeHeld();
+    return 0;
 }
 
-int PtracePlatformMac::ptraceStep(int pid) {
-    int result = ptrace(PT_STEP, pid, reinterpret_cast<caddr_t>(1), 0);
-    if (result < 0)
-        doLog("(ptrace) PT_STEP failed: " + std::string(strerror(errno)));
-    return result;
+namespace {
+
+// Makes `thread` trap after its next instruction, or stop doing so.
+kern_return_t setSingleStep(mach_port_t thread, bool on) {
+#if defined(__arm64__) || defined(__aarch64__)
+    arm_debug_state64_t state{};
+    mach_msg_type_number_t count = ARM_DEBUG_STATE64_COUNT;
+    kern_return_t kr = thread_get_state(thread, ARM_DEBUG_STATE64,
+                                        reinterpret_cast<thread_state_t>(&state), &count);
+    if (kr != KERN_SUCCESS) return kr;
+    if (on) state.__mdscr_el1 |= 1;  // MDSCR_EL1.SS
+    else state.__mdscr_el1 &= ~uint64_t(1);
+    return thread_set_state(thread, ARM_DEBUG_STATE64,
+                            reinterpret_cast<thread_state_t>(&state), count);
+#else
+    x86_thread_state64_t state{};
+    mach_msg_type_number_t count = x86_THREAD_STATE64_COUNT;
+    kern_return_t kr = thread_get_state(thread, x86_THREAD_STATE64,
+                                        reinterpret_cast<thread_state_t>(&state), &count);
+    if (kr != KERN_SUCCESS) return kr;
+    if (on) state.__rflags |= 0x100;  // TF
+    else state.__rflags &= ~uint64_t(0x100);
+    return thread_set_state(thread, x86_THREAD_STATE64,
+                            reinterpret_cast<thread_state_t>(&state), count);
+#endif
+}
+
+} // namespace
+
+// Steps `thread` alone: the others stay suspended until it has run its
+// instruction, so the step ends where the thread was.
+int PtracePlatformMac::ptraceStep(int pid, ThreadId thread) {
+    mach_port_t stepped = static_cast<mach_port_t>(thread);
+    kern_return_t kr = setSingleStep(stepped, true);
+    if (kr != KERN_SUCCESS) {
+        doLog("(ptrace) cannot single-step thread: " + std::string(mach_error_string(kr)));
+        return -1;
+    }
+    steppingThread = thread;
+
+    thread_act_array_t threads = nullptr;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(taskPort, &threads, &count) == KERN_SUCCESS) {
+        for (mach_msg_type_number_t i = 0; i < count; i++)
+            keepSuspendedUnless(threads[i], stepped);
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads),
+                      count * sizeof(thread_act_t));
+    }
+    return ptraceContinue(pid);
+}
+
+void PtracePlatformMac::keepSuspendedUnless(mach_port_t thread, mach_port_t stepped) {
+    if (thread != stepped && thread_suspend(thread) == KERN_SUCCESS) {
+        keptSuspended.push_back(thread);
+        return;
+    }
+    mach_port_deallocate(mach_task_self(), thread);
+}
+
+// Ends a step, once the target stopped: the stepped thread no longer traps
+// and the others may run again.
+void PtracePlatformMac::finishStep() {
+    if (steppingThread == 0) return;
+    setSingleStep(static_cast<mach_port_t>(steppingThread), false);
+    steppingThread = 0;
+    for (auto thread : keptSuspended) {
+        thread_resume(thread);
+        mach_port_deallocate(mach_task_self(), thread);
+    }
+    keptSuspended.clear();
 }
 
 void PtracePlatformMac::ptraceKill(int pid) {
     ptrace(PT_KILL, pid, nullptr, 0);
+}
+
+// Suspending the task stops every thread where it is, with no signal left
+// pending to stop it again later; the stop is held as if a SIGSTOP had
+// arrived on the first thread.
+int PtracePlatformMac::interrupt(int pid) {
+    (void)pid;
+    if (task_suspend(taskPort) != KERN_SUCCESS) return -1;
+
+    HeldException interrupted;
+    interrupted.exception = EXC_SOFTWARE;
+    interrupted.code = EXC_SOFT_SIGNAL;
+    interrupted.subcode = SIGSTOP;
+    thread_act_array_t threads = nullptr;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(taskPort, &threads, &count) == KERN_SUCCESS && count > 0) {
+        interrupted.thread = threads[0];
+        for (mach_msg_type_number_t i = 1; i < count; i++)
+            mach_port_deallocate(mach_task_self(), threads[i]);
+        vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads),
+                      count * sizeof(thread_act_t));
+    }
+    hold(interrupted);
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +319,7 @@ void PtracePlatformMac::ptraceKill(int pid) {
 // ---------------------------------------------------------------------------
 
 Status PtracePlatformMac::acquireProcess(int pid) {
+    if (taskPort != MACH_PORT_NULL && targetPid == pid) return Status::Ok;
     targetPid = pid;
     kern_return_t kr = task_for_pid(mach_task_self(), pid, &taskPort);
     if (kr != KERN_SUCCESS) {
@@ -203,13 +327,13 @@ Status PtracePlatformMac::acquireProcess(int pid) {
               + " (requires sudo or com.apple.security.cs.debugger entitlement)");
         return Status::Error;
     }
-    // Install a Mach exception server so EXC_BAD_ACCESS / EXC_BAD_INSTRUCTION /
-    // EXC_CRASH etc. surface to the debugger instead of terminating the child.
-    // Failure here is non-fatal — we fall back to the existing PT_ATTACHEXC
-    // path which only catches SIGTRAP (breakpoints/single-step).
-    if (startExceptionServer() != Status::Ok)
-        doLog("(ptrace) Mach exception server failed to start; fatal signals "
-              "will terminate the child silently");
+    // Every stop of the target reaches the debugger through the exception
+    // server, so there is no debugging it without one.
+    if (startExceptionServer() != Status::Ok) {
+        mach_port_deallocate(mach_task_self(), taskPort);
+        taskPort = MACH_PORT_NULL;
+        return Status::Error;
+    }
 
     // Optional HW watchpoint seeded from the environment. Useful when chasing
     // "which code path wrote this stale pointer" bugs: set SMALLDBG_WATCH_ADDR
@@ -230,7 +354,11 @@ Status PtracePlatformMac::acquireProcess(int pid) {
 }
 
 void PtracePlatformMac::releaseProcess() {
+    finishStep();
+    resumeHeld();
     stopExceptionServer();
+    lastStopThread = 0;
+    deliverNextSignal.clear();
 
     for (auto port : cachedThreadPorts)
         mach_port_deallocate(mach_task_self(), port);
@@ -262,17 +390,101 @@ Status PtracePlatformMac::readMemory(Address addr, void* buf, size_t size) const
     return Status::Ok;
 }
 
+namespace {
+
+// The protection of the region holding `addr`, or nothing when no region
+// holds it.
+std::optional<vm_prot_t> protectionAt(mach_port_t task, Address addr) {
+    mach_vm_address_t start = addr;
+    mach_vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    kern_return_t kr = mach_vm_region(task, &start, &size, VM_REGION_BASIC_INFO_64,
+                                      reinterpret_cast<vm_region_info_t>(&info),
+                                      &count, &object);
+    if (kr != KERN_SUCCESS || start > addr) return std::nullopt;
+    return info.protection;
+}
+
+} // namespace
+
+namespace {
+
+// The entry at or after `address`, or nothing past the last one.
+std::optional<MapEntry> mapEntryFrom(mach_port_t task, mach_vm_address_t address) {
+    MapEntry entry;
+    entry.start = address;
+    mach_vm_size_t size = 0;
+    vm_region_extended_info_data_t info{};
+    mach_msg_type_number_t count = VM_REGION_EXTENDED_INFO_COUNT;
+    mach_port_t object = MACH_PORT_NULL;
+    if (mach_vm_region(task, &entry.start, &size, VM_REGION_EXTENDED_INFO,
+                       reinterpret_cast<vm_region_info_t>(&info), &count,
+                       &object) != KERN_SUCCESS)
+        return std::nullopt;
+    entry.end = entry.start + size;
+    entry.tag = info.user_tag;
+    return entry;
+}
+
+} // namespace
+
+// The VM map keeps no record of which entries one allocation made, so an
+// allocation is taken to be the run of entries around the address that touch
+// one another and were allocated for the same purpose.
+std::pair<Address, Address> PtracePlatformMac::allocationContaining(Address addr) const {
+    if (taskPort == MACH_PORT_NULL || addr == 0) return {0, 0};
+    auto entry = mapEntryFrom(taskPort, addr);
+    if (!entry || entry->start > addr) return {0, 0};
+
+    MapEntry allocation = growForward(*entry);
+    while (auto grown = growBackward(allocation)) allocation = *grown;
+    return {allocation.start, allocation.end};
+}
+
+// The allocation with the entries after it that touch it and were allocated
+// for the same thing.
+MapEntry PtracePlatformMac::growForward(MapEntry allocation) const {
+    while (auto after = mapEntryFrom(taskPort, allocation.end)) {
+        if (after->start != allocation.end || after->tag != allocation.tag) break;
+        allocation.end = after->end;
+    }
+    return allocation;
+}
+
+// The allocation with the entry in front of it, or nothing when that entry
+// does not touch it or was allocated for something else.
+std::optional<MapEntry> PtracePlatformMac::growBackward(MapEntry allocation) const {
+    if (allocation.start == 0) return std::nullopt;
+    auto before = mapEntryFrom(taskPort, allocation.start - 1);
+    if (!before || before->start >= allocation.start || before->end != allocation.start
+        || before->tag != allocation.tag)
+        return std::nullopt;
+    allocation.start = before->start;
+    return allocation;
+}
+
+// Code pages are mapped read-only and executable, so writing a breakpoint
+// makes a private, writable copy of the pages it touches, writes, and gives
+// them back the protection they had. Taking execute away and not giving it
+// back would fault the target on the next instruction it runs from those
+// pages. Executed memory also has its instruction cache flushed, so the
+// target runs what was written.
 Status PtracePlatformMac::writeMemory(Address addr, const void* data, size_t size) {
     if (taskPort == MACH_PORT_NULL) return Status::NotAttached;
 
-    // Mach VM write may need the region to be writable.  Try to set
-    // VM_PROT_READ|VM_PROT_WRITE|VM_PROT_COPY first; if the region is
-    // already writable this is a harmless no-op.
-    mach_vm_protect(taskPort,
-                    static_cast<mach_vm_address_t>(addr & ~0xFFFULL),
-                    0x1000,
-                    false,
-                    VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+    auto protection = protectionAt(taskPort, addr);
+    if (!protection) return Status::Error;
+
+    mach_vm_address_t pageStart = mach_vm_trunc_page(addr);
+    mach_vm_size_t pagesSize = mach_vm_round_page(addr + size) - pageStart;
+    bool writable = (*protection & VM_PROT_WRITE) != 0;
+    if (!writable) {
+        kern_return_t kr = mach_vm_protect(taskPort, pageStart, pagesSize, false,
+                                           VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+        if (kr != KERN_SUCCESS) return Status::Error;
+    }
 
     kern_return_t kr = mach_vm_write(
         taskPort,
@@ -280,7 +492,14 @@ Status PtracePlatformMac::writeMemory(Address addr, const void* data, size_t siz
         reinterpret_cast<vm_offset_t>(data),
         static_cast<mach_msg_type_number_t>(size));
 
+    if (!writable)
+        mach_vm_protect(taskPort, pageStart, pagesSize, false, *protection);
     if (kr != KERN_SUCCESS) return Status::Error;
+
+    if (*protection & VM_PROT_EXECUTE) {
+        vm_machine_attribute_val_t flush = MATTR_VAL_CACHE_FLUSH;
+        mach_vm_machine_attribute(taskPort, addr, size, MATTR_CACHE, &flush);
+    }
     return Status::Ok;
 }
 
@@ -421,7 +640,7 @@ std::vector<ModuleInfo> PtracePlatformMac::enumerateModules() const {
     if (kr != KERN_SUCCESS) return modules;
 
     Address infosAddr = dyldInfo.all_image_info_addr;
-    if (infosAddr == 0) return modules;
+    if (infosAddr == 0) return modulesMappedByKernel();
 
     // Read version and infoArrayCount from dyld_all_image_infos.
     // Layout: uint32_t version, uint32_t infoArrayCount, uintptr_t infoArray
@@ -431,7 +650,8 @@ std::vector<ModuleInfo> PtracePlatformMac::enumerateModules() const {
     if (readMemory(infosAddr + 4, &imageCount, 4) != Status::Ok) return modules;
     if (readMemory(infosAddr + 8, &infoArrayPtr, 8) != Status::Ok) return modules;
 
-    if (imageCount == 0 || imageCount > 10000 || infoArrayPtr == 0) return modules;
+    if (imageCount == 0 || infoArrayPtr == 0) return modulesMappedByKernel();
+    if (imageCount > 10000) return modules;
 
     // Each dyld_image_info is: { const mach_header* imageLoadAddress,
     //                            const char* imageFilePath,
@@ -440,7 +660,58 @@ std::vector<ModuleInfo> PtracePlatformMac::enumerateModules() const {
     for (uint32_t i = 0; i < imageCount; i++) {
         readModuleEntry(modules, infoArrayPtr + i * 24);
     }
+
+    // dyld does not list itself, and every thread starts in it.
+    uint64_t dyldBase = 0;
+    if (readMemory(infosAddr + offsetof(dyld_all_image_infos, dyldImageLoadAddress),
+                   &dyldBase, sizeof dyldBase) == Status::Ok && dyldBase != 0) {
+        ModuleInfo dyld;
+        dyld.path = "/usr/lib/dyld";
+        dyld.loadAddress = dyldBase;
+        modules.push_back(std::move(dyld));
+    }
     return modules;
+}
+
+// Before dyld has run its image list is empty, and the modules there are
+// are the two the kernel mapped: the executable and dyld itself. They are
+// found by their Mach-O headers, at the start of a region.
+std::vector<ModuleInfo> PtracePlatformMac::modulesMappedByKernel() const {
+    std::vector<ModuleInfo> modules;
+    mach_vm_address_t address = 0;
+    while (true) {
+        mach_vm_size_t size = 0;
+        vm_region_basic_info_data_64_t info{};
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t object = MACH_PORT_NULL;
+        if (mach_vm_region(taskPort, &address, &size, VM_REGION_BASIC_INFO_64,
+                           reinterpret_cast<vm_region_info_t>(&info), &count,
+                           &object) != KERN_SUCCESS)
+            break;
+        addKernelMappedModule(modules, address);
+        address += size;
+    }
+    return modules;
+}
+
+void PtracePlatformMac::addKernelMappedModule(std::vector<ModuleInfo>& modules,
+                                              Address address) const {
+    mach_header_64 header{};
+    if (readMemory(address, &header, sizeof header) != Status::Ok) return;
+    if (header.magic != MH_MAGIC_64) return;
+
+    ModuleInfo mod;
+    mod.loadAddress = address;
+    if (header.filetype == MH_EXECUTE) {
+        char path[PROC_PIDPATHINFO_MAXSIZE]{};
+        if (proc_pidpath(targetPid, path, sizeof path) <= 0) return;
+        mod.path = path;
+        // First, as dyld lists it once it has run.
+        modules.insert(modules.begin(), std::move(mod));
+    } else if (header.filetype == MH_DYLINKER) {
+        mod.path = "/usr/lib/dyld";
+        modules.push_back(std::move(mod));
+    }
 }
 
 void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
@@ -466,54 +737,31 @@ void PtracePlatformMac::readModuleEntry(std::vector<ModuleInfo>& modules,
 // Mach exception server
 // ---------------------------------------------------------------------------
 //
-// Why this exists
-// ---------------
-// PT_ATTACHEXC routes the target task's exception ports through the parent so
-// SIGTRAP-style stops (breakpoints / single-step) surface as waitpid events.
-// What it does NOT do reliably on modern macOS is convert *fatal* exceptions
-// (EXC_BAD_ACCESS = SIGSEGV/SIGBUS, EXC_CRASH = SIGABRT, EXC_BAD_INSTRUCTION,
-// EXC_ARITHMETIC, EXC_GUARD) into ptrace stops.  Those bypass waitpid: the
-// child gets killed and waitpid returns WIFSIGNALED — at which point it is
-// too late to inspect anything.
+// Every stop of the target reaches the debugger here, as a Mach exception
+// message on a port the server owns and the target's exception ports point
+// at: a breakpoint or a single step (EXC_BREAKPOINT), a signal, including the
+// SIGSTOP of a suspend or an attach (EXC_SOFTWARE / EXC_SOFT_SIGNAL, which
+// PT_ATTACHEXC turns signals into), and a fault (EXC_BAD_ACCESS and the like).
 //
-// The canonical fix is to drain the Mach exception port ourselves.  We:
-//   1. Allocate a Mach receive port and grant ourselves a send right.
-//   2. task_set_exception_ports() on the target with EXC_MASK_ALL pointing
-//      at our port (this REPLACES the kernel default-handler chain that
-//      PT_ATTACHEXC put in place — and that's intentional).
-//   3. Spin up a dedicated thread that does mach_msg(MACH_RCV_MSG) in a loop.
-//
-// When an exception arrives we:
-//   - Hand-decode the message (rather than depending on MIG-generated stubs).
-//     The wire format is documented as mach_exception_raise (msg id 2401):
-//        mach_msg_header_t
-//        mach_msg_body_t body          // descriptor_count
-//        mach_msg_port_descriptor_t thread
-//        mach_msg_port_descriptor_t task
-//        NDR_record_t NDR
-//        exception_type_t exception
-//        mach_msg_type_number_t codeCnt
-//        mach_exception_data_type_t code[2]   // int64_t on 64-bit kernels
-//   - Suspend the target task so it stays paused while the debugger inspects.
-//   - Save a PendingException record and DON'T reply to the Mach message: the
-//     target stays suspended and the faulting thread frozen in exception state.
-//     PtraceBackend::waitForEvent polls pollAsyncException() to pick this up and
-//     turn it into a normal Exception stop. Once we've claimed the exception
-//     there's no posix signal-stop left for waitpid to wake on, so this
-//     cross-thread PendingException hand-off is the only channel back.
-//
-// EXC_BREAKPOINT / HW watchpoints
-// -------------------------------
-// Breakpoint and single-step traps normally stay on the ptrace-synthesised
-// path, so we don't register EXC_MASK_BREAKPOINT by default. The exception is
-// HW watchpoints: when one is configured we add EXC_MASK_BREAKPOINT so the hit
-// reaches this server, where the EXC_BREAKPOINT handler runs the
-// single-step/re-arm dance and reads the post-store value.
+// The thread that raised it waits for the answer, so the server suspends the
+// task and holds the message unanswered: the target stays where it stopped
+// while the debugger looks at it. waitForStop() reports held messages one at
+// a time, and resuming answers all of them:
+//   - a signal is first given to the thread to deliver (PT_THUPDATE): none
+//     for the SIGTRAP and SIGSTOP the debugger caused, the signal itself for
+//     any other, which is the program's;
+//   - a fault is answered with KERN_FAILURE, so the kernel raises the signal
+//     the program would have got without a debugger, which then passes
+//     through to it;
+//   - anything else is answered with KERN_SUCCESS and the thread goes on.
+// Signals a program takes in its stride, such as SIGCHLD or SIGALRM, pass
+// through as they arrive and never stop the target.
 
-// Wire-format of a mach_exception_raise message we expect to receive.
-// Packed so offsets match the kernel's layout exactly.
-namespace {
-struct MachExceptionRaiseMessage {
+// The mach_exception_raise message (EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES)
+// as the kernel lays it out: the codes follow the count with no padding, so
+// the struct is packed to 4 bytes.
+#pragma pack(push, 4)
+struct MachExceptionMessage {
     mach_msg_header_t header;
     mach_msg_body_t body;
     mach_msg_port_descriptor_t thread;
@@ -522,9 +770,71 @@ struct MachExceptionRaiseMessage {
     exception_type_t exception;
     mach_msg_type_number_t codeCnt;
     int64_t code[2];
-    // Trailer follows but we don't read it.
-    char trailer[64];
+    char trailer[64];  // room for the trailer the kernel appends
 };
+#pragma pack(pop)
+
+namespace {
+
+// Signals the debugger causes itself, which the program never gets.
+bool isDebuggerSignal(int signal) {
+    return signal == SIGTRAP || signal == SIGSTOP;
+}
+
+// Signals a program takes in its stride: they reach it without stopping it.
+bool isRoutineSignal(int signal) {
+    switch (signal) {
+        case SIGCHLD: case SIGWINCH: case SIGURG: case SIGALRM: case SIGVTALRM:
+        case SIGPROF: case SIGIO: case SIGINFO: case SIGPIPE: case SIGUSR1:
+        case SIGUSR2: case SIGCONT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isSignal(int exception, int64_t code) {
+    return exception == EXC_SOFTWARE && code == EXC_SOFT_SIGNAL;
+}
+
+// Exceptions the kernel turns into a signal for the program when they are
+// not handled.
+bool isFault(int exception) {
+    switch (exception) {
+        case EXC_BAD_ACCESS: case EXC_BAD_INSTRUCTION: case EXC_ARITHMETIC:
+        case EXC_GUARD: case EXC_CRASH:
+            return true;
+        default:
+            return false;
+    }
+}
+
+const char* exceptionName(int exception) {
+    switch (exception) {
+        case EXC_BAD_ACCESS:      return "EXC_BAD_ACCESS";
+        case EXC_BAD_INSTRUCTION: return "EXC_BAD_INSTRUCTION";
+        case EXC_ARITHMETIC:      return "EXC_ARITHMETIC";
+        case EXC_SOFTWARE:        return "EXC_SOFTWARE";
+        case EXC_BREAKPOINT:      return "EXC_BREAKPOINT";
+        case EXC_CRASH:           return "EXC_CRASH";
+        case EXC_GUARD:           return "EXC_GUARD";
+        default:                  return "EXC_?";
+    }
+}
+
+// The signal a stop is reported as.
+int signalOf(int exception, int64_t code, int64_t subcode) {
+    if (isSignal(exception, code)) return static_cast<int>(subcode);
+    switch (exception) {
+        case EXC_BAD_ACCESS:      return code == KERN_INVALID_ADDRESS ? SIGSEGV : SIGBUS;
+        case EXC_BAD_INSTRUCTION: return SIGILL;
+        case EXC_ARITHMETIC:      return SIGFPE;
+        case EXC_CRASH:           return SIGABRT;
+        case EXC_GUARD:           return SIGKILL;
+        default:                  return SIGTRAP;
+    }
+}
+
 struct MachExceptionRaiseReply {
     mach_msg_header_t header;
     NDR_record_t NDR;
@@ -554,21 +864,22 @@ Status PtracePlatformMac::startExceptionServer() {
         exceptionPort = MACH_PORT_NULL;
         return Status::Error;
     }
-    // Route fatal task-level exceptions to us. EXC_BREAKPOINT is included
-    // when a HW watchpoint is configured — without it the kernel would
-    // deliver watchpoint hits to the previous (ptrace) handler instead of
-    // ours, and we'd lose the rich register dump the Mach handler can do.
+    // Signals come as EXC_SOFTWARE under PT_ATTACHEXC, and breakpoints and
+    // steps as EXC_BREAKPOINT: every stop of the target comes here.
     exception_mask_t mask =
-        EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION |
-        EXC_MASK_ARITHMETIC | EXC_MASK_CRASH | EXC_MASK_GUARD;
-    if (std::getenv("SMALLDBG_WATCH_ADDR"))
-        mask |= EXC_MASK_BREAKPOINT;
-    kr = task_set_exception_ports(taskPort, mask, exceptionPort,
-                                  EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
-                                  THREAD_STATE_NONE);
+        EXC_MASK_BAD_ACCESS | EXC_MASK_BAD_INSTRUCTION | EXC_MASK_ARITHMETIC |
+        EXC_MASK_SOFTWARE | EXC_MASK_BREAKPOINT | EXC_MASK_CRASH | EXC_MASK_GUARD;
+    savedPorts.count = EXC_TYPES_COUNT;
+    kr = task_swap_exception_ports(taskPort, mask, exceptionPort,
+                                   EXCEPTION_DEFAULT | MACH_EXCEPTION_CODES,
+                                   THREAD_STATE_NONE,
+                                   savedPorts.masks, &savedPorts.count,
+                                   savedPorts.ports, savedPorts.behaviors,
+                                   savedPorts.flavors);
     if (kr != KERN_SUCCESS) {
-        doLog("(mach) task_set_exception_ports failed: " +
+        doLog("(mach) task_swap_exception_ports failed: " +
               std::string(mach_error_string(kr)));
+        savedPorts.count = 0;
         mach_port_deallocate(mach_task_self(), exceptionPort);
         exceptionPort = MACH_PORT_NULL;
         return Status::Error;
@@ -576,6 +887,13 @@ Status PtracePlatformMac::startExceptionServer() {
     exceptionThreadStop.store(false);
     exceptionThread = std::thread([this] { this->exceptionServerLoop(); });
     return Status::Ok;
+}
+
+void PtracePlatformMac::restoreExceptionPorts() {
+    for (mach_msg_type_number_t i = 0; i < savedPorts.count; i++)
+        task_set_exception_ports(taskPort, savedPorts.masks[i], savedPorts.ports[i],
+                                 savedPorts.behaviors[i], savedPorts.flavors[i]);
+    savedPorts.count = 0;
 }
 
 void PtracePlatformMac::stopExceptionServer() {
@@ -593,13 +911,173 @@ void PtracePlatformMac::stopExceptionServer() {
              MACH_PORT_NULL, 100, MACH_PORT_NULL);
     if (exceptionThread.joinable())
         exceptionThread.join();
+    // Anything that arrived meanwhile is answered rather than left waiting.
+    resumeHeld();
     mach_port_deallocate(mach_task_self(), exceptionPort);
+    mach_port_mod_refs(mach_task_self(), exceptionPort, MACH_PORT_RIGHT_RECEIVE, -1);
     exceptionPort = MACH_PORT_NULL;
+}
+
+void PtracePlatformMac::logFault(const MachExceptionMessage& msg) const {
+    char line[256];
+    snprintf(line, sizeof(line),
+             "(mach) caught %s code=0x%llx subcode=0x%llx thread=0x%llx",
+             exceptionName(msg.exception),
+             (unsigned long long)(msg.codeCnt > 0 ? msg.code[0] : 0),
+             (unsigned long long)(msg.codeCnt > 1 ? msg.code[1] : 0),
+             (unsigned long long)msg.thread.name);
+    doLog(line);
+}
+
+void PtracePlatformMac::receiveException(const MachExceptionMessage& msg) {
+    HeldException exception;
+    exception.replyPort = msg.header.msgh_remote_port;
+    exception.replyBits = MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits);
+    exception.replyId = msg.header.msgh_id + 100;
+    exception.thread = msg.thread.name;
+    exception.exception = msg.exception;
+    exception.code = msg.codeCnt > 0 ? msg.code[0] : 0;
+    exception.subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
+    mach_port_deallocate(mach_task_self(), msg.task.name);
+    if (passesThrough(exception)) return;
+    if (handleWatchpointException(exception)) return;
+
+    // Suspend the target so it stays paused for the debugger to inspect.
+    task_suspend(taskPort);
+    if (isFault(exception.exception)) logFault(msg);
+    hold(exception);
+}
+
+// The task stays suspended and the thread waits for the answer, so the
+// target stays where it stopped while the debugger looks at it.
+void PtracePlatformMac::hold(const HeldException& exception) {
+    {
+        std::lock_guard<std::mutex> lock(exceptionMutex);
+        held.push_back(exception);
+    }
+    exceptionCv.notify_all();
+}
+
+// A routine signal, or the one a fault the debugger let go of raises, goes
+// straight to the program.
+bool PtracePlatformMac::passesThrough(const HeldException& exception) {
+    if (!isSignal(exception.exception, exception.code)) return false;
+    int signal = static_cast<int>(exception.subcode);
+    bool faultSignal = deliverNextSignal.erase(exception.thread) > 0;
+    if (holdingSigcont && signal == SIGCONT) return false;
+    if (!faultSignal && !isRoutineSignal(signal)) return false;
+
+    ptrace(PT_THUPDATE, targetPid,
+           reinterpret_cast<caddr_t>(static_cast<uintptr_t>(exception.thread)), signal);
+    answer(exception, KERN_SUCCESS);
+    return true;
+}
+
+// Reports the first stop not reported yet, as the signal it stands for, or
+// answers 0 when there is none. A stop ends any step under way.
+int PtracePlatformMac::takeStop() {
+    std::lock_guard<std::mutex> lock(exceptionMutex);
+    for (auto& exception : held) {
+        if (exception.reported) continue;
+        exception.reported = true;
+        lastStopThread = exception.thread;
+        finishStep();
+        return signalOf(exception.exception, exception.code, exception.subcode);
+    }
+    return 0;
+}
+
+int PtracePlatformMac::waitForStop(int pid, int timeoutMs, int& status) {
+    auto deadline = std::chrono::steady_clock::now()
+                    + std::chrono::milliseconds(std::max(timeoutMs, 0));
+    while (true) {
+        if (int signal = takeStop()) return signal;
+        if (waitpid(pid, &status, WNOHANG) > 0
+            && (WIFEXITED(status) || WIFSIGNALED(status)))
+            return -2;
+        if (timeoutMs >= 0 && std::chrono::steady_clock::now() >= deadline)
+            return -1;
+
+        // A process that exits sends no message, so waitpid is asked again
+        // at least every 50 ms.
+        std::unique_lock<std::mutex> lock(exceptionMutex);
+        exceptionCv.wait_for(lock, std::chrono::milliseconds(50), [this] {
+            return std::any_of(held.begin(), held.end(),
+                               [](const HeldException& e) { return !e.reported; });
+        });
+    }
+}
+
+// Answers every held exception, so the target runs again. A signal is given
+// to its thread to deliver, except the SIGTRAP and SIGSTOP the debugger
+// caused. A fault is answered with KERN_FAILURE, so the kernel raises the
+// signal the program would have got without a debugger.
+void PtracePlatformMac::resumeHeld() {
+    std::deque<HeldException> answering;
+    {
+        std::lock_guard<std::mutex> lock(exceptionMutex);
+        answering.swap(held);
+    }
+    for (const auto& exception : answering) {
+        if (exception.replyPort == MACH_PORT_NULL) {
+            if (exception.thread != 0)
+                mach_port_deallocate(mach_task_self(),
+                                     static_cast<mach_port_t>(exception.thread));
+            task_resume(taskPort);
+            continue;
+        }
+        if (isSignal(exception.exception, exception.code)) {
+            int signal = static_cast<int>(exception.subcode);
+            int delivered = isDebuggerSignal(signal) ? 0 : signal;
+            ptrace(PT_THUPDATE, targetPid,
+                   reinterpret_cast<caddr_t>(static_cast<uintptr_t>(exception.thread)),
+                   delivered);
+        }
+        bool fault = isFault(exception.exception);
+        if (fault) deliverNextSignal.insert(exception.thread);
+        answer(exception, fault ? KERN_FAILURE : KERN_SUCCESS);
+        if (taskPort != MACH_PORT_NULL) task_resume(taskPort);
+    }
+}
+
+// Sends the target a SIGCONT and waits for the server to hold it, letting go
+// of any stop held before so that it can arrive. Answers false when it does
+// not arrive in time.
+bool PtracePlatformMac::holdSigcont(int pid) {
+    holdingSigcont = true;
+    if (kill(pid, SIGCONT) < 0) {
+        holdingSigcont = false;
+        return false;
+    }
+    resumeHeld();
+    std::unique_lock<std::mutex> lock(exceptionMutex);
+    bool arrived = exceptionCv.wait_for(lock, std::chrono::seconds(2), [this] {
+        return std::any_of(held.begin(), held.end(), [](const HeldException& e) {
+            return e.replyPort != MACH_PORT_NULL && isSignal(e.exception, e.code)
+                && e.subcode == SIGCONT;
+        });
+    });
+    holdingSigcont = false;
+    return arrived;
+}
+
+void PtracePlatformMac::answer(const HeldException& exception, kern_return_t result) {
+    MachExceptionRaiseReply reply{};
+    reply.header.msgh_bits = MACH_MSGH_BITS(exception.replyBits, 0);
+    reply.header.msgh_size = sizeof(reply);
+    reply.header.msgh_remote_port = exception.replyPort;
+    reply.header.msgh_local_port = MACH_PORT_NULL;
+    reply.header.msgh_id = exception.replyId;
+    reply.NDR = NDR_record;
+    reply.RetCode = result;
+    mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
+             MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    mach_port_deallocate(mach_task_self(), static_cast<mach_port_t>(exception.thread));
 }
 
 void PtracePlatformMac::exceptionServerLoop() {
     while (!exceptionThreadStop.load()) {
-        MachExceptionRaiseMessage msg{};
+        MachExceptionMessage msg{};
         kern_return_t kr = mach_msg(&msg.header,
                                     MACH_RCV_MSG | MACH_RCV_TIMEOUT,
                                     0,
@@ -617,253 +1095,89 @@ void PtracePlatformMac::exceptionServerLoop() {
         if (msg.header.msgh_id == 0xDEADBEEF)
             break;  // shutdown wakeup
 
-        // Suspend the target so it stays paused for the debugger to inspect.
-        // It's almost certainly already suspended (the kernel pauses the
-        // crashing thread while awaiting our reply), but be defensive.
-        task_suspend(taskPort);
-
-        long subcode = msg.codeCnt > 1 ? msg.code[1] : 0;
-        {
-            std::lock_guard<std::mutex> lk(exceptionMutex);
-            pending_.present   = true;
-            pending_.exception = msg.exception;
-            pending_.code      = msg.codeCnt > 0 ? msg.code[0] : 0;
-            pending_.subcode   = subcode;
-            pending_.thread    = msg.thread.name;
-        }
-        // Surface a one-liner so the user sees the precise fault even when
-        // the backend's downstream signal-stop handler reports only "signal N".
-        const char* name = "EXC_?";
-        switch (msg.exception) {
-            case EXC_BAD_ACCESS:      name = "EXC_BAD_ACCESS";      break;
-            case EXC_BAD_INSTRUCTION: name = "EXC_BAD_INSTRUCTION"; break;
-            case EXC_ARITHMETIC:      name = "EXC_ARITHMETIC";      break;
-            case EXC_CRASH:           name = "EXC_CRASH";           break;
-            case EXC_GUARD:           name = "EXC_GUARD";           break;
-            case EXC_BREAKPOINT:      name = "EXC_BREAKPOINT (watchpoint)"; break;
-        }
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-                 "(mach) caught %s code=0x%lx subcode=0x%lx thread=0x%llx",
-                 name, pending_.code, pending_.subcode,
-                 (unsigned long long)pending_.thread);
-        doLog(buf);
-
-        // Dump the faulting thread's ARM64 register state so we can identify
-        // which object/slot is bad without needing the backend's downstream
-        // getRegisters to work (it doesn't, because SIGSTOP isn't the
-        // "expected" stop reason the backend was built for).
-        arm_thread_state64_t state{};
-        mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
-        kern_return_t gkr = thread_get_state(msg.thread.name,
-                                             ARM_THREAD_STATE64,
-                                             (thread_state_t)&state, &cnt);
-        if (gkr == KERN_SUCCESS) {
-            // Emit each line separately so doLog doesn't truncate at first \n.
-            char rb[256];
-            snprintf(rb, sizeof(rb), "(mach) pc=0x%llx lr=0x%llx fp=0x%llx sp=0x%llx",
-                (unsigned long long)state.__pc, (unsigned long long)state.__lr,
-                (unsigned long long)state.__fp, (unsigned long long)state.__sp);
-            doLog(rb);
-            for (int i = 0; i < 29; i += 4) {
-                snprintf(rb, sizeof(rb),
-                    "(mach) x%d=0x%llx x%d=0x%llx x%d=0x%llx x%d=0x%llx",
-                    i,   (unsigned long long)state.__x[i],
-                    i+1, (unsigned long long)state.__x[i+1],
-                    i+2, (unsigned long long)state.__x[i+2],
-                    i+3, (unsigned long long)state.__x[i+3]);
-                doLog(rb);
-            }
-            // Try to dump 64 bytes at x0 (typical 'this' / first arg).
-            // The faulting address (subcode/code depending on cpu) is what
-            // we *can't* read; dumping x0 helps identify which slot value
-            // is stale when the crash is reading the header of `*x0`.
-        } else {
-            doLog("(mach) thread_get_state failed: " +
-                  std::string(mach_error_string(gkr)));
-        }
-
-        // EXC_BREAKPOINT (HW watchpoint hit OR software-step completion).
-        //
-        // Two-phase state machine:
-        //
-        //   Phase A: real watchpoint hit (thread NOT in steppingThreads_).
-        //     1. Log writer PC/LR (post-write value isn't valid yet — store
-        //        hasn't completed). Save the PC.
-        //     2. Disable the HW watchpoint on this thread.
-        //     3. Set ARM64 software-step bits (MDSCR_EL1.SS + PSTATE.SS=1).
-        //     4. Mark thread as stepping, reply KERN_SUCCESS, resume.
-        //        The kernel executes ONE instruction (the trapping store)
-        //        with the watchpoint disabled — so the store actually
-        //        completes — then raises another EXC_BREAKPOINT for the
-        //        step.
-        //
-        //   Phase B: step completion (thread IS in steppingThreads_).
-        //     1. NOW the store has happened — read the post-write value
-        //        at the watched address.
-        //     2. Clear ARM64 step bits.
-        //     3. Re-arm the HW watchpoint.
-        //     4. Match check: stop if (value & mask) == match. Else log
-        //        the value, clear pending, reply KERN_SUCCESS, resume.
-        //
-        // This preserves program semantics (the store actually happens)
-        // while still letting us observe every write to the watched word.
-        if (msg.exception == EXC_BREAKPOINT) {
-            mach_port_t thr = msg.thread.name;
-            bool isStep = steppingThreads_.count(thr) > 0;
-            if (!isStep) {
-                // Phase A: real watchpoint hit. The store hasn't happened
-                // yet (HW watchpoint fires synchronously before the store
-                // completes). Don't try to read the post-write value here
-                // — read it in Phase B after the step.
-                arm_thread_state64_t ts{};
-                mach_msg_type_number_t tcnt = ARM_THREAD_STATE64_COUNT;
-                thread_get_state(thr, ARM_THREAD_STATE64,
-                                 (thread_state_t)&ts, &tcnt);
-                static int hitCount = 0;
-                hitCount++;
-                char buf[256];
-                snprintf(buf, sizeof(buf),
-                    "(watch) hit #%d pc=0x%llx lr=0x%llx fp=0x%llx sp=0x%llx (pre-store)",
-                    hitCount,
-                    (unsigned long long)ts.__pc,
-                    (unsigned long long)ts.__lr,
-                    (unsigned long long)ts.__fp,
-                    (unsigned long long)ts.__sp);
-                doLog(buf);
-                // Walk the ARM64 frame chain to give us a 6-deep backtrace.
-                // Each frame on AArch64: [x29 (prev FP)][LR]. We read the
-                // child's task memory directly via mach_vm_read since this
-                // thread is suspended in the exception.
-                {
-                    uint64_t fp = ts.__fp;
-                    for (int depth = 0; depth < 6 && fp != 0; depth++) {
-                        struct { uint64_t prevFp; uint64_t savedLr; } frame{};
-                        vm_size_t got = 0;
-                        vm_offset_t data = 0;
-                        kern_return_t rk = mach_vm_read(taskPort, fp,
-                                                        sizeof(frame), &data,
-                                                        (mach_msg_type_number_t*)&got);
-                        if (rk != KERN_SUCCESS || got < sizeof(frame)) break;
-                        frame = *(decltype(frame)*)data;
-                        vm_deallocate(mach_task_self(), data, got);
-                        char fbuf[160];
-                        snprintf(fbuf, sizeof(fbuf),
-                            "(watch)   frame[%d] fp=0x%llx lr=0x%llx",
-                            depth, (unsigned long long)fp,
-                            (unsigned long long)frame.savedLr);
-                        doLog(fbuf);
-                        // Sanity: stop if frame doesn't grow upward sensibly.
-                        if (frame.prevFp <= fp) break;
-                        fp = frame.prevFp;
-                    }
-                }
-
-                // Disable watchpoint AND set single-step bits.
-                arm_debug_state64_t dbg{};
-                mach_msg_type_number_t dcnt = ARM_DEBUG_STATE64_COUNT;
-                thread_get_state(thr, ARM_DEBUG_STATE64,
-                                 (thread_state_t)&dbg, &dcnt);
-                dbg.__wcr[0] = 0;
-                dbg.__mdscr_el1 |= 0x1; // SS
-                thread_set_state(thr, ARM_DEBUG_STATE64,
-                                 (thread_state_t)&dbg, dcnt);
-                // Also set PSTATE.SS (bit 21 of CPSR) so the kernel
-                // single-steps after this exception is dismissed.
-                ts.__cpsr |= (1u << 21);
-                tcnt = ARM_THREAD_STATE64_COUNT;
-                thread_set_state(thr, ARM_THREAD_STATE64,
-                                 (thread_state_t)&ts, tcnt);
-                steppingThreads_.insert(thr);
-                MachExceptionRaiseReply reply{};
-                reply.header.msgh_bits = MACH_MSGH_BITS(
-                    MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits), 0);
-                reply.header.msgh_size = sizeof(reply);
-                reply.header.msgh_remote_port = msg.header.msgh_remote_port;
-                reply.header.msgh_local_port = MACH_PORT_NULL;
-                reply.header.msgh_id = msg.header.msgh_id + 100;
-                reply.NDR = msg.NDR;
-                reply.RetCode = KERN_SUCCESS;
-                mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
-                         MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-                {
-                    std::lock_guard<std::mutex> lk(exceptionMutex);
-                    pending_ = PendingException{};
-                }
-                task_resume(taskPort);
-                continue;
-            }
-            // Phase B: step completion. The store has now executed.
-            steppingThreads_.erase(thr);
-            // Read post-write value.
-            uint64_t curValue = 0;
-            if (watchAddrLive_) {
-                vm_size_t got = 0;
-                vm_offset_t data = 0;
-                kern_return_t rk = mach_vm_read(taskPort, watchAddrLive_,
-                                                sizeof(uint64_t), &data,
-                                                (mach_msg_type_number_t*)&got);
-                if (rk == KERN_SUCCESS) {
-                    curValue = *(uint64_t*)data;
-                    vm_deallocate(mach_task_self(), data, got);
-                }
-            }
-            char buf[160];
-            snprintf(buf, sizeof(buf),
-                "(watch)   post-store value=0x%llx",
-                (unsigned long long)curValue);
-            doLog(buf);
-            // Clear single-step bits AND re-arm watchpoint.
-            arm_debug_state64_t dbg{};
-            mach_msg_type_number_t dcnt = ARM_DEBUG_STATE64_COUNT;
-            thread_get_state(thr, ARM_DEBUG_STATE64,
-                             (thread_state_t)&dbg, &dcnt);
-            dbg.__mdscr_el1 &= ~uint64_t(0x1);
-            if (watchAddrLive_) {
-                dbg.__wvr[0] = watchAddrLive_;
-                dbg.__wcr[0] = 0x1 | (0x2 << 1) | (0x2 << 3) | (0xFF << 5);
-            }
-            thread_set_state(thr, ARM_DEBUG_STATE64,
-                             (thread_state_t)&dbg, dcnt);
-            // Clear PSTATE.SS too.
-            arm_thread_state64_t ts{};
-            mach_msg_type_number_t tcnt = ARM_THREAD_STATE64_COUNT;
-            thread_get_state(thr, ARM_THREAD_STATE64,
-                             (thread_state_t)&ts, &tcnt);
-            ts.__cpsr &= ~uint32_t(1u << 21);
-            tcnt = ARM_THREAD_STATE64_COUNT;
-            thread_set_state(thr, ARM_THREAD_STATE64,
-                             (thread_state_t)&ts, tcnt);
-            // Match check.
-            bool stop = (watchMatchLive_ != 0) &&
-                        ((curValue & watchMaskLive_) == watchMatchLive_);
-            if (!stop) {
-                MachExceptionRaiseReply reply{};
-                reply.header.msgh_bits = MACH_MSGH_BITS(
-                    MACH_MSGH_BITS_REMOTE(msg.header.msgh_bits), 0);
-                reply.header.msgh_size = sizeof(reply);
-                reply.header.msgh_remote_port = msg.header.msgh_remote_port;
-                reply.header.msgh_local_port = MACH_PORT_NULL;
-                reply.header.msgh_id = msg.header.msgh_id + 100;
-                reply.NDR = msg.NDR;
-                reply.RetCode = KERN_SUCCESS;
-                mach_msg(&reply.header, MACH_SEND_MSG, sizeof(reply), 0,
-                         MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-                {
-                    std::lock_guard<std::mutex> lk(exceptionMutex);
-                    pending_ = PendingException{};
-                }
-                task_resume(taskPort);
-                continue;
-            }
-            // Match — fall through to "stay stopped" so debugger inspects.
-        }
-
-        // Don't reply to the Mach message and don't task_resume. The task
-        // is suspended; the faulting thread is frozen in exception state.
-        // Backend polls pollAsyncException() to surface this as a normal
-        // Exception stop the rest of the debugger machinery handles.
+        receiveException(msg);
     }
+}
+
+// A watchpoint hit (EXC_BREAKPOINT) traps before the store completes. Two
+// phases keep the program's semantics while still observing every write to
+// the watched word:
+//   A. the hit: log the writer, disable the watchpoint on the thread, step it
+//      over the store and let it go;
+//   B. the step: the store has happened, so read the value, re-arm the
+//      watchpoint and stop only when the value matches what was asked for.
+// Answers true when the exception was dealt with and the target goes on.
+bool PtracePlatformMac::handleWatchpointException(const HeldException& exception) {
+#if defined(__arm64__) || defined(__aarch64__)
+    if (exception.exception != EXC_BREAKPOINT) return false;
+    mach_port_t thread = static_cast<mach_port_t>(exception.thread);
+
+    if (steppingThreads_.count(thread) == 0) {
+        // Breakpoints and steps are stops; only a watchpoint hit is handled here.
+        if (watchAddrLive_ == 0 || exception.code != EXC_ARM_DA_DEBUG) return false;
+        logWatchpointHit(thread);
+
+        arm_debug_state64_t dbg{};
+        mach_msg_type_number_t count = ARM_DEBUG_STATE64_COUNT;
+        thread_get_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&dbg, &count);
+        dbg.__wcr[0] = 0;
+        thread_set_state(thread, ARM_DEBUG_STATE64, (thread_state_t)&dbg, count);
+        setSingleStep(thread, true);
+        steppingThreads_.insert(thread);
+        answer(exception, KERN_SUCCESS);
+        return true;
+    }
+
+    steppingThreads_.erase(thread);
+    setSingleStep(thread, false);
+    uint64_t value = 0;
+    readMemory(watchAddrLive_, &value, sizeof value);
+    char line[160];
+    snprintf(line, sizeof(line), "(watch)   post-store value=0x%llx",
+             (unsigned long long)value);
+    doLog(line);
+    if (watchAddrLive_ != 0) installWatchpointOnThread(thread, watchAddrLive_);
+
+    bool matches = watchMatchLive_ != 0
+                   && (value & watchMaskLive_) == watchMatchLive_;
+    if (matches) return false;
+    answer(exception, KERN_SUCCESS);
+    return true;
+#else
+    (void)exception;
+    return false;
+#endif
+}
+
+// Logs where a watchpoint hit happened, with the frames above it.
+void PtracePlatformMac::logWatchpointHit(mach_port_t thread) {
+#if defined(__arm64__) || defined(__aarch64__)
+    arm_thread_state64_t state{};
+    mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+    thread_get_state(thread, ARM_THREAD_STATE64, (thread_state_t)&state, &count);
+    char line[160];
+    snprintf(line, sizeof(line),
+             "(watch) hit pc=0x%llx lr=0x%llx fp=0x%llx sp=0x%llx (pre-store)",
+             (unsigned long long)arm_thread_state64_get_pc(state),
+             (unsigned long long)arm_thread_state64_get_lr(state),
+             (unsigned long long)arm_thread_state64_get_fp(state),
+             (unsigned long long)arm_thread_state64_get_sp(state));
+    doLog(line);
+
+    // Each AArch64 frame record is [previous fp][return address].
+    uint64_t fp = arm_thread_state64_get_fp(state);
+    for (int depth = 0; depth < 6 && fp != 0; depth++) {
+        uint64_t record[2] = {0, 0};
+        if (readMemory(fp, record, sizeof record) != Status::Ok) break;
+        snprintf(line, sizeof(line), "(watch)   frame[%d] fp=0x%llx lr=0x%llx",
+                 depth, (unsigned long long)fp, (unsigned long long)record[1]);
+        doLog(line);
+        if (record[0] <= fp) break;
+        fp = record[0];
+    }
+#else
+    (void)thread;
+#endif
 }
 
 // ARM64 HW watchpoint installer.
@@ -880,6 +1194,10 @@ void PtracePlatformMac::exceptionServerLoop() {
 // first write touching the watched word. Our Mach handler catches it and
 // dumps registers, so we can identify the writer.
 void PtracePlatformMac::installWatchpointOnThread(mach_port_t thread, uint64_t addr) {
+#if !(defined(__arm64__) || defined(__aarch64__))
+    (void)thread; (void)addr;
+    doLog("(watch) hardware watchpoints are only implemented for ARM64");
+#else
     if (addr & 7) {
         doLog("(watch) address not 8-byte aligned, ignoring");
         return;
@@ -909,9 +1227,13 @@ void PtracePlatformMac::installWatchpointOnThread(mach_port_t thread, uint64_t a
              "(watch) armed thread=0x%x addr=0x%llx (store, 8 bytes)",
              (unsigned)thread, (unsigned long long)addr);
     doLog(buf);
+#endif
 }
 
 void PtracePlatformMac::installWatchpointAllThreads(uint64_t addr) {
+#if !(defined(__arm64__) || defined(__aarch64__))
+    if (addr != 0) installWatchpointOnThread(MACH_PORT_NULL, addr);
+#else
     thread_act_array_t threads;
     mach_msg_type_number_t count;
     kern_return_t kr = task_threads(taskPort, &threads, &count);
@@ -935,6 +1257,7 @@ void PtracePlatformMac::installWatchpointAllThreads(uint64_t addr) {
     }
     vm_deallocate(mach_task_self(), (vm_address_t)threads,
                   count * sizeof(thread_act_t));
+#endif
 }
 
 // Runtime setter. addr=0 clears the watchpoint. match=0 means "never break,
@@ -951,27 +1274,6 @@ void PtracePlatformMac::setWatchpoint(uint64_t addr, uint64_t match, uint64_t ma
              (unsigned long long)addr, (unsigned long long)match,
              (unsigned long long)watchMaskLive_);
     doLog(buf);
-}
-
-PtracePlatformMac::PendingException PtracePlatformMac::takePendingException() {
-    std::lock_guard<std::mutex> lk(exceptionMutex);
-    PendingException out = pending_;
-    pending_ = PendingException{};
-    return out;
-}
-
-PtracePlatform::AsyncException PtracePlatformMac::pollAsyncException() {
-    std::lock_guard<std::mutex> lk(exceptionMutex);
-    AsyncException out;
-    if (pending_.present) {
-        out.present   = true;
-        out.thread    = pending_.thread;
-        out.exception = pending_.exception;
-        out.code      = pending_.code;
-        out.subcode   = pending_.subcode;
-        pending_ = PendingException{};
-    }
-    return out;
 }
 
 } // namespace smalldbg

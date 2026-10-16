@@ -4,11 +4,23 @@
 #include "../../../backends/PtracePlatform.h"
 #include <mach/mach_types.h>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 
 namespace smalldbg {
+
+struct MachExceptionMessage;
+
+// One entry of the target's VM map: where it is and what it was allocated as.
+struct MapEntry {
+    mach_vm_address_t start{0};
+    mach_vm_address_t end{0};
+    unsigned int tag{0};  // VM_MEMORY_*, what the allocation was made for
+};
 
 class PtracePlatformMac : public PtracePlatform {
 public:
@@ -18,18 +30,24 @@ public:
     int ptraceAttach(int pid) override;
     int ptraceDetach(int pid) override;
     int ptraceContinue(int pid) override;
-    int ptraceStep(int pid) override;
+    int ptraceStep(int pid, ThreadId thread) override;
     void ptraceKill(int pid) override;
+    int interrupt(int pid) override;
 
     int spawnStopped(const std::string& path,
                      const std::vector<std::string>& args,
                      const std::string& workingDir) override;
+
+    int attachStopped(int pid) override;
+    int waitForStop(int pid, int timeoutMs, int& status) override;
+    ThreadId stoppedThread() const override { return lastStopThread; }
 
     Status acquireProcess(int pid) override;
     void releaseProcess() override;
 
     Status readMemory(Address addr, void* buf, size_t size) const override;
     Status writeMemory(Address addr, const void* data, size_t size) override;
+    std::pair<Address, Address> allocationContaining(Address addr) const override;
 
     Status getThreadRegisters(ThreadId tid, const Arch* arch, Registers& out) const override;
     Status setThreadPc(ThreadId tid, Address pc) const override;
@@ -37,26 +55,7 @@ public:
     std::vector<ThreadId> enumerateThreads() override;
     std::vector<ModuleInfo> enumerateModules() const override;
 
-    // Surface Mach-caught exceptions to the backend's wait loop so they
-    // become normal Exception stops the rest of the debugger understands.
-    AsyncException pollAsyncException() override;
     void setWatchpoint(uint64_t addr, uint64_t match, uint64_t mask) override;
-
-    // Mach exception server interface — see PtracePlatformMac.cpp.
-    // After acquireProcess() succeeds, callers (the PtraceBackend wait loop)
-    // can poll for fatal mach exceptions that bypass the normal waitpid
-    // mechanism on macOS (EXC_BAD_ACCESS / EXC_BAD_INSTRUCTION /
-    // EXC_ARITHMETIC / EXC_CRASH / EXC_GUARD).  Without this, an assert()
-    // or null-deref in the child terminates the process before the debugger
-    // ever sees it.
-    struct PendingException {
-        bool present{false};
-        int exception{0};       // EXC_*
-        long code{0};           // first element of code array
-        long subcode{0};        // second element (often the faulting address)
-        ThreadId thread{0};     // offending mach thread port
-    };
-    PendingException takePendingException();
 
 private:
     int targetPid{-1};
@@ -65,17 +64,66 @@ private:
 
     // Read one dyld_image_info entry and append to modules
     void readModuleEntry(std::vector<ModuleInfo>& modules, Address entryAddr) const;
+    std::optional<MapEntry> growBackward(MapEntry allocation) const;
+    MapEntry growForward(MapEntry allocation) const;
+    std::vector<ModuleInfo> modulesMappedByKernel() const;
+    void addKernelMappedModule(std::vector<ModuleInfo>& modules, Address address) const;
 
     // Mach exception server state.
     mach_port_t exceptionPort{MACH_PORT_NULL};
     std::thread exceptionThread;
     std::atomic<bool> exceptionThreadStop{false};
     std::mutex exceptionMutex;
-    PendingException pending_;
+    // Exceptions caught and not yet answered, oldest first.
+    // An interrupt is held the same way, with no message to answer.
+    struct HeldException {
+        mach_port_t replyPort{MACH_PORT_NULL};  // none for an interrupt
+        mach_msg_bits_t replyBits{0};
+        mach_msg_id_t replyId{0};
+        ThreadId thread{0};
+        int exception{0};   // EXC_*
+        int64_t code{0};
+        int64_t subcode{0};
+        bool reported{false};  // waitForStop has answered it
+    };
+    std::deque<HeldException> held;
+    std::condition_variable exceptionCv;
+    ThreadId lastStopThread{0};
+
+    // The exception ports the target had before ours, given back on detach.
+    struct SavedPorts {
+        mach_msg_type_number_t count{0};
+        exception_mask_t masks[EXC_TYPES_COUNT]{};
+        mach_port_t ports[EXC_TYPES_COUNT]{};
+        exception_behavior_t behaviors[EXC_TYPES_COUNT]{};
+        thread_state_flavor_t flavors[EXC_TYPES_COUNT]{};
+    } savedPorts;
+    // Threads whose fault was answered by letting the kernel raise its
+    // signal: that signal is the program's to handle, not another stop.
+    std::set<ThreadId> deliverNextSignal;
+    // Set while a detach waits for the SIGCONT it holds the target on.
+    std::atomic<bool> holdingSigcont{false};
+
+    // The thread being stepped, and the others kept suspended meanwhile.
+    ThreadId steppingThread{0};
+    std::vector<mach_port_t> keptSuspended;
 
     Status startExceptionServer();
     void stopExceptionServer();
+    void restoreExceptionPorts();
     void exceptionServerLoop();
+    void receiveException(const MachExceptionMessage& msg);
+    bool passesThrough(const HeldException& exception);
+    void hold(const HeldException& exception);
+    bool holdSigcont(int pid);
+    int takeStop();
+    void keepSuspendedUnless(mach_port_t thread, mach_port_t stepped);
+    void finishStep();
+    void resumeHeld();
+    void answer(const HeldException& exception, kern_return_t result);
+    void logFault(const MachExceptionMessage& msg) const;
+    bool handleWatchpointException(const HeldException& exception);
+    void logWatchpointHit(mach_port_t thread);
 
     // HW watchpoint helpers (ARM64). installWatchpointAllThreads sets a
     // write watchpoint on `addr` (must be 8-byte aligned) on every

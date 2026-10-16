@@ -302,6 +302,18 @@ void Json::appendTo(std::string& out) const {
     }
 }
 
+namespace {
+
+// A control character other than those with a short escape, as \u00XX.
+void appendControl(std::string& out, unsigned char c) {
+    static const char digits[] = "0123456789abcdef";
+    out += "\\u00";
+    out += digits[c >> 4];
+    out += digits[c & 0xf];
+}
+
+} // namespace
+
 void Json::appendEscaped(std::string& out, const std::string& s) {
     for (unsigned char c : s) {
         switch (c) {
@@ -312,7 +324,7 @@ void Json::appendEscaped(std::string& out, const std::string& s) {
             case '\t': out += "\\t";  break;
             default:
                 if (c < 0x20)
-                    out += ' ';
+                    appendControl(out, c);
                 else
                     out += static_cast<char>(c);
         }

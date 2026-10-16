@@ -158,8 +158,10 @@ protected:
     }
 
 private:
+    // The oops the tests give are a 64-bit target's, whatever the host is.
     const std::unique_ptr<smalldbg::Debugger> dbg{
-        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External)};
+        std::make_unique<smalldbg::Debugger>(smalldbg::Mode::External,
+                                             smalldbg::X64::instance())};
     const std::unique_ptr<TestInspector> classes{
         std::make_unique<TestInspector>()};
 };

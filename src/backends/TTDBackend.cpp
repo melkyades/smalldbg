@@ -24,6 +24,45 @@ size_t tracePointerSize(const std::string& tracePath) {
     return highest > 0xFFFFFFFFull ? 8 : 4;
 }
 
+// Walking a heap reads a few words per object, and one trace lookup per word
+// would take minutes.
+static constexpr size_t kBlockSize = 64 * 1024;
+static constexpr size_t kMaxBlocks = 2048;
+
+Status TTDBackend::readMemory(Address address, void* outBuf, size_t size) const {
+    auto* bytes = static_cast<uint8_t*>(outBuf);
+    while (size > 0) {
+        const Address base = address - address % kBlockSize;
+        const std::vector<uint8_t>* whole = block(base);
+        if (whole == nullptr) return DbgEngBackend::readMemory(address, bytes, size);
+        const size_t offset = static_cast<size_t>(address - base);
+        const size_t count = std::min<size_t>(size, whole->size() - offset);
+        std::copy_n(whole->data() + offset, count, bytes);
+        address += count;
+        bytes += count;
+        size -= count;
+    }
+    return Status::Ok;
+}
+
+// Only memory the trace does not have is kept as unreadable; a read refused
+// because the engine was busy is tried again next time.
+const std::vector<uint8_t>* TTDBackend::block(Address base) const {
+    if (blocksVersion != targetVersion() || blocks.size() >= kMaxBlocks) {
+        blocks.clear();
+        blocksVersion = targetVersion();
+    }
+    auto known = blocks.find(base);
+    if (known != blocks.end()) return known->second.empty() ? nullptr : &known->second;
+
+    std::vector<uint8_t> read(kBlockSize);
+    Status status = DbgEngBackend::readMemory(base, read.data(), read.size());
+    if (status != Status::Ok && status != Status::NotFound) return nullptr;
+    if (status != Status::Ok) read.clear();
+    known = blocks.emplace(base, std::move(read)).first;
+    return known->second.empty() ? nullptr : &known->second;
+}
+
 // A TTD position is global and encodes the thread executing at it, so
 // SetCurrentThreadId does not move the engine; only the command processor's
 // "~<id>s" repositions the replay onto a thread's timeline.

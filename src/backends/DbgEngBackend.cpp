@@ -752,6 +752,50 @@ Status DbgEngBackend::clearBreakpoint(Address addr) {
     return Status::Ok;
 }
 
+// A data breakpoint is the processor's: the engine sets a debug register, and
+// a replay honours it in both directions.
+Status DbgEngBackend::setWriteBreakpoint(Address address, size_t size) {
+    if (!attached) return Status::NotAttached;
+    if (size != 1 && size != 2 && size != 4 && size != 8) return Status::NotSupported;
+    if (address % size != 0) return Status::NotSupported;  // debug registers need it
+
+    IDebugBreakpoint* bp = nullptr;
+    HRESULT hr = control->AddBreakpoint(DEBUG_BREAKPOINT_DATA, DEBUG_ANY_ID, &bp);
+    if (FAILED(hr) || !bp) {
+        if (log) log("(dbgeng) setWriteBreakpoint: AddBreakpoint failed");
+        return Status::Error;
+    }
+    if (FAILED(bp->SetDataParameters(static_cast<ULONG>(size), DEBUG_BREAK_WRITE))
+            || FAILED(bp->SetOffset(address))) {
+        control->RemoveBreakpoint(bp);
+        return Status::Error;
+    }
+    bp->SetFlags(DEBUG_BREAKPOINT_ENABLED);
+
+    ULONG bpId = 0;
+    bp->GetId(&bpId);
+    {
+        std::lock_guard<std::mutex> g(bpMutex);
+        writeBreakpoints.push_back({address, "", bpId});
+    }
+    if (log) log("(dbgeng) write breakpoint set at " + toHex(address) + " id=" + std::to_string(bpId));
+    return Status::Ok;
+}
+
+Status DbgEngBackend::clearWriteBreakpoint(Address address) {
+    if (!attached) return Status::NotAttached;
+    std::lock_guard<std::mutex> g(bpMutex);
+    auto it = std::find_if(writeBreakpoints.begin(), writeBreakpoints.end(),
+                           [address](const BpInfo& b){ return b.addr == address; });
+    if (it == writeBreakpoints.end()) return Status::NotFound;
+
+    IDebugBreakpoint* bp = nullptr;
+    if (SUCCEEDED(control->GetBreakpointById(it->engineId, &bp)) && bp)
+        control->RemoveBreakpoint(bp);
+    writeBreakpoints.erase(it);
+    return Status::Ok;
+}
+
 std::vector<Breakpoint> DbgEngBackend::listBreakpoints() const {
     std::lock_guard<std::mutex> g(bpMutex);
     std::vector<Breakpoint> out;
@@ -780,6 +824,25 @@ Status DbgEngBackend::readMemory(Address address, void* outBuf, size_t size) con
         result = (FAILED(hr) || bytesRead != size) ? Status::NotFound : Status::Ok;
     })) return Status::Busy;
     return result;
+}
+
+// The engine knows the memory map of a live process and of a dump that kept
+// one. The regions after the one holding `address` belong to the same
+// allocation while they share its base.
+std::pair<Address, Address> DbgEngBackend::allocationContaining(Address address) const {
+    if (!attached || address == 0) return {0, 0};
+
+    std::pair<Address, Address> found{0, 0};
+    runOnEngineThread([&]{
+        MEMORY_BASIC_INFORMATION64 info{};
+        if (FAILED(dataSpaces->QueryVirtual(address, &info)) || info.State == MEM_FREE) return;
+        const Address start = info.AllocationBase;
+        Address end = start;
+        while (SUCCEEDED(dataSpaces->QueryVirtual(end, &info)) && info.AllocationBase == start)
+            end = info.BaseAddress + info.RegionSize;
+        found = {start, end};
+    });
+    return found;
 }
 
 Status DbgEngBackend::writeMemory(Address address, const void* data, size_t size) {
@@ -1229,6 +1292,7 @@ bool DbgEngBackend::initSession() {
         running = false;
         return false;
     }
+    setPacMask();
 
     registerSymbolBackend();
     captureStopState();
@@ -1512,6 +1576,18 @@ bool DbgEngBackend::initArchAndRegisters() {
     ri.resolve(registers);
     if (log) log("(dbgeng) architecture " + std::string(arch->name()) + ", register indices resolved");
     return true;
+}
+
+// On a CPU with pointer authentication (PAC), Windows ARM64 code signs the
+// return addresses it saves: the bits above the address hold a signature.
+// The engine strips them only with the mask of those bits, which it cannot
+// read from a live user-mode target, and without it the walk ends at the
+// first signed return address. User-mode addresses fit in 47 bits.
+void DbgEngBackend::setPacMask() {
+    if (arch != ARM64::instance()) return;
+    HRESULT hr = control->Execute(DEBUG_OUTCTL_IGNORE, ".pacmask 0xffff800000000000",
+                                  DEBUG_EXECUTE_NOT_LOGGED);
+    if (FAILED(hr) && log) log("(dbgeng) .pacmask failed hr=" + toHex((unsigned long)hr));
 }
 
 void DbgEngBackend::registerSymbolBackend() {
@@ -1933,8 +2009,9 @@ void DbgEngBackend::onBreakpoint(ULONG64 offset) {
     bool isUser = false;
     {
         std::lock_guard<std::mutex> g(bpMutex);
-        isUser = std::any_of(breakpoints.begin(), breakpoints.end(),
-                             [offset](const BpInfo& b){ return b.addr == static_cast<Address>(offset); });
+        const auto at = [offset](const BpInfo& b){ return b.addr == static_cast<Address>(offset); };
+        isUser = std::any_of(breakpoints.begin(), breakpoints.end(), at)
+              || std::any_of(writeBreakpoints.begin(), writeBreakpoints.end(), at);
     }
 
     if (!seenInitialBreakpoint && !isUser) {

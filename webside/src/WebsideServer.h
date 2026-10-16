@@ -133,6 +133,10 @@ protected:
     HttpResponse handleClassify(const HttpRequest& req) const;
     Json regionJson(const vmdbg::Region& region) const;
     HttpResponse handleInspect(const HttpRequest& req) const;
+    /** Returns the picture the VM last put on its screen as raw pixels, its
+     *  size, depth and bytes per row in headers, or 404 when the VM keeps
+     *  none. **/
+    HttpResponse handleFramebuffer() const;
 
     // ---- class / search route handlers ----
     HttpResponse handleClassList(const HttpRequest& req) const;
@@ -145,6 +149,9 @@ protected:
     // ---- hook for subclass-specific routes ----
     virtual void setupRoutes();
 
+    /** Runs the target to the next write of the memory the body names, or a
+     *  replay back to the last one. **/
+    HttpResponse handleRunToWrite(const HttpRequest& req, bool backwards);
     /** Runs the debugger's thread to the address in the request body,
      *  forwards or backwards. **/
     HttpResponse handleRunTo(const HttpRequest& req, bool backwards);

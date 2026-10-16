@@ -12,6 +12,8 @@
 #include <httplib/httplib.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -23,7 +25,8 @@ namespace {
 constexpr uint64_t kBase = 0x10000;
 
 // A session whose target is a snapshot of `kBase`, which reads like a stopped
-// process.
+// process. The memory the tests lay out holds x86-64 code, whatever the host
+// is.
 struct SnapshotSession : StubSession {
     explicit SnapshotSession(std::vector<uint8_t> memory) {
         REQUIRE(snapshot->openSnapshot({
@@ -35,7 +38,8 @@ struct SnapshotSession : StubSession {
 
     const std::unique_ptr<smalldbg::Debugger> snapshot{
         std::make_unique<smalldbg::Debugger>(
-            smalldbg::Mode::External, nullptr, smalldbg::Debuggee::Snapshot)};
+            smalldbg::Mode::External, smalldbg::X64::instance(),
+            smalldbg::Debuggee::Snapshot)};
 };
 
 // A server with nothing of its own, whose routes the tests call directly.
@@ -64,6 +68,19 @@ struct TestServer : WebsideServer {
 
     std::string dialect() const override { return "test"; }
     std::string description() const override { return "test"; }
+};
+
+// Runs `server` on a thread of its own while it lives, so a test that stops
+// early on a failed REQUIRE still stops and joins it.
+struct Serving {
+    explicit Serving(TestServer& server) : server(server), thread([&server] { server.run(); }) {}
+    ~Serving() {
+        server.stop();
+        thread.join();
+    }
+
+    TestServer& server;
+    std::thread thread;
 };
 
 // A workspace with a snapshot of `memory` open, and a server over it.
@@ -119,6 +136,12 @@ struct Launched {
         target.path = WEBSIDE_TEST_TARGET;
         target.args = std::move(args);
         REQUIRE(workspace.open(target));
+        // The backend's log goes to stderr when SMALLDBG_TEST_LOG is set, as
+        // in the live tests; from the first stop on, detaching included.
+        if (std::getenv("SMALLDBG_TEST_LOG"))
+            debugger().setLogCallback([](const std::string& message) {
+                std::fprintf(stderr, "LOG %s\n", message.c_str());
+            });
         REQUIRE(debugger().waitForEvent(smalldbg::StopReason::None, 5000)
                 != smalldbg::StopReason::None);
     }
@@ -563,7 +586,7 @@ TEST_CASE("with nothing open, only the routes that need no target answer") {
         return std::make_unique<StubSession>();
     });
     TestServer server{workspace, port};
-    std::thread serving([&] { server.run(); });
+    Serving serving{server};
 
     httplib::Client client("127.0.0.1", port);
     httplib::Result logo;
@@ -577,9 +600,6 @@ TEST_CASE("with nothing open, only the routes that need no target answer") {
     CHECK(client.Get("/themes")->status == 200);
     CHECK(client.Get("/classes")->status == 503);
     CHECK(client.Get("/threads")->status == 503);
-
-    server.stop();
-    serving.join();
 }
 
 TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") {
@@ -589,7 +609,7 @@ TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") 
     });
     workspace.setBreakpoint(0x401000, "start");
     TestServer server{workspace, port};
-    std::thread serving([&] { server.run(); });
+    Serving serving{server};
 
     httplib::Client client("127.0.0.1", port);
     httplib::Result breakpoints;
@@ -627,9 +647,6 @@ TEST_CASE("the workspace, its breakpoints and labels answer with nothing open") 
     CHECK(labels[0]["address"].asString() == Json::hex(uint64_t(0x403000)).asString());
     REQUIRE(client.Delete("/labels?address=0x403000"));
     CHECK(Json::parse(client.Get("/labels")->body).size() == 0);
-
-    server.stop();
-    serving.join();
 }
 
 TEST_CASE("a target that is no trace has no position and refuses to move") {
@@ -641,7 +658,7 @@ TEST_CASE("a target that is no trace has no position and refuses to move") {
     target.path = "snapshot";
     REQUIRE(workspace.open(target));
     TestServer server{workspace, port};
-    std::thread serving([&] { server.run(); });
+    Serving serving{server};
 
     httplib::Client client("127.0.0.1", port);
     httplib::Result position;
@@ -657,7 +674,4 @@ TEST_CASE("a target that is no trace has no position and refuses to move") {
         REQUIRE(moved);
         CHECK(moved->status == 400);
     }
-
-    server.stop();
-    serving.join();
 }

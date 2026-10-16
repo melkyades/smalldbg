@@ -43,6 +43,7 @@ class Debugger {
 public:
     // The backend is chosen here, for what the Debugger is to debug, and kept
     // until it is destroyed: debugging something else takes another Debugger.
+    // Without an architecture the target is taken to be the host's.
     explicit Debugger(Mode m, const Arch* arch = nullptr,
                       Debuggee debuggee = Debuggee::Process);
     ~Debugger();
@@ -115,10 +116,11 @@ public:
     // Empty string on backends that don't support it.
     std::string executeCommand(const std::string& cmd) const;
     
-    // state queries
-    StopReason getStopReason() const;
-    bool isStopped() const;
-    Address getStopAddress() const;
+    // state queries. They take in a stop the target has made since it was
+    // last looked at, so a target stops even when nobody waits for it.
+    StopReason getStopReason();
+    bool isStopped();
+    Address getStopAddress();
     // The exception the target is stopped on, with its code, address and
     // parameters. Returns nothing when the stop was not an exception.
     std::optional<ExceptionInfo> getStopException() const;
@@ -132,6 +134,12 @@ public:
     Status setBreakpoint(Address addr, const std::string &name = {});
     Status clearBreakpoint(Address addr);
     std::vector<Breakpoint> listBreakpoints() const;
+    /** Stops the target when it writes any of the `size` bytes at `address`;
+     *  `size` is 1, 2, 4 or 8 and `address` is aligned to it. A replay run
+     *  backwards stops at the last write before where it is. Returns
+     *  NotSupported when the backend has no such breakpoints. **/
+    Status setWriteBreakpoint(Address address, size_t size);
+    Status clearWriteBreakpoint(Address address);
 
     // HW watchpoint (write, 8 bytes). addr=0 clears. match=0 means
     // "log every hit, never break"; non-zero means break when the value
@@ -166,6 +174,11 @@ public:
     /** Returns the sections `module` declares in its image headers, such as
      *  its code and data. Returns none when the headers cannot be read. **/
     std::vector<ModuleSection> moduleSections(const ModuleInfo& module) const;
+
+    /** Returns the allocation holding `address`, as [start, end): the
+     *  stretch of mapped memory around it that was reserved as one. Returns
+     *  {0, 0} when nothing is mapped there or the backend cannot tell. **/
+    std::pair<Address, Address> allocationContaining(Address address) const;
 
     // accessors provided by the backend implementation
     Status readMemory(Address address, void *outBuf, size_t size) const;

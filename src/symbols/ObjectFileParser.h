@@ -3,6 +3,7 @@
 #pragma once
 
 #include "SymbolsInternal.h"
+#include "platform/Platform.h"
 #include <memory>
 
 namespace smalldbg {
@@ -20,6 +21,23 @@ public:
     // text segment address against the runtime load address.
     virtual int64_t computeSlide(const std::string& path,
                                  Address loadAddress) = 0;
+
+    // Reads where the image loaded at `loadAddress` ends, out of the
+    // target's memory. Returns false when the parser cannot read images
+    // there, and the module is then read from its file.
+    virtual bool readLoadedExtent(const smalldbg_internal::MemoryReader& read,
+                                  Address loadAddress, ModuleSymbols& out) {
+        (void)read; (void)loadAddress; (void)out;
+        return false;
+    }
+
+    // Reads the symbols of the image loaded at `loadAddress` out of the
+    // target's memory. Returns false when they cannot be read there.
+    virtual bool parseLoadedSymbols(const smalldbg_internal::MemoryReader& read,
+                                    Address loadAddress, ModuleSymbols& out) {
+        (void)read; (void)loadAddress; (void)out;
+        return false;
+    }
 
     // Factory: creates the platform-appropriate parser.
     static std::unique_ptr<ObjectFileParser> create();

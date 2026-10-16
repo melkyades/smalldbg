@@ -19,8 +19,7 @@ constexpr size_t kMaxRenderedStringLength = 32;
 uint64_t HeapObject::rawSlotAt(int index) const {
     if (index < 0) return 0;
     uint64_t value = 0;
-    uint64_t address = bodyAddress() + static_cast<uint64_t>(index) * slotSize();
-    if (dbg->readMemory(address, &value, slotSize()) != smalldbg::Status::Ok) return 0;
+    if (dbg->readMemory(slotAddress(index), &value, slotSize()) != smalldbg::Status::Ok) return 0;
     return value;
 }
 

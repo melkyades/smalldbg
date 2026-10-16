@@ -1,20 +1,23 @@
-// DwarfTypes.cpp — Minimal DWARF5 parser for extracting C/C++ type info
-// from Mach-O .o files on macOS (referenced via N_OSO stab entries).
+// DwarfTypes.cpp — Minimal DWARF parser for extracting C/C++ type info:
+// from Mach-O .o files on macOS (referenced via N_OSO stab entries), and from
+// the ELF image itself on Linux.
 
 #include "DwarfTypes.h"
 #include "SymbolsInternal.h"
 
-#ifdef __APPLE__
-#include <mach-o/loader.h>
-#include <mach-o/nlist.h>
-#include <mach-o/fat.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <cstring>
-#include <cxxabi.h>
 #include <algorithm>
+
+#ifdef __APPLE__
+#include <mach-o/loader.h>
+#include <mach-o/nlist.h>
+#include <mach-o/fat.h>
+#else
+#include <elf.h>
 #endif
 
 namespace smalldbg {
@@ -86,7 +89,7 @@ enum : uint8_t {
     DW5_FORM_strx1         = 0x25,
     DW5_FORM_strx2         = 0x26,
     DW5_FORM_strx4         = 0x28,
-    DW5_FORM_data8         = 0x08,
+    DW5_FORM_data8         = 0x07,
     DW5_FORM_ref_addr      = 0x10,
     DW5_FORM_block1        = 0x0a,
     DW5_FORM_loclistx      = 0x22,
@@ -94,7 +97,24 @@ enum : uint8_t {
     DW5_FORM_ref2          = 0x12,
     DW5_FORM_strp          = 0x0e,
     DW5_FORM_flag          = 0x0c,
-    DW5_FORM_string        = 0x08, // actually same value as data8, need to check
+    DW5_FORM_string        = 0x08,
+    DW5_FORM_block2        = 0x03,
+    DW5_FORM_block4        = 0x04,
+    DW5_FORM_block         = 0x09,
+    DW5_FORM_ref8          = 0x14,
+    DW5_FORM_ref_udata     = 0x15,
+    DW5_FORM_strx          = 0x1a,
+    DW5_FORM_ref_sup4      = 0x1c,
+    DW5_FORM_strp_sup      = 0x1d,
+    DW5_FORM_data16        = 0x1e,
+    DW5_FORM_line_strp     = 0x1f,
+    DW5_FORM_ref_sig8      = 0x20,
+    DW5_FORM_ref_sup8      = 0x24,
+    DW5_FORM_strx3         = 0x27,
+    DW5_FORM_addrx1        = 0x29,
+    DW5_FORM_addrx2        = 0x2a,
+    DW5_FORM_addrx3        = 0x2b,
+    DW5_FORM_addrx4        = 0x2c,
 };
 
 enum : uint8_t {
@@ -255,12 +275,16 @@ static AttrValue readFormValue(uint8_t form, const uint8_t*& p,
     case DW5_FORM_sec_offset:
         if (p + 4 <= end) { uint32_t v; std::memcpy(&v, p, 4); val.unsigned_val = v; p += 4; }
         break;
+    case DW5_FORM_strx:
     case DW5_FORM_strx1:
     case DW5_FORM_strx2:
+    case DW5_FORM_strx3:
     case DW5_FORM_strx4: {
         uint32_t index = 0;
-        if (form == DW5_FORM_strx1 && p < end) { index = *p++; }
+        if (form == DW5_FORM_strx) { index = static_cast<uint32_t>(readULEB128(p, end)); }
+        else if (form == DW5_FORM_strx1 && p < end) { index = *p++; }
         else if (form == DW5_FORM_strx2 && p + 2 <= end) { uint16_t v; std::memcpy(&v, p, 2); index = v; p += 2; }
+        else if (form == DW5_FORM_strx3 && p + 3 <= end) { index = p[0] | (p[1] << 8) | (p[2] << 16); p += 3; }
         else if (form == DW5_FORM_strx4 && p + 4 <= end) { std::memcpy(&index, p, 4); p += 4; }
 
         // Resolve: strOffsBase + index * 4 → offset into .debug_str
@@ -281,6 +305,46 @@ static AttrValue readFormValue(uint8_t form, const uint8_t*& p,
                 val.string_val = reinterpret_cast<const char*>(strSection + strOffset);
         }
         break;
+    case DW5_FORM_string: {
+        const uint8_t* nul = static_cast<const uint8_t*>(std::memchr(p, 0, end - p));
+        if (!nul) { p = end; break; }
+        val.string_val.assign(reinterpret_cast<const char*>(p), nul - p);
+        p = nul + 1;
+        break;
+    }
+    // Strings this parser has no section for, and references to other
+    // units or files, are skipped.
+    case DW5_FORM_line_strp:
+    case DW5_FORM_strp_sup:
+    case DW5_FORM_ref_sup4:
+        p += 4;
+        break;
+    case DW5_FORM_ref8:
+    case DW5_FORM_ref_sig8:
+    case DW5_FORM_ref_sup8:
+        p += 8;
+        break;
+    case DW5_FORM_data16:
+        p += 16;
+        break;
+    case DW5_FORM_ref_udata:
+        val.unsigned_val = readULEB128(p, end);
+        break;
+    case DW5_FORM_addrx1: p += 1; break;
+    case DW5_FORM_addrx2: p += 2; break;
+    case DW5_FORM_addrx3: p += 3; break;
+    case DW5_FORM_addrx4: p += 4; break;
+    case DW5_FORM_block2:
+    case DW5_FORM_block4:
+    case DW5_FORM_block: {
+        uint64_t len = 0;
+        if (form == DW5_FORM_block2 && p + 2 <= end) { uint16_t v; std::memcpy(&v, p, 2); len = v; p += 2; }
+        else if (form == DW5_FORM_block4 && p + 4 <= end) { uint32_t v; std::memcpy(&v, p, 4); len = v; p += 4; }
+        else if (form == DW5_FORM_block) len = readULEB128(p, end);
+        if (p + len <= end) val.block_val.assign(p, p + len);
+        p += len;
+        break;
+    }
     case DW5_FORM_exprloc: {
         uint64_t len = readULEB128(p, end);
         if (p + len <= end) {
@@ -591,9 +655,12 @@ static DwarfVariable evaluateVariableLocation(
 // Process subprograms from parsed DIEs
 // =========================================================================
 
+using ChildIndex = std::unordered_map<uint32_t, std::vector<uint32_t>>;
+
 static void processSubprogramDIE(
     const ParsedDIE& spDie, uint32_t spOffset, uint32_t cuOffset,
     const std::unordered_map<uint32_t, ParsedDIE>& dies,
+    const ChildIndex& children,
     std::vector<DwarfSubprogram>& out) {
 
     if (!spDie.hasLowPC || !spDie.hasHighPC) return;
@@ -618,7 +685,7 @@ static void processSubprogramDIE(
     }
 
     if (!linkName.empty())
-        sub.name = demangle(linkName.c_str());
+        sub.name = symbolName(linkName.c_str());
     else if (!shortName.empty())
         sub.name = buildQualifiedName(nameOffset, dies);
 
@@ -626,18 +693,24 @@ static void processSubprogramDIE(
 
     uint32_t frameBaseReg = extractFrameBaseReg(spDie.frameBaseExpr);
 
-    // Collect direct children and children of lexical blocks
-    for (auto& [offset, die] : dies) {
-        bool isChild = (die.parentOffset == spOffset);
-        if (!isChild) {
-            // Check if inside a lexical block that's a child of this subprogram
-            auto pit = dies.find(die.parentOffset);
-            if (pit != dies.end() && pit->second.tag == DW5_TAG_lexical_block &&
-                pit->second.parentOffset == spOffset) {
-                isChild = true;
-            }
-        }
-        if (!isChild) continue;
+    // Collect direct children and children of lexical blocks. Looked up by
+    // parent: a scan of the unit for each subprogram is quadratic, and an
+    // ELF image's units are whole source files.
+    std::vector<uint32_t> owned;
+    auto childrenOf = [&](uint32_t parent) -> const std::vector<uint32_t>& {
+        static const std::vector<uint32_t> none;
+        auto it = children.find(parent);
+        return it != children.end() ? it->second : none;
+    };
+    for (uint32_t child : childrenOf(spOffset)) {
+        owned.push_back(child);
+        if (dies.at(child).tag == DW5_TAG_lexical_block)
+            for (uint32_t nested : childrenOf(child)) owned.push_back(nested);
+    }
+    std::sort(owned.begin(), owned.end());
+
+    for (uint32_t offset : owned) {
+        const ParsedDIE& die = dies.at(offset);
 
         bool isParam = (die.tag == DW5_TAG_formal_parameter);
         bool isLocal = (die.tag == DW5_TAG_variable);
@@ -807,8 +880,6 @@ static void processCompilationUnit(
 // DWARF section parser — walk one CU in .debug_info
 // =========================================================================
 
-#ifdef __APPLE__
-
 struct DwarfSections {
     const uint8_t* info{nullptr};
     size_t infoSize{0};
@@ -961,14 +1032,19 @@ static void parseDwarfCU(const DwarfSections& sec,
         processCompilationUnit(dies, cuOffset, typeDB, varDB);
 
         // Third pass: extract subprogram variables
+        ChildIndex children;
+        for (auto& [offset, die] : dies)
+            children[die.parentOffset].push_back(offset);
         for (auto& [offset, die] : dies) {
             if (die.tag == DW5_TAG_subprogram)
-                processSubprogramDIE(die, offset, cuOffset, dies, subprograms);
+                processSubprogramDIE(die, offset, cuOffset, dies, children, subprograms);
         }
 
         p = cuEnd;
     }
 }
+
+#ifdef __APPLE__
 
 // =========================================================================
 // Locate DWARF sections in a Mach-O .o file
@@ -1192,6 +1268,47 @@ static bool extractArchiveMember(const std::string& archivePath,
     return found;
 }
 
+#else
+
+// =========================================================================
+// Locate DWARF sections in an ELF image
+// =========================================================================
+
+// A linked ELF image carries its DWARF in sections of its own, which need no
+// relocation. A compressed section is left out, as if it were missing.
+static DwarfSections findDwarfSections(const uint8_t* base, size_t fileSize) {
+    DwarfSections sec;
+    if (fileSize < sizeof(Elf64_Ehdr)) return sec;
+
+    auto* ehdr = reinterpret_cast<const Elf64_Ehdr*>(base);
+    if (std::memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0 ||
+        ehdr->e_ident[EI_CLASS] != ELFCLASS64)
+        return sec;
+    if (ehdr->e_shoff + ehdr->e_shnum * sizeof(Elf64_Shdr) > fileSize ||
+        ehdr->e_shstrndx >= ehdr->e_shnum)
+        return sec;
+
+    auto* sections = reinterpret_cast<const Elf64_Shdr*>(base + ehdr->e_shoff);
+    const Elf64_Shdr& names = sections[ehdr->e_shstrndx];
+    if (names.sh_offset + names.sh_size > fileSize) return sec;
+
+    for (uint16_t i = 0; i < ehdr->e_shnum; i++) {
+        const Elf64_Shdr& sect = sections[i];
+        if (sect.sh_name >= names.sh_size) continue;
+        if (sect.sh_type == SHT_NOBITS || (sect.sh_flags & SHF_COMPRESSED)) continue;
+        if (sect.sh_offset + sect.sh_size > fileSize) continue;
+        std::string name = reinterpret_cast<const char*>(base + names.sh_offset + sect.sh_name);
+        const uint8_t* data = base + sect.sh_offset;
+        size_t sz = sect.sh_size;
+
+        if (name == ".debug_info") { sec.info = data; sec.infoSize = sz; }
+        else if (name == ".debug_abbrev") { sec.abbrev = data; sec.abbrevSize = sz; }
+        else if (name == ".debug_str") { sec.str = data; sec.strSize = sz; }
+        else if (name == ".debug_str_offsets") { sec.strOffsets = data; sec.strOffsetsSize = sz; }
+    }
+    return sec;
+}
+
 #endif // __APPLE__
 
 // =========================================================================
@@ -1199,17 +1316,12 @@ static bool extractArchiveMember(const std::string& archivePath,
 // =========================================================================
 
 void DwarfTypeDatabase::parseDwarfFromObject(const uint8_t* base, size_t size) {
-#ifdef __APPLE__
     auto sections = findDwarfSections(base, size);
     if (!sections.info || !sections.abbrev) return;
     parseDwarfCU(sections, types, variableTypes, subprograms);
-#else
-    (void)base; (void)size;
-#endif
 }
 
 void DwarfTypeDatabase::parseObjectFile(const std::string& path) {
-#ifdef __APPLE__
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) return;
 
@@ -1223,9 +1335,6 @@ void DwarfTypeDatabase::parseObjectFile(const std::string& path) {
 
     parseDwarfFromObject(static_cast<const uint8_t*>(mapped), fileSize);
     munmap(mapped, fileSize);
-#else
-    (void)path;
-#endif
 }
 
 void DwarfTypeDatabase::parseArchiveMember(const std::string& archivePath,
@@ -1260,7 +1369,7 @@ void DwarfTypeDatabase::loadFromBinary(const std::string& binaryPath) {
     }
 
 #else
-    (void)binaryPath;
+    parseObjectFile(binaryPath);
 #endif
 }
 

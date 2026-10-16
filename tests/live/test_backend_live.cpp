@@ -116,7 +116,7 @@ bool stepToCall(Debugger& dbg, int limit) {
 } // namespace
 
 TEST_CASE("launch attaches and stops at the initial breakpoint") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     CHECK(dbg.isAttached());
@@ -129,7 +129,7 @@ TEST_CASE("launch attaches and stops at the initial breakpoint") {
 }
 
 TEST_CASE("registers are readable and sane at the initial stop") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     Registers r;
@@ -143,7 +143,7 @@ TEST_CASE("registers are readable and sane at the initial stop") {
 }
 
 TEST_CASE("memory can be read from the target stack") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     Registers r;
@@ -156,7 +156,7 @@ TEST_CASE("memory can be read from the target stack") {
 }
 
 TEST_CASE("breakpoints can be set, listed and cleared") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     Registers r;
@@ -180,7 +180,7 @@ TEST_CASE("breakpoints can be set, listed and cleared") {
 }
 
 TEST_CASE("a symbol search path that is set is searched first") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     auto* symbols = dbg.getSymbolProvider();
@@ -193,7 +193,7 @@ TEST_CASE("a symbol search path that is set is searched first") {
 }
 
 TEST_CASE("a module's symbols load on request, and any spelling finds it") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     auto* symbols = dbg.getSymbolProvider();
@@ -208,7 +208,7 @@ TEST_CASE("a module's symbols load on request, and any spelling finds it") {
 }
 
 TEST_CASE("the symbol loader loads a module's own symbol file and says which") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     std::vector<std::string> log;
@@ -226,7 +226,7 @@ TEST_CASE("the symbol loader loads a module's own symbol file and says which") {
 }
 
 TEST_CASE("a name without its module is found only where symbols are loaded") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
     auto* symbols = dbg.getSymbolProvider();
     REQUIRE(symbols != nullptr);
@@ -244,7 +244,7 @@ TEST_CASE("a name without its module is found only where symbols are loaded") {
 }
 
 TEST_CASE("a preferred module is searched for a name without one") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
     auto* symbols = dbg.getSymbolProvider();
     REQUIRE(symbols != nullptr);
@@ -256,7 +256,7 @@ TEST_CASE("a preferred module is searched for a name without one") {
 }
 
 TEST_CASE("a listing labels the place a symbol starts, and only there") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
     auto breakHere =
         dbg.getSymbolProvider()->getSymbolByName("test_target!break_here");
@@ -270,7 +270,7 @@ TEST_CASE("a listing labels the place a symbol starts, and only there") {
 }
 
 TEST_CASE("an address inside a function is named, and its size given on request") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     Symbol breakHere = launchAtBreakHere(dbg);
     auto* symbols = dbg.getSymbolProvider();
 
@@ -286,7 +286,7 @@ TEST_CASE("an address inside a function is named, and its size given on request"
 }
 
 TEST_CASE("a global's type and that type's fields come from the pdb") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     auto* symbols = dbg.getSymbolProvider();
 
@@ -311,7 +311,7 @@ TEST_CASE("a global's type and that type's fields come from the pdb") {
 }
 
 TEST_CASE("an address inside a global struct is named by its field") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     auto* symbols = dbg.getSymbolProvider();
 
@@ -344,7 +344,7 @@ TEST_CASE("an address inside a global struct is named by its field") {
 }
 
 TEST_CASE("running to an address stops there and keeps the user's breakpoints") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
     auto breakHere = dbg.getSymbolProvider()->getSymbolByName(
         "test_target!break_here");
@@ -356,11 +356,14 @@ TEST_CASE("running to an address stops there and keeps the user's breakpoints") 
     CHECK(regs.ip() == breakHere->address);
     CHECK(dbg.listBreakpoints().empty());
 
-    // At a function's first instruction the stack pointer points at the
-    // return address.
+    // At a function's first instruction the return address is where the call
+    // left it: on the stack on x86 and x64, in the link register on ARM64.
     Address returnAddress = 0;
-    REQUIRE(dbg.readMemory(regs.sp(), &returnAddress,
-                           dbg.arch()->pointerSize()) == Status::Ok);
+    if (dbg.arch() == ARM64::instance())
+        returnAddress = regs.arm64.x30_lr;
+    else
+        REQUIRE(dbg.readMemory(regs.sp(), &returnAddress,
+                               dbg.arch()->pointerSize()) == Status::Ok);
     REQUIRE(dbg.setBreakpoint(returnAddress, "mine") == Status::Ok);
     REQUIRE(dbg.runTo(returnAddress, 30000) == Status::Ok);
     REQUIRE(dbg.listBreakpoints().size() == 1);
@@ -370,7 +373,7 @@ TEST_CASE("running to an address stops there and keeps the user's breakpoints") 
 }
 
 TEST_CASE("a thread is named after what it was started to do") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     auto thread = dbg.getCurrentThread();
     REQUIRE(thread != nullptr);
@@ -386,7 +389,7 @@ TEST_CASE("a thread is named after what it was started to do") {
 // The workers of "deep" mode sleep, which is a system call. The engine already
 // walks a live thread out of one, so no frame is left to the WoW64 unwinder.
 TEST_CASE("a live thread in a system call is not taken for a WoW64 thunk") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg, {"deep"});
 
     int frames = 0;
@@ -404,7 +407,7 @@ TEST_CASE("a live thread in a system call is not taken for a WoW64 thunk") {
 }
 
 TEST_CASE("stack unwinds to at least one frame at the initial stop") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     auto process = dbg.getProcess();
@@ -425,7 +428,7 @@ TEST_CASE("stack unwinds to at least one frame at the initial stop") {
 // test_target's "deep" mode recurses 30 times before calling break_here, so a
 // stack walk that stops early fails the frame count.
 TEST_CASE("a deep stack unwinds all the way to the thread start") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
 
     REQUIRE(dbg.launch(test::testTargetPath(), {"deep"}) == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
@@ -448,9 +451,13 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
     // 30 recursions, plus break_here, main and whatever started the thread.
     CHECK(frames.size() > 30);
 
+    // ntdll's thread start is the outermost frame, but on 32-bit Windows
+    // without symbols it is not exported, so it has a wrong name. It calls
+    // kernel32's BaseThreadInitThunk, which is exported everywhere: the walk
+    // reached the thread start when it got past that frame.
     bool reachedThreadStart = false;
-    for (const auto& frame : frames)
-        if (frame->functionName.find("RtlUserThreadStart") != std::string::npos)
+    for (size_t i = 0; i + 1 < frames.size(); i++)
+        if (frames[i]->functionName.find("BaseThreadInitThunk") != std::string::npos)
             reachedThreadStart = true;
     CHECK(reachedThreadStart);
 
@@ -458,7 +465,7 @@ TEST_CASE("a deep stack unwinds all the way to the thread start") {
 }
 
 TEST_CASE("a frame's arguments come with its details, once") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
 
     REQUIRE(dbg.launch(test::testTargetPath(), {"deep"}) == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
@@ -486,7 +493,7 @@ TEST_CASE("a frame's arguments come with its details, once") {
 }
 
 TEST_CASE("a thread keeps its stack trace until the target moves") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     auto thread = dbg.getCurrentThread();
     REQUIRE(thread.get() != nullptr);
@@ -515,7 +522,7 @@ TEST_CASE("attaching to a running process finds the modules it already loaded") 
     test::WaitingTarget target;
     REQUIRE(target.pid() != 0);
 
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     logWhenAsked(dbg);
     REQUIRE(dbg.attach(target.pid()) == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
@@ -533,7 +540,7 @@ TEST_CASE("attaching to a running process finds the modules it already loaded") 
 // gives a suspend something to stop. It is done several times over, as a
 // break-in that is not matched by a resume leaves the target suspended.
 TEST_CASE("suspending a running target stops it, every time") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     logWhenAsked(dbg);
     REQUIRE(dbg.launch(test::testTargetPath(), {"deep"}) == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
@@ -553,7 +560,7 @@ TEST_CASE("suspending a running target stops it, every time") {
 // The engine thread serves one caller at a time; another caller is told the
 // engine is busy rather than left waiting behind the first.
 TEST_CASE("a caller is refused while another waits on the engine") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     std::thread slow([&] { dbg.executeCommand(".sleep 250"); });
@@ -571,7 +578,7 @@ TEST_CASE("a caller is refused while another waits on the engine") {
 // target stops on it, says which exception it was, and resuming then lets the
 // process end.
 TEST_CASE("an unhandled exception stops the target") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     logWhenAsked(dbg);
     REQUIRE(dbg.launch(test::testTargetPath(), {"crash"}) == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::None, 5000) != StopReason::None);
@@ -593,13 +600,13 @@ TEST_CASE("an unhandled exception stops the target") {
 // the old one.
 TEST_CASE("a debugger whose target exited leaves the engine to the next one") {
     {
-        Debugger first(Mode::External, X64::instance());
+        Debugger first(Mode::External);
         launchAtInitialStop(first);
         REQUIRE(first.resume() == Status::Ok);
         REQUIRE(first.waitForEvent(StopReason::ProcessExit, 15000) == StopReason::ProcessExit);
     }
 
-    Debugger second(Mode::External, X64::instance());
+    Debugger second(Mode::External);
     launchAtInitialStop(second);
     Registers r;
     REQUIRE(second.getRegisters(r) == Status::Ok);
@@ -613,7 +620,7 @@ TEST_CASE("a debugger whose target exited leaves the engine to the next one") {
 // The thread list holds only threads the target still has, each of which can
 // be read.
 TEST_CASE("the thread list leaves out threads that have ended") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg, {"threads"});
 
     auto threads = dbg.getProcess()->threads();
@@ -628,7 +635,7 @@ TEST_CASE("the thread list leaves out threads that have ended") {
 
 // Reading the target leaves the state version alone; moving it changes it.
 TEST_CASE("the state version changes when the target moves, not when it is read") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
     uint64_t before = dbg.stateVersion();
 
@@ -645,7 +652,7 @@ TEST_CASE("the state version changes when the target moves, not when it is read"
 }
 
 TEST_CASE("resuming runs the target to a clean exit") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtInitialStop(dbg);
 
     REQUIRE(dbg.resume() == Status::Ok);
@@ -654,7 +661,7 @@ TEST_CASE("resuming runs the target to a clean exit") {
 }
 
 TEST_CASE("a breakpoint on a known function is hit when the target runs") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     Symbol sym = launchAtBreakHere(dbg);
 
     // The stop address should be at (or within) the break_here function.
@@ -668,7 +675,7 @@ TEST_CASE("a breakpoint on a known function is hit when the target runs") {
 }
 
 TEST_CASE("single-stepping advances the instruction pointer") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
 
     Registers before;
@@ -686,7 +693,7 @@ TEST_CASE("single-stepping advances the instruction pointer") {
 }
 
 TEST_CASE("stepping out of a function stops where its caller resumes") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     Address resumeAt = callerResumeAddress(dbg);
 
@@ -698,7 +705,7 @@ TEST_CASE("stepping out of a function stops where its caller resumes") {
 }
 
 TEST_CASE("stepping over a call stops at the instruction after it") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     REQUIRE(dbg.stepOut() == Status::Ok);
     REQUIRE(dbg.waitForEvent(StopReason::None, 15000) != StopReason::None);
@@ -714,7 +721,7 @@ TEST_CASE("stepping over a call stops at the instruction after it") {
 }
 
 TEST_CASE("stepping over an instruction that is not a call is a single step") {
-    Debugger dbg(Mode::External, X64::instance());
+    Debugger dbg(Mode::External);
     launchAtBreakHere(dbg);
     DisasmInsn first = currentInstruction(dbg);
     REQUIRE_FALSE(first.isCall);

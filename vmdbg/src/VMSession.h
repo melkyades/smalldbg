@@ -75,6 +75,11 @@ public:
      *  when it stopped elsewhere, did not get there in time, or the target is
      *  not a replay. **/
     bool reverseRunToAddress(uint64_t address);
+    /** Runs the target until it writes any of the `size` bytes at `address`,
+     *  or a replay backwards to the last time it did. Returns false when the
+     *  debugger cannot watch memory, the target stopped elsewhere, or it did
+     *  not get there in time, when it is stopped where it was. **/
+    bool runToWrite(uint64_t address, size_t size, bool backwards);
     /** Runs a replay backwards to a breakpoint or to its start. Returns
      *  false when the target is not a replay. **/
     bool reverseResume();
@@ -82,6 +87,23 @@ public:
      *  trace. Returns false when the target is not a replay. **/
     bool seekTrace(const smalldbg::TracePosition& position);
     bool seekTrace(double percent);
+
+    // ---- the VM's screen ---------------------------------------------------
+    /** Runs the target until the VM next puts a different picture in its
+     *  window, when the framebuffer holds a whole frame. Returns false when the
+     *  VM names no function it does that with, or the target did not get there
+     *  in time. **/
+    bool runToNextFrame();
+    /** Runs a replay backwards to the last time the VM put a different
+     *  picture in its window. Returns false when the VM names no function it
+     *  does that with, the target did not get there in time, or the target is
+     *  not a replay. **/
+    bool reverseRunToPreviousFrame();
+    /** Returns the picture the VM last put in its window. In a replay that
+     *  stands between two screen updates, the framebuffer may be halfway
+     *  through the next picture, so the one shown is read where it was put
+     *  in the window. Returns nothing when the VM keeps no framebuffer. **/
+    std::optional<Framebuffer> shownFramebuffer();
 
     // ---- breakpoints -------------------------------------------------------
     virtual bool setBreakpoint(uint64_t address, const std::string& name = "");
@@ -168,6 +190,10 @@ protected:
      *  symbol file. **/
     virtual VMModule vmModule() const { return {}; }
 
+    /** Returns the functions, as module!name, that the VM calls to put its
+     *  screen in a window. By default there are none. **/
+    virtual std::vector<std::string> screenUpdateFunctions() const { return {}; }
+
     /** Loads the VM module's symbols and reports them. Returns false when there
      *  are none it can use, so the target is refused. **/
     virtual bool bringInVMSymbols(const TargetSpec& target);
@@ -229,6 +255,22 @@ private:
     mutable MemoryTypeMap memTypes;
     mutable std::optional<uint64_t> memoryTypesVersion;  // stateVersion of the defaults
     mutable std::vector<MemTypeRange> sectionTypes;     // the modules' sections
+
+    /** Runs forwards or backwards to the next call of a screen update
+     *  function that shows a different picture. **/
+    bool runToFrame(bool backwards);
+    /** Returns where the screen update functions are; none when the VM names
+     *  none or their symbols are missing. **/
+    std::vector<uint64_t> screenUpdateAddresses() const;
+    /** Runs forwards or backwards to the next call of any of `addresses`.
+     *  Returns false when the target did not get there in time, or stopped
+     *  somewhere else. **/
+    bool runToScreenUpdate(bool backwards, const std::vector<uint64_t>& addresses);
+    /** Sets a breakpoint at each of `addresses` that has none, and returns
+     *  those it set. **/
+    std::vector<uint64_t> addBreakpointsAt(const std::vector<uint64_t>& addresses);
+    /** Returns true when the current thread stands at one of `addresses`. **/
+    bool atScreenUpdate(const std::vector<uint64_t>& addresses) const;
 };
 
 } // namespace vmdbg

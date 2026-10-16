@@ -12,6 +12,10 @@ constexpr size_t maxInstructionSize = 15;
 
 } // namespace
 
+uint64_t Backend::targetVersion() const {
+    return debugger->stateVersion();
+}
+
 Status Backend::stepOver(Thread* thread) {
     Address ip = thread->getInstructionPointer();
     uint8_t code[maxInstructionSize];

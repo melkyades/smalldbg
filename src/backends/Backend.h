@@ -68,12 +68,17 @@ public:
     virtual Status setBreakpoint(Address addr, const std::string &name) = 0;
     virtual Status clearBreakpoint(Address addr) = 0;
     virtual std::vector<Breakpoint> listBreakpoints() const = 0;
+    // See Debugger::setWriteBreakpoint. Default: NotSupported.
+    virtual Status setWriteBreakpoint(Address /*address*/, size_t /*size*/) { return Status::NotSupported; }
+    virtual Status clearWriteBreakpoint(Address /*address*/) { return Status::NotSupported; }
 
     // HW watchpoint — see Debugger::setWatchpoint. Default: NotSupported.
     virtual Status setWatchpoint(Address /*addr*/, uint64_t /*match*/,
                                  uint64_t /*mask*/) { return Status::NotSupported; }
 
     virtual Status readMemory(Address address, void *outBuf, size_t size) const = 0;
+    // The allocation holding `address`; see Debugger::allocationContaining.
+    virtual std::pair<Address, Address> allocationContaining(Address) const { return {0, 0}; }
     virtual Status writeMemory(Address address, const void *data, size_t size) = 0;
     virtual Status getRegisters(Thread* thread, Registers &out) const = 0;
     
@@ -100,6 +105,9 @@ public:
         return std::nullopt;
     }
     
+    // Takes in a stop the target has made, for a backend that learns of stops
+    // only when it looks; one with an event thread of its own does nothing.
+    virtual void noticeStop() {}
     virtual StopReason getStopReason() const = 0;
     virtual bool isStopped() const = 0;
     virtual Address getStopAddress() const = 0;
@@ -145,6 +153,11 @@ public:
 
     // The target's architecture, updated once the backend has identified it.
     const Arch* getArch() const { return arch; }
+
+    // The debugger's state version: it changes whenever the target may have
+    // moved, so anything read off the target, such as its modules, can be
+    // cached against it.
+    uint64_t targetVersion() const;
 
 protected:
     /** Run until the frame `depth` below the current one is returned to. **/

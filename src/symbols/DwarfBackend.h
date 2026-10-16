@@ -3,8 +3,10 @@
 
 #include "../../include/smalldbg/symbols/SymbolSource.h"
 #include "DwarfTypes.h"
-#include <vector>
+#include "ObjectFileParser.h"
 #include <memory>
+#include <unordered_map>
+#include <vector>
 
 namespace smalldbg {
 
@@ -25,6 +27,7 @@ public:
     Status initialize(void* processHandle, const SymbolOptions& options) override;
     void shutdown() override;
     bool isInitialized() const override { return initialized; }
+    bool loadModuleSymbols(const std::string& module, SymbolMatch match) override;
     std::optional<Symbol> getSymbolByName(const std::string& name) override;
     std::optional<Symbol> getSymbolByAddress(Address addr) override;
     void enumerateSymbols(const std::string& pattern, SymbolCallback callback) override;
@@ -40,19 +43,31 @@ private:
     Backend* backend;
     void* processHandle{nullptr};
     bool initialized{false};
-    bool modulesLoaded{false};
+    uint64_t modulesVersion{0};  // target version the modules are from
     std::string symbolSearchPath;
     std::vector<std::unique_ptr<ModuleSymbols>> modules;
 
-    // Lazily enumerate loaded modules and parse their symbol tables
+    // Enumerate the loaded modules once per target version, parsing the
+    // symbol tables of those not seen before.
     void loadModules();
+    std::unique_ptr<ModuleSymbols> takeOrLoadModule(const ModuleInfo& info);
+    std::unique_ptr<ModuleSymbols> loadOneModule(const ModuleInfo& info);
+    // The module, with its symbols read the first time they are needed
+    ModuleSymbols& symbolsOf(ModuleSymbols& mod);
+    smalldbg_internal::MemoryReader targetMemory() const;
+    std::unique_ptr<ObjectFileParser> parser;
 
-    // Load one module through the parser
-    void loadOneModule(ObjectFileParser& parser, const ModuleInfo& info);
+    ModuleSymbols* moduleNamed(const std::string& module);
+    bool enumerateModuleSymbols(const ModuleSymbols& mod, const std::string& pattern,
+                                const SymbolCallback& callback);
+    std::optional<Symbol> symbolNamed(const ModuleSymbols& mod,
+                                      const std::string& name);
 
-    // Lazily load DWARF type info from .o files
-    void loadTypeInfo();
-    DwarfTypeDatabase typeDb;
+    // DWARF type info, read from each module's .o files when first needed
+    std::unordered_map<std::string, std::unique_ptr<DwarfTypeDatabase>> typeDatabases;
+    const DwarfTypeDatabase* typesOf(const ModuleSymbols& mod);
+    const DwarfTypeDatabase* mainTypes();
+    const DwarfTypeDatabase* typesFor(std::string& name, std::string& module);
 
     // Source location cache (address → resolved location or nullopt)
     std::unordered_map<Address, std::optional<SourceLocation>> sourceLocationCache;

@@ -99,8 +99,11 @@ public:
     Status setBreakpoint(Address addr, const std::string& name) override;
     Status clearBreakpoint(Address addr) override;
     std::vector<Breakpoint> listBreakpoints() const override;
+    Status setWriteBreakpoint(Address address, size_t size) override;
+    Status clearWriteBreakpoint(Address address) override;
 
     Status readMemory(Address address, void* outBuf, size_t size) const override;
+    std::pair<Address, Address> allocationContaining(Address address) const override;
     Status writeMemory(Address address, const void* data, size_t size) override;
     Status getRegisters(Thread* thread, Registers& out) const override;
     Status recoverCallerRegisters(Registers& regs) const override;
@@ -216,6 +219,7 @@ protected:
     bool initOpenTrace();      // open a TTD trace file
     bool initOpenDump();       // open a crash/WER dump file
     bool initArchAndRegisters();  // validate target arch, resolve register indices
+    void setPacMask();  // let the engine strip signed return addresses
     void registerSymbolBackend();  // register DbgEngSymbolBackend
     void enumerateInitialThreads();
     void selectEventThread();
@@ -317,6 +321,7 @@ protected:
     };
     mutable std::mutex bpMutex;
     std::vector<BpInfo> breakpoints;
+    std::vector<BpInfo> writeBreakpoints;  // data breakpoints; addr is the data watched
 
     // --- Register indices (per-architecture) ---
     // Resolved once after attach via ri.resolve().

@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace smalldbg {
 
@@ -26,8 +27,13 @@ public:
     virtual int ptraceAttach(int pid) = 0;
     virtual int ptraceDetach(int pid) = 0;
     virtual int ptraceContinue(int pid) = 0;
-    virtual int ptraceStep(int pid) = 0;
+    // Runs one instruction of `thread`, or of the process where threads are
+    // not stepped one at a time.
+    virtual int ptraceStep(int pid, ThreadId thread) = 0;
     virtual void ptraceKill(int pid) = 0;
+    // Makes the running target stop, for waitForStop to report. Default:
+    // SIGSTOP.
+    virtual int interrupt(int pid);
 
     // -- Process spawning --
     // Spawn `path`/`args` in `workingDir`, or in this process's directory when
@@ -37,6 +43,20 @@ public:
     virtual int spawnStopped(const std::string& path,
                              const std::vector<std::string>& args,
                              const std::string& workingDir);
+
+    // Attach to the running process `pid` and return with it stopped: 0 on
+    // success, -1 on failure. Default: PT_ATTACH and wait for its SIGSTOP.
+    virtual int attachStopped(int pid);
+
+    // Waits for the target to stop, at most `timeoutMs` (-1 waits for good, 0
+    // only looks). Returns the signal that stopped it, -1 when it did not
+    // stop in time, or -2 when it is gone, with `status` its wait status.
+    // Default: waitpid.
+    virtual int waitForStop(int pid, int timeoutMs, int& status);
+
+    // The thread the last stop happened on, or 0 when the platform cannot
+    // tell, such as one where waitpid only names the process.
+    virtual ThreadId stoppedThread() const { return 0; }
 
     // Acquire platform-specific process handle (e.g. Mach task port on macOS).
     // Must be called after the target is stopped.
@@ -48,25 +68,27 @@ public:
     // -- Memory --
     virtual Status readMemory(Address addr, void* buf, size_t size) const = 0;
     virtual Status writeMemory(Address addr, const void* data, size_t size) = 0;
+    // The allocation holding `addr`, or {0, 0} when the platform cannot tell.
+    virtual std::pair<Address, Address> allocationContaining(Address) const { return {0, 0}; }
 
     // -- Registers --
     virtual Status getThreadRegisters(ThreadId tid, const Arch* arch, Registers& out) const = 0;
     virtual Status setThreadPc(ThreadId tid, Address pc) const = 0;
+    // Returns a return address read from the stack as a code address. Where
+    // the CPU signs return addresses, the signature bits are cleared. Default:
+    // the address as it is.
+    virtual Address codeAddress(Address returnAddress) const { return returnAddress; }
+    // Sets `regs` to the caller's registers, by the call frame information of
+    // the code at their ip. `innermost` says they are those of the frame the
+    // thread stopped in. Returns false when there is none for that code, and
+    // the frame pointer chain is to be followed instead. Default: false.
+    virtual bool recoverCallerFromFrameInfo(Registers& regs, bool innermost) const {
+        (void)regs; (void)innermost;
+        return false;
+    }
 
     // -- Thread enumeration --
     virtual std::vector<ThreadId> enumerateThreads() = 0;
-
-    // -- Async exception polling --
-    // Exceptions a platform catches out-of-band (not via waitpid) surface
-    // through here; the backend polls it between waitpid calls. Default: none.
-    struct AsyncException {
-        bool present{false};
-        ThreadId thread{0};
-        int exception{0};
-        long code{0};
-        long subcode{0};
-    };
-    virtual AsyncException pollAsyncException() { return AsyncException{}; }
 
     // HW watchpoint (write-only, 8 bytes) controls. addr=0 clears.
     // Default: no-op for platforms without HW watchpoint support.

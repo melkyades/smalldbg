@@ -9,7 +9,7 @@ On top of the library sit two more: `vmdbg/`, for debugging virtual machines, an
 Features:
 - C++ Debugger class with attach/launch/detach, resume/step/suspend, run to an address, breakpoint API
 - Windows backends: Win32 Debug API and DbgEng engine (with Time Travel Debugging)
-- macOS backend: ptrace + Mach VM/thread APIs
+- macOS backend: ptrace + Mach VM/thread APIs. Every stop comes through a Mach exception server, and symbols are read from the target's memory, so the libraries of the dyld shared cache have them too
 - Linux backend: ptrace + /proc filesystem
 - **Crash dumps and TTD traces** - open a `.dmp` or a `.run`; replay a trace backwards and forwards, ask where the replay is and how far the trace runs, move to a position or a percentage, and find when an address last ran
 - Memory read/write operations, and each loaded module's sections from its image headers
@@ -116,6 +116,16 @@ cmake -S . -B build -G Ninja \
 cmake --build build
 ctest --test-dir build
 ```
+
+On macOS a process may debug another only when it is signed with the
+debugger entitlement in `debugger.entitlements`. The build signs every
+executable that launches or attaches to a target, ad hoc, as it links it
+(`smalldbg_sign_as_debugger` in the root `CMakeLists.txt`); Developer Mode
+must be on (`DevToolsSecurity -status`). A target signed with the hardened
+runtime and without `get-task-allow` cannot be debugged.
+
+macOS keeps port 7000, the servers' default, for its AirPlay Receiver. Pass
+another with `--port`, or turn the receiver off in System Settings.
 
 ### Always pass `--output-folder`
 

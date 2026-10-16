@@ -1,0 +1,157 @@
+name: tests
+
+# A pull request runs the core platforms, and every platform when it touches
+# code whose behavior depends on the architecture: the library, the build or
+# this workflow. Every platform, and the public VMs, run nightly and on demand.
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      vms: ${{ steps.plan.outputs.vms }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: plan
+        shell: bash
+        run: |
+          full=true
+          vms=true
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            # A pull request is checked out as a merge commit, so its first
+            # parent is the base it merges into.
+            changed=$(git diff --name-only HEAD^1 HEAD)
+            echo "$changed"
+            echo "$changed" | grep -qE '^(src/|include/|CMakeLists\.txt|conanfile\.txt|tests/CMakeLists\.txt|\.github/)' || full=false
+            echo "$changed" | grep -qE '^(src/|include/|vmdbg/|webside/|CMakeLists\.txt|conanfile\.txt|\.github/)' || vms=false
+          fi
+          # core: runs on every pull request. experimental: may fail without
+          # failing the workflow, while its backend is being brought up.
+          matrix=$(jq -c --argjson full "$full" '[.[] | select($full or .core)]' <<'EOF'
+          [
+            {"name": "windows-x64",   "os": "windows-latest", "conan_arch": "x86_64", "cmake_arch": "x64",   "core": true,  "experimental": false},
+            {"name": "windows-x86",   "os": "windows-latest", "conan_arch": "x86",    "cmake_arch": "Win32", "core": false, "experimental": false, "wow64": true},
+            {"name": "windows-arm64", "os": "windows-11-arm", "conan_arch": "armv8",  "cmake_arch": "ARM64", "core": false, "experimental": true},
+            {"name": "linux-x64",     "os": "ubuntu-latest",  "conan_arch": "x86_64", "core": true,  "experimental": false},
+            {"name": "linux-arm64",   "os": "ubuntu-24.04-arm", "conan_arch": "armv8", "core": false, "experimental": true},
+            {"name": "macos-arm64",   "os": "macos-latest",   "conan_arch": "armv8",  "core": true,  "experimental": true},
+            {"name": "macos-x64",     "os": "macos-15-intel", "conan_arch": "x86_64", "core": false, "experimental": true}
+          ]
+          EOF
+          )
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "vms=$vms" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: plan
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    # Without a limit a hung job runs for GitHub's six hours, and a hung
+    # macOS job did not stop when its run was cancelled.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: ${{ matrix.name }}
+      - name: Build
+        run: .github/build.sh build "${{ matrix.conan_arch }}" "${{ matrix.cmake_arch }}"
+      # A macOS debugger can only take another process's task port when the
+      # machine allows debugging and its user is a developer. Even then the
+      # system.privilege.taskport right asks that user for a password once
+      # per session, and on a runner task_for_pid waits for one forever, so
+      # the right is granted without asking. Both memberships are printed.
+      - name: Allow debugging
+        if: runner.os == 'macOS'
+        run: |
+          sudo DevToolsSecurity -enable
+          sudo security authorizationdb write system.privilege.taskport allow
+          sudo dseditgroup -o edit -a "$(whoami)" -t user _developer
+          sudo dsmemberutil flushcache
+          dsmemberutil checkmembership -U "$(whoami)" -G admin
+          dsmemberutil checkmembership -U "$(whoami)" -G _developer
+      # Shared runners are too noisy for the timing budgets of the perf tests.
+      # On macOS the backend's log goes to stderr, which ctest shows for a
+      # failure.
+      - name: Test
+        run: >-
+          ${{ runner.os == 'macOS' && 'SMALLDBG_TEST_LOG=1' || '' }}
+          ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600
+      # On the macOS runners the targets the tests detach from stay stopped,
+      # and the runner cannot clean them up. This lists them and ends them.
+      - name: Targets the tests left behind
+        if: always() && runner.os == 'macOS'
+        timeout-minutes: 2
+        run: |
+          if pids=$(pgrep -d, -x test_target); then ps -o pid,ppid,stat,command -p "$pids"; fi
+          sudo -n pkill -9 -x test_target || true
+          sleep 2
+          pgrep -lx test_target || echo "no test_target left"
+      # The x64 live tests once more, against the 32-bit test_target. ctest
+      # runs them in build-x64/tests, so the target's path is made absolute.
+      # The backend's log goes to stderr, which ctest shows for a failure.
+      - name: Build x64 for WoW64
+        if: matrix.wow64
+        run: .github/build.sh build-x64 x86_64 x64
+      - name: Test WoW64
+        if: matrix.wow64
+        run: |
+          SMALLDBG_TEST_TARGET=$(cygpath -aw build/tests/Release/test_target.exe) \
+          SMALLDBG_TEST_LOG=1 \
+            ctest --test-dir build-x64 -C Release -R live-tests --output-on-failure --timeout 600
+
+  # The VMs are repositories of their own and may lag behind smalldbg, so a
+  # failure here does not fail the workflow.
+  vms:
+    needs: plan
+    if: needs.plan.outputs.vms == 'true'
+    name: vms-${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: windows-x64, os: windows-latest, conan_arch: x86_64, cmake_arch: x64}
+          - {name: linux-x64, os: ubuntu-latest, conan_arch: x86_64}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the public VMs
+        run: |
+          git clone --depth 1 https://github.com/melkyades/smalldbg-egg.git vms/egg
+          git clone --depth 1 https://github.com/melkyades/smalldbg-osvm.git vms/osvm
+      - uses: ./.github/actions/setup
+        with:
+          cache-key: ${{ matrix.name }}
+      - name: Build
+        run: .github/build.sh build "${{ matrix.conan_arch }}" "${{ matrix.cmake_arch }}"
+      - name: Test
+        run: ctest --test-dir build -C Release -LE perf --output-on-failure --timeout 600

@@ -506,6 +506,28 @@ HttpResponse WebsideServer::handleRegions(const HttpRequest&) const {
     return res;
 }
 
+// Raw pixels rather than an image file, so a client draws them without a
+// decoder; the frame is read again on every request because it changes
+// whenever the target runs or a trace is moved. A VM may pad its rows, as
+// Squeak pads them to 32 bits, so the bytes in a row are sent too.
+HttpResponse WebsideServer::handleFramebuffer() const {
+    HttpResponse res;
+    std::optional<vmdbg::Framebuffer> frame;
+    if (isActive()) frame = session().shownFramebuffer();
+    if (!frame) {
+        res.statusCode = 404;
+        res.body = Json::object().set("error", "The VM keeps no framebuffer").dump();
+        return res;
+    }
+    res.contentType = "application/octet-stream";
+    res.headers["X-Framebuffer-Width"] = std::to_string(frame->width);
+    res.headers["X-Framebuffer-Height"] = std::to_string(frame->height);
+    res.headers["X-Framebuffer-Depth"] = std::to_string(frame->depth);
+    res.headers["X-Framebuffer-Stride"] = std::to_string(frame->pixels.size() / frame->height);
+    res.body.assign(frame->pixels.begin(), frame->pixels.end());
+    return res;
+}
+
 // Answers what an address is: the region and the module holding it, and the
 // symbol it is in.
 HttpResponse WebsideServer::handleClassify(const HttpRequest& req) const {
@@ -659,11 +681,18 @@ HttpResponse WebsideServer::handleNativeDebuggerRoute(
         return res;
     }
 
+    // Without an address the whole stack is described, as a green thread's is.
     if (segments[2] == "stack") {
-        res.body = stackDescriptors(thread,
-                                    static_cast<int>(param64(req, "frame", 1)),
-                                    param64(req, "address"),
-                                    static_cast<int>(param64(req, "count", 64)));
+        const int selected = static_cast<int>(param64(req, "frame", 1));
+        auto* trace = thread.getStackTrace(256);
+        if (!trace)
+            res.body = "[]";
+        else if (req.params.count("address"))
+            res.body = session().stackDescriptors(
+                *trace, selected, param64(req, "address"),
+                static_cast<int>(param64(req, "count", 64)));
+        else
+            res.body = session().stackDescriptors(*trace, selected);
         return res;
     }
 
@@ -1133,6 +1162,19 @@ void WebsideServer::setupInspectorRoutes() {
     server.route("GET", "/inspect", [this](const HttpRequest& req) {
         return handleInspect(req);
     });
+    server.route("GET", "/framebuffer", [this](const HttpRequest&) {
+        return handleFramebuffer();
+    });
+    server.route("POST", "/framebuffer/next", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = runControlResult(session().runToNextFrame());
+        return res;
+    });
+    server.route("POST", "/framebuffer/previous", [this](const HttpRequest&) {
+        HttpResponse res;
+        res.body = runControlResult(session().reverseRunToPreviousFrame());
+        return res;
+    });
 
     // Runs a raw command in the debugger's engine, for what no route covers.
     server.route("POST", "/evaluate", [this](const HttpRequest& req) {
@@ -1425,6 +1467,19 @@ bool WebsideServer::stepAction(const std::vector<std::string>& segments) {
     return false;
 }
 
+// The body names the memory to watch, {address, size}; size defaults to a
+// pointer's, the size of an object's slot.
+HttpResponse WebsideServer::handleRunToWrite(const HttpRequest& req, bool backwards) {
+    auto body = Json::parse(req.body);
+    const uint64_t address = addressIn(body["address"]);
+    if (address == 0) return badRequest("address required");
+    const size_t size = body["size"].isNumber() ? static_cast<size_t>(body["size"].asUInt())
+                                                : session().pointerSize();
+    HttpResponse res;
+    res.body = runControlResult(session().runToWrite(address, size, backwards));
+    return res;
+}
+
 HttpResponse WebsideServer::handleRunTo(const HttpRequest& req, bool backwards) {
     HttpResponse res;
     auto segments = splitPath(req.path);
@@ -1653,6 +1708,12 @@ void WebsideServer::setupDebuggerActionRoutes() {
 
         if (segments.size() >= 3 && segments[2] == "runto")
             return handleRunTo(req, false);
+
+        if (segments.size() >= 3 && segments[2] == "runtowrite")
+            return handleRunToWrite(req, false);
+
+        if (segments.size() >= 3 && segments[2] == "reverseruntowrite")
+            return handleRunToWrite(req, true);
 
         if (segments.size() >= 3 && segments[2] == "reverserunto")
             return handleRunTo(req, true);
